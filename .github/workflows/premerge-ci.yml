@@ -205,7 +205,7 @@ jobs:
           docker run --rm --entrypoint bash --runtime=nvidia --network=host \
           --name metasim-autotest-isaaclab \
           --user 1000:1000 --privileged \
-          -e LD_LIBRARY_PATH=/usr/lib/x86_6d895955a29934cf6fd8d0ac54abd5cd70f71a1244-linux-gnu \
+          -e LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu \
           -e ACCEPT_EULA=Y -e PRIVACY_CONSENT=Y -e OMNI_KIT_ACCEPT_EULA=YES \
           -v /usr/local/cuda:/usr/local/cuda \
           -v "$(pwd)":/home/$EC2_USER_NAME/RoboVerse \
@@ -217,7 +217,7 @@ jobs:
           docker run --rm --entrypoint bash --runtime=nvidia --network=host \
           --name metasim-autotest-mujoco \
           --user 1000:1000 --privileged \
-          -e LD_LIBRARY_PATH=/usr/lib/x86_6d895955a29934cf6fd8d0ac54abd5cd70f71a1244-linux-gnu \
+          -e LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu \
           -e ACCEPT_EULA=Y -e PRIVACY_CONSENT=Y -e OMNI_KIT_ACCEPT_EULA=YES \
           -v /usr/local/cuda:/usr/local/cuda \
           -v "$(pwd)":/home/$EC2_USER_NAME/RoboVerse \
@@ -236,7 +236,7 @@ jobs:
           echo "Test Results Summary:"
           echo "IsaacLab tests exit code: $ISAACLAB_TEST_EXIT_CODE"
           echo "MuJoCo tests exit code: $MUJOCO_TEST_EXIT_CODE"
-          echo "Overall exit code (union): $OVERALL_EXIT_CODE"
+          echo "Overall exit code : $OVERALL_EXIT_CODE"
 
           # TODO check if test_exit_code necessary
           touch ~/$SRC_DIR/test_exit_code.txt
