@@ -41,7 +41,7 @@ G1_CRAWL_HEAD_HEIGHT = 0.6
 class HumanoidBaseReward:
     """Base class for humanoid rewards."""
 
-    def __init__(self, robot_name="h1"):
+    def __init__(self, robot_name="g1"):
         """Initialize the humanoid reward."""
         self.robot_name = robot_name
         if (
@@ -108,20 +108,23 @@ class BaseLocomotionReward(HumanoidBaseReward):
     htarget_high = np.array([1000.0, 1.0, 2.0])
     success_bar = None
 
-    def __init__(self, robot_name="h1"):
+    def __init__(self, robot_name="g1"):
         """Initialize the locomotion reward."""
         super().__init__(robot_name)
 
-    def __call__(self, states: list[EnvState]) -> torch.FloatTensor:
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         """Compute the locomotion reward."""
-        moving_reward = []
-        stable_rewards = StableReward(self.robot_name)(states)
+        if robot_name is None:
+            robot_name = self.robot_name  # fallback to default
+
+        stable_rewards = StableReward(robot_name)(states)
+
         if self._move_speed == 0:
-            horizontal_velocity = robot_velocity_tensor(states, self.robot_name)[:, [0, 1]]
+            horizontal_velocity = robot_velocity_tensor(states, robot_name)[:, [0, 1]]
             dont_move = humanoid_reward_util.tolerance_tensor(horizontal_velocity, margin=2).mean(dim=-1)
             moving_reward = dont_move
         else:
-            com_x_velocity = robot_local_velocity_tensor(states, self.robot_name)[:, 0]
+            com_x_velocity = robot_local_velocity_tensor(states, robot_name)[:, 0]
             move = humanoid_reward_util.tolerance_tensor(
                 com_x_velocity,
                 bounds=(self._move_speed, float("inf")),
@@ -130,7 +133,11 @@ class BaseLocomotionReward(HumanoidBaseReward):
                 sigmoid="linear",
             )
             move = (5 * move + 1) / 6
+        if self._move_speed != None:
             moving_reward = move
+        else:
+            moving_reward = torch.ones_like(stable_rewards)
+
         return stable_rewards * moving_reward
 
 

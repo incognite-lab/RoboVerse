@@ -12,6 +12,10 @@ from metasim.cfg.objects import BaseObjCfg
 from metasim.utils.configclass import configclass
 from metasim.utils.math import euler_xyz_from_quat, matrix_from_quat, quat_from_matrix
 from metasim.utils.tensor_util import tensor_to_str
+from metasim.utils.humanoid_robot_util import (
+    neck_height_tensor,
+    neck_height
+)
 
 from .base_checker import BaseChecker
 from .detectors import BaseDetector
@@ -412,8 +416,13 @@ class _WalkChecker(BaseChecker):
 
 ## FIXME: This checker should be removed!
 @configclass
-class _StandChecker(_WalkChecker):
-    pass
+class _StandChecker(BaseChecker):
+    """A checker that always returns False."""
+    def check(self, handler: BaseSimHandler) -> torch.BoolTensor:
+        states = handler.get_states()
+        terminated = neck_height_tensor(states, handler.robot.name)[:] < 0.2
+        #print(terminated)
+        return terminated
 
 
 ## FIXME: This checker should be removed!

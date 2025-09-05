@@ -64,10 +64,16 @@ class GenesisHandler(BaseSimHandler):
             # Fallback if Plane has issues
             log.warning(f"Could not add ground plane: {e}")
             pass
-
+        print(gs.morphs.URDF(
+                pos=(0, 0, 2),
+                file=self.robot.urdf_path,
+                fixed=self.robot.fix_base_link,
+                merge_fixed_links=self.robot.collapse_fixed_joints,
+            ),"robot urdf")
         ## Add robot
         self.robot_inst: RigidEntity = self.scene_inst.add_entity(
             gs.morphs.URDF(
+                pos=(0, 0, 2),
                 file=self.robot.urdf_path,
                 fixed=self.robot.fix_base_link,
                 merge_fixed_links=self.robot.collapse_fixed_joints,
@@ -75,6 +81,7 @@ class GenesisHandler(BaseSimHandler):
             material=gs.materials.Rigid(gravity_compensation=1 if not self.robot.enabled_gravity else 0),
         )
         self.object_inst_dict[self.robot.name] = self.robot_inst
+        log.info(f"robot: {self.robot_inst}")
 
         ## Add objects
         for obj in self.scenario.objects:
@@ -170,8 +177,8 @@ class GenesisHandler(BaseSimHandler):
                     ],
                     dim=-1,
                 ),
-                body_names=None,
-                body_state=None,  # TODO
+                body_names=self.get_body_names(obj.name),
+                body_state=self.get_body_states(obj.name, envs_idx=env_ids),
                 joint_pos=obj_inst.get_dofs_position(envs_idx=env_ids)[:, joint_reindex],
                 joint_vel=obj_inst.get_dofs_velocity(envs_idx=env_ids)[:, joint_reindex],
                 joint_pos_target=None,  # TODO
@@ -194,36 +201,71 @@ class GenesisHandler(BaseSimHandler):
 
         return TensorState(objects=object_states, robots=robot_states, cameras=camera_states, sensors={})
 
+
+    def get_body_names(self, obj_name: str, sort: bool = True) -> list[str]:
+        if isinstance(self.object_dict[obj_name], ArticulationObjCfg):
+            links = self.object_inst_dict[obj_name].links
+            body_names = [b.name for b in links]
+            if sort:
+                body_names.sort()
+            return body_names
+        else:
+            return []
+
+    def get_body_states(self, obj_name: str, envs_idx: list[int] | None = None) -> torch.Tensor | None:
+        if isinstance(self.object_dict[obj_name], ArticulationObjCfg):
+            links = self.object_inst_dict[obj_name].links
+            # Collect all states for all links in a batched way
+            pos = torch.stack([b.get_pos(envs_idx=envs_idx) for b in links], dim=1)      # [num_envs, n_links, 3]
+            quat = torch.stack([b.get_quat(envs_idx=envs_idx) for b in links], dim=1)     # [num_envs, n_links, 4]
+            vel = torch.stack([b.get_vel(envs_idx=envs_idx) for b in links], dim=1)       # [num_envs, n_links, 3]
+            ang = torch.stack([b.get_ang(envs_idx=envs_idx) for b in links], dim=1)       # [num_envs, n_links, 3]
+            # Concatenate along last dimension: [pos, quat, vel, ang] -> [3+4+3+3=13]
+            body_states = torch.cat([pos, quat, vel, ang], dim=-1)                        # [num_envs, n_links, 13]
+            return body_states
+        else:
+            return None
+
     def _set_states(self, states: list[EnvState], env_ids: list[int] | None = None) -> None:
         if env_ids is None:
             env_ids = list(range(self.num_envs))
         states_flat = [state["objects"] | state["robots"] for state in states]
+        if len(states) < self.num_envs:
+            states = states * self.num_envs
+        states_flat = [state["objects"] | state["robots"] for state in states]
         for obj in self.objects + [self.robot]:
             obj_inst = self.object_inst_dict[obj.name]
-            obj_inst.set_pos(np.array([states_flat[env_id][obj.name]["pos"] for env_id in env_ids]))
-            obj_inst.set_quat(np.array([states_flat[env_id][obj.name]["rot"] for env_id in env_ids]))
+
+            # --- Base link position ---
+            pos_tensor = torch.stack([states_flat[eid][obj.name]["pos"] for eid in env_ids])  # [N,3]
+            pos = pos_tensor.cpu().numpy()
+            obj_inst.set_pos(pos, envs_idx=env_ids, relative=False)
+            # --- Base link rotation ---
+            quat_tensor = torch.stack([states_flat[eid][obj.name]["rot"] for eid in env_ids])  # [N,4]
+            quat = quat_tensor.cpu().numpy()
+            # Normalize quaternions
+            norms = np.linalg.norm(quat, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            quat = quat / norms
+            obj_inst.set_quat(quat, envs_idx=env_ids, relative=False)
+
+            # --- Joint positions (only if articulation) ---
             if isinstance(obj, ArticulationObjCfg):
-                if obj.fix_base_link:
-                    obj_inst.set_qpos(
-                        np.array([
-                            [
-                                states_flat[env_id][obj.name]["dof_pos"][jn]
-                                for jn in self.get_joint_names(obj.name, sort=False)
-                            ]
-                            for env_id in env_ids
-                        ]),
-                        envs_idx=env_ids,
-                    )
+                joint_names = self.get_joint_names(obj.name, sort=False)
+                if len(joint_names) == 0:
+                    print("DEBUG: no joints for", obj.name)
                 else:
-                    joint_names = self.get_joint_names(obj.name, sort=False)
-                    qs_idx_local = torch.arange(1, 1 + len(joint_names), dtype=torch.int32, device=gs.device).tolist()
-                    obj_inst.set_qpos(
-                        np.array([
-                            [states_flat[env_id][obj.name]["dof_pos"][jn] for jn in joint_names] for env_id in env_ids
-                        ]),
-                        qs_idx_local=qs_idx_local,
-                        envs_idx=env_ids,
-                    )
+                    dof_pos = np.array([
+                        [states_flat[env_id][obj.name]["dof_pos"][jn] for jn in joint_names]
+                        for env_id in env_ids
+                    ])
+                    base_pos = obj_inst.get_pos(envs_idx=env_ids)   # [N,3]
+                    base_quat = obj_inst.get_quat(envs_idx=env_ids) # [N,4]
+
+                    root_state = np.concatenate([base_pos.detach().cpu().numpy(), base_quat.detach().cpu().numpy()], axis=1)  # [N,7]
+                    full_qpos = np.concatenate([root_state, dof_pos], axis=1)   # [N, 7 + n_joints]
+
+                    obj_inst.set_qpos(full_qpos, envs_idx=env_ids)
 
     def set_dof_targets(self, obj_name: str, actions: list[Action]) -> None:
         self._actions_cache = actions
@@ -258,15 +300,15 @@ class GenesisHandler(BaseSimHandler):
             if self.object_dict[obj_name].fix_base_link:
                 self.robot_inst.control_dofs_position(
                     position=position,
-                    dofs_idx_local=[j.dof_idx_local for j in self.robot_inst.joints if j.dof_idx_local is not None],
+                    dofs_idx_local=[j.dofs_idx_local[0] for j in self.robot_inst.joints if j.dofs_idx_local[0] is not None],
                 )
             else:
                 self.robot_inst.control_dofs_position(
                     position=position,
                     dofs_idx_local=[
-                        j.dof_idx_local
+                        j.dofs_idx_local[0]
                         for j in self.robot_inst.joints
-                        if j.dof_idx_local is not None and j.name != self.robot_inst.base_joint.name
+                        if j.dofs_idx_local[0] is not None and j.name != self.robot_inst.base_joint.name
                     ],
                 )
 
@@ -314,7 +356,8 @@ class GenesisHandler(BaseSimHandler):
             joint_names = [
                 j.name
                 for j in joints
-                if j.dof_idx_local is not None and j.name != self.object_inst_dict[obj_name].base_joint.name
+                if j.dofs_idx_local[0] is not None and j.name != self.object_inst_dict[obj_name].base_joint.name
+                #if j.dof_idx_local is not None and j.name != self.object_inst_dict[obj_name].base_joint.name
             ]
             if sort:
                 joint_names.sort()

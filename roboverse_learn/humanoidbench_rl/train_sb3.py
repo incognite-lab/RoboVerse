@@ -12,7 +12,6 @@ import wandb
 import yaml
 from loguru import logger as log
 from rich.logging import RichHandler
-
 rootutils.setup_root(__file__, pythonpath=True)
 log.configure(handlers=[{"sink": RichHandler(), "format": "{message}"}])
 
@@ -91,6 +90,7 @@ def main():
         log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         exit(1)
     config_name = sys.argv[1]
+    #config_name = "genesis"
     config = load_config_from_yaml(config_name)
     log.info(f"Load config: {config_name}")
 
@@ -119,7 +119,7 @@ def main():
     scenario = ScenarioCfg(
         task=config.get("task"),
         robots=config.get("robots"),
-        try_add_table=config.get("add_table", False),
+        try_add_table=config.get("add_table", True),
         sim=config.get("sim"),
         num_envs=config.get("num_envs", 1),
         headless=config.get("headless", True),
@@ -141,6 +141,10 @@ def main():
     elif config.get("sim") == "isaaclab":
         env = Sb3EnvWrapper(scenario=scenario)
     elif config.get("sim") == "mjx":
+        env = Sb3EnvWrapper(scenario=scenario)
+    elif config.get("sim") == "genesis":
+        env = Sb3EnvWrapper(scenario=scenario)
+    elif config.get("sim") == "sapien3":
         env = Sb3EnvWrapper(scenario=scenario)
     else:
         raise ValueError(f"Invalid sim type: {config.get('sim')}")

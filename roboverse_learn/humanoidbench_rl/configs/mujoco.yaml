@@ -2,17 +2,18 @@
 
 # Environment settings
 sim: mujoco
-robots: [h1]
+robots: [g1]
 task: humanoidbench:Stand
 decimation: 10
 num_envs: 1  # MuJoCo only supports single environment
-add_table: false
+add_table: true
+headless: false
 
 # Training settings
 train_or_eval: train
-total_timesteps: 50_000_000
+total_timesteps: 1_000_000
 model_save_path: ./saved_models
-model_save_freq: 1_000_000
+model_save_freq: 500_000
 
 # Eval settings
 eval_model_path: <path to eval model>

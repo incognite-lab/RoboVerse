@@ -18,10 +18,10 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 import numpy as np
 
-try:
-    import isaacgym  # noqa: F401
-except ImportError:
-    pass
+# try:
+#     import isaacgym  # noqa: F401
+# except ImportError:
+#     pass
 
 import torch
 import torch.nn as nn
@@ -62,10 +62,11 @@ def load_config_from_yaml(config_name: str) -> dict:
 
 
 def main() -> None:
-    if len(sys.argv) < 2:
-        log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
-        exit(1)
-    config_name = sys.argv[1]
+    # if len(sys.argv) < 2:
+    #     log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
+    #     exit(1)
+    # config_name = sys.argv[1]
+    config_name = "isaaclab"
     config = load_config_from_yaml(config_name)
     cfg = config.get
     GAMMA = float(cfg("gamma"))

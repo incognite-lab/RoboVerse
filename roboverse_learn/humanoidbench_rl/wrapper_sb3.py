@@ -137,12 +137,13 @@ class Sb3EnvWrapper(VecEnv):
         # action_dict (list[Action]): List of action dictionaries for each environment.
         action_dict = [
             {
-                "dof_pos_target": {
+                self.robot.name:{   "dof_pos_target": {
                     # joint_name (str): Name of the joint.
                     # pos (float): Target position for the joint.
                     joint_name: float(pos)
                     for joint_name, pos in zip(joint_names, unnormalized_actions[env_id])
                 }
+            }
             }
             for env_id in range(self.num_envs)
         ]
@@ -172,7 +173,7 @@ class Sb3EnvWrapper(VecEnv):
         # Determine whether the cumulative reward exceeds success_bar.
         success_mask = (self.episode_rewards >= self.success_bar).astype(np.int32)
         self.episode_success = success_mask
-
+        #log.info(f"success_mask: {success_mask}, rewards: {self.episode_rewards}")
         # Construct infos list containing "TimeLimit.truncated" required by SB3
         infos = []
         for i in range(self.num_envs):
@@ -215,7 +216,7 @@ class Sb3EnvWrapper(VecEnv):
         # NOTE: For IsaacLab, metasim_reward is None, so calculate reward here
         final_reward = torch.zeros(self.num_envs, device=self.sim_device)
         for reward_func, reward_weight in zip(self.task.reward_functions, self.task.reward_weights):
-            final_reward += reward_func(self.robot.name)(states) * reward_weight
+            final_reward += reward_func(states, self.robot.name) * reward_weight
         return final_reward
 
     def render(self):

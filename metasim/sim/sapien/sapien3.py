@@ -331,20 +331,31 @@ class Sapien3Handler(BaseSimHandler):
 
     def _apply_action(self, instance: sapien_core.physx.PhysxArticulation, pos_action=None, vel_action=None):
         qf = instance.compute_passive_force(gravity=True, coriolis_and_centrifugal=True)
-        instance.set_qf(qf)
         if pos_action is not None:
             for joint in instance.get_active_joints():
-                joint.set_drive_target(pos_action[joint.get_name()])
+                name = joint.get_name()
+                if name in pos_action:
+                    target = pos_action[name]
+                    joint.set_drive_target(float(target))
+
         if vel_action is not None:
             for joint in instance.get_active_joints():
-                joint.set_drive_velocity_target(vel_action[joint.get_name()])
-        # instance.set_drive_target(action)
+                name = joint.get_name()
+                if name in vel_action:
+                    target = vel_action[name]
+                    joint.set_drive_property(0.0, 5.0, mode="force")  # velocity control
+                    joint.set_drive_velocity_target(float(target))
+        instance.set_qf(qf)
 
     def set_dof_targets(self, obj_name, target: list[Action]):
         instance = self.object_ids[obj_name]
         if isinstance(instance, sapien_core.physx.PhysxArticulation):
             action = target[0]
             pos_target = action.get("dof_pos_target", None)
+            if pos_target is None:
+                action = action[obj_name]
+                pos_target = action.get("dof_pos_target", None)
+
             vel_target = action.get("dof_vel_target", None)
             pos_target_arr = (
                 np.array([pos_target[name] for name in self.object_joint_order[obj_name]]) if pos_target else None
@@ -476,6 +487,20 @@ class Sapien3Handler(BaseSimHandler):
         return TensorState(objects=object_states, robots=robot_states, cameras=camera_states, sensors={})
 
     def refresh_render(self):
+        robot_inst = self.object_ids[self.robot.name]
+        assert isinstance(robot_inst, sapien_core.physx.PhysxArticulation)
+        # reset joint forces
+        robot_inst.set_qf(np.zeros(robot_inst.dof))
+
+        # reset joint velocities
+        robot_inst.set_qvel(np.zeros(robot_inst.dof))
+
+        # reset root velocity (linear and angular)
+        robot_inst.set_root_linear_velocity(np.zeros(3))
+        robot_inst.set_root_angular_velocity(np.zeros(3))
+
+
+
         self.scene.update_render()
         if not self.headless:
             self.viewer.render()

@@ -21,6 +21,7 @@ def x_distance(states: TensorState, robot_name: str | None = None) -> torch.Tens
 
 @configclass
 class ReachOriginCfg(BaseTaskCfg):
+    print("Using ReachOriginCfg")
     source_benchmark = BenchmarkType.DEBUG
     task_type = TaskType.TABLETOP_MANIPULATION
     can_tabletop = True

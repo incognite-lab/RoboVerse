@@ -85,10 +85,13 @@ class MetaSimVecEnv(VectorEnv):
         robot_name = self.scenario.robots[0].name
         robot_cfg = self.scenario.robots[0]
         joint_pos = states.robots[robot_name].joint_pos
-        panda_hand_index = states.robots[robot_name].body_names.index(robot_cfg.ee_body_name)
-        ee_pos = states.robots[robot_name].body_state[:, panda_hand_index, :3]
-
-        return torch.cat([joint_pos, ee_pos], dim=1)
+        if robot_name == "franka":
+            # Add end-effector position for franka
+            panda_hand_index = states.robots[robot_name].body_names.index(robot_cfg.ee_body_name)
+            ee_pos = states.robots[robot_name].body_state[:, panda_hand_index, :3]
+            return torch.cat([joint_pos, ee_pos], dim=1)
+        else:
+            return joint_pos
 
     def _calculate_rewards(self):
         """Calculate rewards based on distance to origin."""
@@ -101,7 +104,8 @@ class MetaSimVecEnv(VectorEnv):
             return tot_reward
 
         for reward_fn, weight in zip(self.scenario.task.reward_functions, self.scenario.task.reward_weights):
-            tot_reward += weight * reward_fn(states, self.scenario.robots[0].name)
+            reward_fn_ret = reward_fn(states, self.scenario.robots[0].name)
+            tot_reward += weight * reward_fn_ret
         return tot_reward
 
     def _get_default_states(self, seed: int | None = None):

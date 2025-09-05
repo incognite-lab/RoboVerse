@@ -1,0 +1,30 @@
+<mujoco model="glass_box">
+
+  <asset>
+    <!-- Mesh soubor -->
+    <mesh name="box_mesh" file="box.stl" scale="1 1 1"/>
+    <!-- Materiál / barva (průhlednost alfa) -->
+    <material name="glass_mat" rgba="0.7 0.9 1.0 0.3"/>
+  </asset>
+
+  <worldbody>
+    <!-- Těleso reprezentující krabici -->
+    <body name="glass_box" pos="0 0 0">
+      <!-- Geometrie -->
+      <geom type="mesh"
+            mesh="box_mesh"
+            material="glass_mat"
+            contype="1"
+            conaffinity="1"
+            condim="3"/>
+    </body>
+  </worldbody>
+
+  <!-- Inertia / hmotnost -->
+  <default>
+    <geom density="1.0"/>
+    <body mass="1.0"/>
+  </default>
+
+</mujoco>
+

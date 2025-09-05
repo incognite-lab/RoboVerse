@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Literal
 
-try:
-    import isaacgym  # noqa: F401
-except ImportError:
-    pass
+# try:
+#     import isaacgym  # noqa: F401
+# except ImportError:
+#     pass
 
 import os
 

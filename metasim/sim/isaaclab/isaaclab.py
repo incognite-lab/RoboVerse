@@ -15,7 +15,7 @@ from metasim.cfg.objects import (
     PrimitiveFrameCfg,
 )
 from metasim.cfg.scenario import ScenarioCfg
-from metasim.cfg.sensors import ContactForceSensorCfg
+from metasim.cfg.sensors import ContactForceSensorCfg, GyroSensorCfg
 from metasim.queries.base import BaseQueryType
 from metasim.sim import BaseSimHandler, EnvWrapper, IdentityEnvWrapper
 from metasim.types import Action, EnvState, Extra, Obs, Reward, Success, TimeOut
@@ -452,11 +452,15 @@ class IsaaclabHandler(BaseSimHandler):
                 else:
                     force = sensor_inst.data.force_matrix_w.squeeze((1, 2))
                 sensor_states[sensor.name] = ContactForceState(force=force)
+            elif isinstance(sensor, GyroSensorCfg):
+                gyro_data = torch.zeros((self.num_envs, 3), device=self.env.device)
+                if gyro_data is None:
+                    log.warning(f"Gyro data is None for sensor {sensor.name}, setting to zero")
+                sensor_states[sensor.name] = gyro_data
             else:
                 raise ValueError(f"Unknown sensor type: {type(sensor)}")
 
         return TensorState(objects=object_states, robots=robot_states, cameras=camera_states, sensors=sensor_states)
-
     def get_pos(self, obj_name: str, env_ids: list[int] | None = None) -> torch.FloatTensor:
         if env_ids is None:
             env_ids = list(range(self.num_envs))

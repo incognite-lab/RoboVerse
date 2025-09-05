@@ -10,6 +10,7 @@ wandb/
 *.ckpt
 GSNet
 
+my_env/output/
 deploy
 debug/
 roboverse_demo/
