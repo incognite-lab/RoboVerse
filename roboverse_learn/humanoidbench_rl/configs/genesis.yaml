@@ -3,18 +3,18 @@
 # Environment settings
 sim: genesis
 robots: [g1]
-task: humanoidbench:Walk
+task: humanoidbench:Stand
 decimation: 5
-num_envs: 1
-headless: false
+num_envs: 2048
+headless: true
 add_table: true
 
 # Training settings
 load_model_path: None
 train_or_eval: train
-total_timesteps: 60_000_000
+total_timesteps: 100_000_000
 model_save_path: ./saved_models
-model_save_freq: 500_000
+model_save_freq: 1_000_000
 
 # Eval settings
 eval_model_path: ./saved_models/1757079169/model_1000192
