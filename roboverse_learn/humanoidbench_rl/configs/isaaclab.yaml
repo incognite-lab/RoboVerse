@@ -3,24 +3,25 @@
 # Environment settings
 sim: isaaclab
 robots: [g1]
-task: humanoidbench:Walk
+task: humanoidbench:Stand
 decimation: 5
-num_envs: 1
+num_envs: 8
 headless: false
 add_table: true
 
 # Training settings
-train_or_eval: train
-total_timesteps: 1_000_000
+load_model_path: None
+train_or_eval: eval
+total_timesteps: 20_000_000
 model_save_path: ./saved_models
-model_save_freq: 500_000
+model_save_freq: 1_000_000
 
 # Eval settings
-eval_model_path: ./saved_models/1757075287/model_1000448
+eval_model_path: ./saved_models/1757089076/model_10004480
 
 
 # PPO parameters
-learning_rate: 0.0003
+learning_rate: 0.003
 n_steps: 256
 num_batch: 64
 n_epochs: 4

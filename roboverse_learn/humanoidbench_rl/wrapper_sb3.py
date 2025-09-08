@@ -6,6 +6,7 @@ import torch
 from gymnasium import spaces
 from loguru import logger as log
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv
+from metasim.cfg.sensors.gyro import GyroSensor
 
 from metasim.cfg.scenario import ScenarioCfg
 from metasim.constants import SimType
@@ -19,8 +20,11 @@ class Sb3EnvWrapper(VecEnv):
 
     def __init__(self, scenario: ScenarioCfg):
         # Create the base environment
+
         self.sim_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if SimType(scenario.sim) == SimType.MUJOCO:
+            self.sim_device = torch.device("cpu")
+        if SimType(scenario.sim) == SimType.SAPIEN3:
             self.sim_device = torch.device("cpu")
         self.num_envs = scenario.num_envs
         self.robot = scenario.robots[0]
@@ -28,7 +32,7 @@ class Sb3EnvWrapper(VecEnv):
 
         env_class = get_sim_env_class(SimType(scenario.sim))
         self.env = env_class(scenario)
-
+        self.sensors = [GyroSensor(cfg, self.env.handler) for cfg in scenario.sensors]
         self.init_states, _, _ = get_traj(scenario.task, scenario.robots[0], self.env.handler)
         if len(self.init_states) < self.num_envs:
             self.init_states = (
@@ -73,6 +77,7 @@ class Sb3EnvWrapper(VecEnv):
             log.warning(f"Could not get reward_success_bar: {e}. Using default value 1000.0")
             self.success_bar = 1000.0
 
+
         # Episode tracking variables for EpisodeLogCallback
         self.episode_rewards = np.zeros(self.num_envs)
         self.episode_lengths = np.zeros(self.num_envs, dtype=np.int32)
@@ -93,6 +98,8 @@ class Sb3EnvWrapper(VecEnv):
 
         humanoid_observation = self.get_humanoid_observation(self.env.handler.get_states())
         observations = humanoid_observation.cpu().numpy()
+        observations = self._combine_obs(observations)
+
 
         # Reset episode tracking variables
         self.episode_rewards = np.zeros(self.num_envs)
@@ -114,7 +121,12 @@ class Sb3EnvWrapper(VecEnv):
             actions = actions.to(device=self.sim_device, dtype=torch.float32)
         # convert to tensor
         self._async_actions = actions
+    def _combine_obs(self, obs: np.ndarray) -> np.ndarray:
+        """Spojí joint states a gyro data pro všechna envs."""
+        gyrodata = self.sensors[0].get_data()  # shape (num_envs, 3)
 
+        obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
+        return np.concatenate([obs, gyrodata], axis=1).astype(np.float32)
     def step_wait(self):
         """
         Perform a single time step in the environment and wait for the result.
@@ -158,6 +170,7 @@ class Sb3EnvWrapper(VecEnv):
 
         # Convert tensors to NumPy arrays
         observations = humanoid_observation.cpu().numpy()
+        observations = self._combine_obs(observations)
         rewards = humanoid_reward.cpu().numpy()
         terminateds = terminated_tensor.cpu().numpy()
         truncateds = truncated_tensor.cpu().numpy()
@@ -202,7 +215,7 @@ class Sb3EnvWrapper(VecEnv):
 
             reset_observations = self.get_humanoid_observation(self.env.handler.get_states())
             reset_observations_np = reset_observations.cpu().numpy()
-
+            reset_observations_np = self._combine_obs(reset_observations_np)
             observations[done_indices] = reset_observations_np[done_indices]
 
         # Return in the format required by SB3 VecEnv API
@@ -216,7 +229,8 @@ class Sb3EnvWrapper(VecEnv):
         # NOTE: For IsaacLab, metasim_reward is None, so calculate reward here
         final_reward = torch.zeros(self.num_envs, device=self.sim_device)
         for reward_func, reward_weight in zip(self.task.reward_functions, self.task.reward_weights):
-            final_reward += reward_func(states, self.robot.name) * reward_weight
+            reward_func_val = reward_func(states, self.robot.name)
+            final_reward += reward_func_val * reward_weight
         return final_reward
 
     def render(self):

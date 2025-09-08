@@ -2,8 +2,8 @@
 # -------------------------------------------------------------------------------
 # Environment
 # -------------------------------------------------------------------------------
-sim: isaacgym
-robots: [h1]
+sim: mujoco
+robots: [g1]
 task: humanoidbench:Stand
 decimation: 10
 train_or_eval: train
@@ -19,8 +19,8 @@ device_rank: 0
 # -------------------------------------------------------------------------------
 # Rollout & Timesteps
 # -------------------------------------------------------------------------------
-num_envs: 128
-num_eval_envs: 128
+num_envs: 1
+num_eval_envs: 1
 total_timesteps: 100000
 learning_starts: 10
 num_steps: 4
@@ -64,7 +64,7 @@ noise_clip: 0.5
 # Algorithm Flags
 # -------------------------------------------------------------------------------
 use_cdq: true
-compile: true
+compile: false
 obs_normalization: true
 max_grad_norm: 0.0
 amp: true
@@ -83,8 +83,8 @@ action_bounds: 1.0
 # -------------------------------------------------------------------------------
 # Logging & Checkpointing
 # -------------------------------------------------------------------------------
-project: fasttd3_isaacgym
-exp_name: fasttd3_isaacgym
+project: fasttd3_isaaclab
+exp_name: fasttd3_isaaclab
 use_wandb: true
 checkpoint_path: null
 eval_interval: 1000

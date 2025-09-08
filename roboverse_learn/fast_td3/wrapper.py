@@ -137,7 +137,7 @@ class FastTD3EnvWrapper:
     def get_humanoid_reward(self, states) -> torch.Tensor:
         total_reward = torch.zeros(self.num_envs, device=self.device)
         for reward_fn, weight in zip(self.task.reward_functions, self.task.reward_weights):
-            total_reward += reward_fn(self.robot.name)(states).to(self.device) * weight
+            total_reward += reward_fn(states,self.robot.name).to(self.device) * weight
         return total_reward
 
     def _unnormalise_action(self, action: torch.Tensor) -> torch.Tensor:

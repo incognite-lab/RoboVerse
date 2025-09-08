@@ -81,6 +81,7 @@ class StableReward(HumanoidBaseReward):
             bounds=(self._stand_neck_height, float("inf")),
             margin=self._stand_neck_height / 4,
         )
+        print("standing", standing)
         upright = humanoid_reward_util.tolerance_tensor(
             torso_upright_tensor(states, self.robot_name),
             bounds=(0.9, float("inf")),
@@ -118,7 +119,8 @@ class BaseLocomotionReward(HumanoidBaseReward):
             robot_name = self.robot_name  # fallback to default
 
         stable_rewards = StableReward(robot_name)(states)
-
+        if self._move_speed == None:
+            return stable_rewards
         if self._move_speed == 0:
             horizontal_velocity = robot_velocity_tensor(states, robot_name)[:, [0, 1]]
             dont_move = humanoid_reward_util.tolerance_tensor(horizontal_velocity, margin=2).mean(dim=-1)
@@ -133,12 +135,9 @@ class BaseLocomotionReward(HumanoidBaseReward):
                 sigmoid="linear",
             )
             move = (5 * move + 1) / 6
-        if self._move_speed != None:
             moving_reward = move
-        else:
-            moving_reward = torch.ones_like(stable_rewards)
-
-        return stable_rewards * moving_reward
+        print("full reward", stable_rewards )
+        return stable_rewards #* moving_reward
 
 
 @configclass

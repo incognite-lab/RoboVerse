@@ -113,10 +113,10 @@ def main() -> None:
     scenario = ScenarioCfg(
         task=cfg("task"),
         robots=cfg("robots"),
-        try_add_table=cfg("add_table", False),
+        try_add_table=cfg("add_table", True),
         sim=cfg("sim"),
         num_envs=cfg("num_envs", 1),
-        headless=True if cfg("train_or_eval") == "train" else False,
+        headless=False if cfg("train_or_eval") == "train" else False,
         cameras=[],
     )
 
@@ -131,7 +131,7 @@ def main() -> None:
         try_add_table=cfg("add_table", False),
         sim=cfg("sim"),
         num_envs=cfg("num_envs", 1),
-        headless=True,
+        headless=False,
         cameras=[
             PinholeCameraCfg(
                 width=cfg("video_width", 1024),
@@ -416,6 +416,8 @@ def main() -> None:
             measure_burnin = global_step
 
         with torch.no_grad(), autocast(device_type=amp_device_type, dtype=amp_dtype, enabled=amp_enabled):
+            #print("obs shape", tuple(obs.shape))
+            #print("mean shape", tuple(obs_normalizer.mean.shape))
             norm_obs = normalize_obs(obs)
             actions = policy(obs=norm_obs, dones=dones)
 

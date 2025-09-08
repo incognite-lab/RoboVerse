@@ -1,10 +1,11 @@
 from __future__ import annotations
-
+import torch
 import math
 import os
 import sys
 import time
 from typing import Callable
+from metasim.cfg.sensors import PinholeCameraCfg, GyroSensorCfg
 
 import numpy as np
 import rootutils
@@ -90,7 +91,7 @@ def main():
         log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         exit(1)
     config_name = sys.argv[1]
-    #config_name = "genesis"
+    #config_name = "isaaclab"
     config = load_config_from_yaml(config_name)
     log.info(f"Load config: {config_name}")
 
@@ -124,8 +125,15 @@ def main():
         num_envs=config.get("num_envs", 1),
         headless=config.get("headless", True),
         cameras=[],
-    )
 
+    )
+    scenario.sensors = [GyroSensorCfg(
+        name="gyro0",
+        pos=(0.0, 0.0, 0.0),
+        mount_to='g1',
+        mount_link="torso_link"
+
+        )]
     # For different simulators, the decimation factor is different, so we need to set it here
     scenario.task.decimation = config.get("decimation", 1)
 
@@ -157,21 +165,39 @@ def main():
         log.info(f"Final learning rate: {config.get('learning_rate', 0.0003) * config.get('final_lr_fraction', 0.1)}")
     else:
         log.info(f"Using constant learning rate: {learning_rate}")
-
+    policy_kwargs = dict(
+    net_arch=[512, 256, 128],
+    activation_fn=torch.nn.ReLU,
+    ortho_init=False,
+    )
     # Initialize PPO algorithm
     from stable_baselines3 import PPO
+    if config.get("load_model_path") == 'None':
+        model = PPO(
+            policy="MlpPolicy",
+            env=env,
+            learning_rate=learning_rate,
+            n_steps=config.get("n_steps", 2048),
+            batch_size=config.get("batch_size", 64),
+            n_epochs=config.get("n_epochs", 10),
+            verbose=1,
+            tensorboard_log=f"./ppo_logs/{run.id}",
+            device="cuda",
+            policy_kwargs=policy_kwargs,
 
-    model = PPO(
-        policy="MlpPolicy",
-        env=env,
-        learning_rate=learning_rate,
-        n_steps=config.get("n_steps", 2048),
-        batch_size=config.get("batch_size", 64),
-        n_epochs=config.get("n_epochs", 10),
-        verbose=1,
-        tensorboard_log=f"./ppo_logs/{run.id}",
-        device="cpu",
-    )
+        )
+    else:
+        model = PPO.load(
+            config.get("loading_model_path"),
+            env=env,
+            learning_rate=learning_rate,
+            n_steps=config.get("n_steps", 2048),
+            batch_size=config.get("batch_size", 64),
+            n_epochs=config.get("n_epochs", 10),
+            verbose=1,
+            tensorboard_log=f"./ppo_logs/{run.id}",
+            device="cpu",
+        )
 
     from stable_baselines3.common.callbacks import BaseCallback
 

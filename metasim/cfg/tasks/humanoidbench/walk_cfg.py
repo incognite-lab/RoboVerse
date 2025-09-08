@@ -23,7 +23,7 @@ class WalkCfg(HumanoidTaskCfg):
     traj_filepath = "my_env/initial_state_g1_v2.json"
 
     checker = _WalkChecker()
-    reward_functions = [WalkReward]
+    reward_functions = [WalkReward()]
     reward_weights = [1.0]
 
     def extra_spec(self):
