@@ -39,7 +39,7 @@ echo "Running training for environment: $SIM_NAME with algorithm: $ALGO_NAME"
 
 
 
-python train.py "$SIM_NAME"
+python train_sb3.py "$SIM_NAME"
 
 
 # After the job is done we copy our output back to $SLURM_SUBMIT_DIR
