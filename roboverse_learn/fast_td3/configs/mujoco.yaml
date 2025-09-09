@@ -2,7 +2,7 @@
 # -------------------------------------------------------------------------------
 # Environment
 # -------------------------------------------------------------------------------
-sim: isaaclab
+sim: mujoco
 robots: [g1]
 task: humanoidbench:Stand
 decimation: 10
@@ -21,8 +21,8 @@ device_rank: 0
 # -------------------------------------------------------------------------------
 num_envs: 1
 num_eval_envs: 1
-headless: true
-total_timesteps: 10000000
+headless: false
+total_timesteps: 70000
 learning_starts: 10
 num_steps: 4
 

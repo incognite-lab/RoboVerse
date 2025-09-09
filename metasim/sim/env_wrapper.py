@@ -95,7 +95,11 @@ def GymEnvWrapper(cls: type[THandler]) -> type[EnvWrapper[THandler]]:
             if states is not None:
                 self.handler.set_states(states, env_ids=env_ids)
             self.handler.checker.reset(self.handler, env_ids=env_ids)
+            #print(self.handler.physics.contexts)#zázračný print bez kterého to nefunguje
+            if hasattr(self.handler, 'physics'):
+                contexts = self.handler.physics.contexts
             self.handler.refresh_render()
+
             states = self.handler.get_states()
             return states, None
 

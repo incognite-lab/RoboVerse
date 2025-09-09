@@ -36,6 +36,7 @@ from loguru import logger as log
 from tensordict import TensorDict
 from torch.amp import GradScaler, autocast
 from wrapper import FastTD3EnvWrapper
+import time
 
 from metasim.cfg.scenario import ScenarioCfg
 from metasim.cfg.sensors import PinholeCameraCfg
@@ -66,7 +67,7 @@ def main() -> None:
     #     log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
     #     exit(1)
     # config_name = sys.argv[1]
-    config_name = "isaaclab"
+    config_name = "mujoco"
     config = load_config_from_yaml(config_name)
     cfg = config.get
     GAMMA = float(cfg("gamma"))
@@ -116,7 +117,7 @@ def main() -> None:
         try_add_table=cfg("add_table", True),
         sim=cfg("sim"),
         num_envs=cfg("num_envs", 1),
-        headless=False if cfg("train_or_eval") == "train" else False,
+        headless=True if cfg("train_or_eval") == "train" else False,
         cameras=[],
     )
 
@@ -128,7 +129,7 @@ def main() -> None:
     scenario_render = ScenarioCfg(
         task=cfg("task"),
         robots=cfg("robots"),
-        try_add_table=cfg("add_table", False),
+        try_add_table=cfg("add_table", True),
         sim=cfg("sim"),
         num_envs=cfg("num_envs", 1),
         headless=False,
@@ -523,6 +524,7 @@ def main() -> None:
         pbar.update(1)
         # Close environment and wandb
     envs.close()
+
     render_with_rollout()
 
 

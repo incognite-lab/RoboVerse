@@ -81,7 +81,7 @@ class StableReward(HumanoidBaseReward):
             bounds=(self._stand_neck_height, float("inf")),
             margin=self._stand_neck_height / 4,
         )
-        print("standing", standing)
+        #print("standing", standing)
         upright = humanoid_reward_util.tolerance_tensor(
             torso_upright_tensor(states, self.robot_name),
             bounds=(0.9, float("inf")),
@@ -136,7 +136,7 @@ class BaseLocomotionReward(HumanoidBaseReward):
             )
             move = (5 * move + 1) / 6
             moving_reward = move
-        print("full reward", stable_rewards )
+        #print("full reward", stable_rewards )
         return stable_rewards #* moving_reward
 
 

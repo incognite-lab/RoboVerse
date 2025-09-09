@@ -18,14 +18,13 @@
 # ${SLURM_SUBMIT_DIR} points to the path where this script was
 # submitted from (usually in your network home dir)
 #cp -r ${SLURM_SUBMIT_DIR}/myGym/myGym/ ${SCRATCH_DIRECTORY}
+source /scratch/project/open-32-27/miniconda3/etc/profile.d/conda.sh
+conda activate metasim
 
 
 
 # Update job name dynamically using scontrol (works only after submission)
 scontrol update JobId=$SLURM_JOB_ID JobName=mujoco_ppo
-
-
-
 
 python train_sb3.py mujoco
 
