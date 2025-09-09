@@ -26,6 +26,7 @@ source /scratch/project/open-32-27/miniconda3/etc/profile.d/conda.sh
 conda activate /home/zemlifi1/.conda/envs/metasim
 
 # Headless MuJoCo
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$HOME/.mujoco/mujoco210/bin
 export MUJOCO_GL=egl
 
 # Update job name

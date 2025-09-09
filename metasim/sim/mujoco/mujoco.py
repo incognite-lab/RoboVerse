@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import mujoco
-import mujoco.viewer
+#import mujoco.viewer
 import os
 os.environ["MUJOCO_GL"] = "egl"
 
