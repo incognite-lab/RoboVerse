@@ -7,7 +7,7 @@ task: humanoidbench:Stand
 decimation: 10
 num_envs: 1  # MuJoCo only supports single environment
 add_table: true
-headless: false
+headless: true
 
 # Training settings
 load_model_path: None
