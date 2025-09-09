@@ -14,30 +14,20 @@
 #cd ${SCRATCH_DIRECTORY}
 
 
-# You can copy everything you need to the scratch directory
-# ${SLURM_SUBMIT_DIR} points to the path where this script was
-# submitted from (usually in your network home dir)
-#cp -r ${SLURM_SUBMIT_DIR}/myGym/myGym/ ${SCRATCH_DIRECTORY}
+# Načtení modulů pro GPU
+module purge
+module load foss/2023a
+module load CUDA/11.7.0
+
+# Aktivace Conda env (plná cesta)
 source /scratch/project/open-32-27/miniconda3/etc/profile.d/conda.sh
-conda activate metasim
+conda activate /home/zemlifi1/.conda/envs/metasim
 
+# Headless MuJoCo
+export MUJOCO_GL=egl
 
-
-# Update job name dynamically using scontrol (works only after submission)
+# Update job name
 scontrol update JobId=$SLURM_JOB_ID JobName=mujoco_ppo
 
+# Spuštění
 python train_sb3.py mujoco
-
-
-# After the job is done we copy our output back to $SLURM_SUBMIT_DIR
-#cp -r ${SCRATCH_DIRECTORY} ${SLURM_SUBMIT_DIR}/output
-
-# In addition to the copied files, you will also find a file called
-# slurm-1234.out in the submit directory. This file will contain all output that
-# was produced during runtime, i.e. stdout and stderr.
-
-# After everything is saved to the home directory, delete the work directory to
-# save space on /lscratch
-# old files in /lscratch will be deleted automatically after some time
-#cd ${SLURM_SUBMIT_DIR}
-#srm -rf ${SCRATCH_DIRECTORY}
