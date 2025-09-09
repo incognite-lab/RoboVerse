@@ -77,8 +77,10 @@ class MujocoHandler(BaseSimHandler):
         self._init_torque_control()
 
         if not self.headless:
+            print("Viewer launching...")
             self.viewer = mujoco.viewer.launch_passive(self.physics.model.ptr, self.physics.data.ptr)
             self.viewer.sync()
+
 
         if self.optional_queries is None:
             self.optional_queries = {}

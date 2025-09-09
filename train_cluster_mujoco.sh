@@ -18,6 +18,8 @@
 module purge
 module load foss/2023a
 module load CUDA/11.7.0
+module load cudatoolkit
+module load mesa
 
 # Aktivace Conda env (plná cesta)
 source /scratch/project/open-32-27/miniconda3/etc/profile.d/conda.sh
