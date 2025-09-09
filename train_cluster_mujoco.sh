@@ -30,4 +30,4 @@ export MUJOCO_GL=egl
 scontrol update JobId=$SLURM_JOB_ID JobName=mujoco_ppo
 
 # Spuštění
-python train_sb3.py mujoco
+python roboverse_learn/humanoidbench_rl/train_sb3.py mujoco
