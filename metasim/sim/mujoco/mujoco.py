@@ -4,6 +4,9 @@ from typing import TYPE_CHECKING
 
 import mujoco
 import mujoco.viewer
+import os
+os.environ["MUJOCO_GL"] = "egl"
+
 import numpy as np
 import torch
 from dm_control import mjcf
@@ -417,12 +420,12 @@ class MujocoHandler(BaseSimHandler):
             )
             robot_states[robot.name] = state
         camera_states = {}
-        print("Cameras:", [self.physics.model.camera(i).name for i in range(self.physics.model.ncam)])
+        #print("Cameras:", [self.physics.model.camera(i).name for i in range(self.physics.model.ncam)])
 
         for camera in self.cameras:
             camera_id = f"{camera.name}_custom"  # XXX: hard code camera id for now
             camera_states[camera.name] = {}
-            print("context:", self.physics.contexts)
+            #print("context:", self.physics.contexts)
             if "rgb" in camera.data_types:
                 rgb = self.physics.render(width=camera.width, height=camera.height, camera_id=camera_id, depth=False)
                 rgb = torch.from_numpy(rgb.copy()).unsqueeze(0)

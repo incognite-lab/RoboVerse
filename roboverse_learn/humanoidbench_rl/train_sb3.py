@@ -127,6 +127,7 @@ def main():
         cameras=[],
 
     )
+    print("debug_point1")
     scenario.sensors = [GyroSensorCfg(
         name="gyro0",
         pos=(0.0, 0.0, 0.0),
@@ -136,7 +137,7 @@ def main():
         )]
     # For different simulators, the decimation factor is different, so we need to set it here
     scenario.task.decimation = config.get("decimation", 1)
-
+    print("debug_point2")
     from roboverse_learn.humanoidbench_rl.wrapper_sb3 import Sb3EnvWrapper
 
     if config.get("sim") == "mujoco":
@@ -170,6 +171,7 @@ def main():
     activation_fn=torch.nn.ReLU,
     ortho_init=False,
     )
+    print("debug_point3")
     # Initialize PPO algorithm
     from stable_baselines3 import PPO
     if config.get("load_model_path") == 'None':
