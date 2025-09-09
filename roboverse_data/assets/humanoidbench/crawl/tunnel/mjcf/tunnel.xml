@@ -1,0 +1,14 @@
+<mujoco model="tunnel">
+    <default>
+        <default class="visual">
+            <geom contype="0" conaffinity="0" group="2" material="black"/>
+        </default>
+        <default class="collision">
+            <geom group="3" mass="1" density="1"/>
+        </default>
+    </default>
+    <asset>
+        <material name="black" rgba="0.1 0.1 0.1 1"/>
+    </asset>
+    <include file="generate_tunnel.xml"/>
+</mujoco>
