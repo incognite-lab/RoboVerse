@@ -73,6 +73,7 @@ class FastTD3EnvWrapper:
         observation = self.get_humanoid_observation(states)
         observation = observation.to(self.device)
 
+
         # remember this first frame so we can later place it in info["observations"]["raw"]["obs"]
         self._raw_observation_cache.copy_(observation)
         return observation
@@ -103,6 +104,7 @@ class FastTD3EnvWrapper:
 
         if (done_indices := (done_flag | time_out_flag).nonzero(as_tuple=False).squeeze(-1)).numel():
             self.env.reset(states=self._initial_states, env_ids=done_indices.tolist())
+            print("________________RESET________________")
             reset_states = self.env.handler.get_states()
             reset_obs_full = self.get_humanoid_observation(reset_states).to(self.device)
             obs_now[done_indices] = reset_obs_full[done_indices]

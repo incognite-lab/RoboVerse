@@ -4,7 +4,7 @@
 
             "init_state": {
                 "g1": {
-                    "pos": [0.0, 0.0, 0.8],
+                    "pos": [0.0, 0.0, 0.0],
                     "rot": [0.0, 0.0, 0.0, 0.5],
                     "dof_pos": {
                         "left_hip_pitch_joint": 0.0,

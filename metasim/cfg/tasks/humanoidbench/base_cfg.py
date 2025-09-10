@@ -69,15 +69,20 @@ class StableReward(HumanoidBaseReward):
     htarget_high = np.array([1000.0, 1.0, 2.0])
     success_bar = None
 
+    _stand_shoulder_height = 1.2  # nastav podle svého robota
+    _fall_height = 0.5             # pokud hlava spadne pod tuto výšku, epizoda končí
+    _torso_margin = 0.2            # tolerance naklonění trupu
+
     def __init__(self, robot_name="h1"):
         """Initialize the locomotion reward."""
         super().__init__(robot_name)
-
+        self._timestep = 0  # lokální counter
     def __call__(self, states: list[EnvState]) -> torch.FloatTensor:
         """Compute the locomotion reward."""
         ret_rewards = []
+        head_height = neck_height_tensor(states, self.robot_name)
         standing = humanoid_reward_util.tolerance_tensor(
-            neck_height_tensor(states, self.robot_name),  # Adjust for neck height
+            head_height,  # Adjust for neck height
             bounds=(self._stand_neck_height, float("inf")),
             margin=self._stand_neck_height / 4,
         )
@@ -96,9 +101,16 @@ class StableReward(HumanoidBaseReward):
             value_at_margin=0,
             sigmoid="quadratic",
         ).mean(dim=-1)
+
+
+        fallen = head_height < self._fall_height
+        fall_penalty = torch.where(fallen, torch.tensor(-1.0, device=head_height.device), torch.tensor(0.0, device=head_height.device))
+
         small_control = (4 + small_control) / 5
-        ret_rewards = small_control * stand_reward
-        return ret_rewards
+        stable_reward = stand_reward
+        full_reward = stable_reward * small_control + fall_penalty
+        print("full reward", full_reward )
+        return full_reward
 
 
 class BaseLocomotionReward(HumanoidBaseReward):

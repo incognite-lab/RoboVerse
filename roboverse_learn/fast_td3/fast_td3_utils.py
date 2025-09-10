@@ -395,7 +395,7 @@ def save_params(
         "critic_obs_normalizer_state": (
             cpu_state(critic_obs_normalizer.state_dict()) if hasattr(critic_obs_normalizer, "state_dict") else None
         ),
-        "args": vars(args),  # Save all arguments
+        "args": args if isinstance(args, dict) else vars(args),  # Save all arguments
         "global_step": global_step,
     }
     torch.save(save_dict, save_path, _use_new_zipfile_serialization=True)

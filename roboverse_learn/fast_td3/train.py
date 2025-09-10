@@ -31,12 +31,13 @@ import tqdm
 import wandb
 import yaml
 from fast_td3 import Actor, Critic
-from fast_td3_utils import EmpiricalNormalization, SimpleReplayBuffer
+from fast_td3_utils import EmpiricalNormalization, SimpleReplayBuffer, save_params
 from loguru import logger as log
 from tensordict import TensorDict
 from torch.amp import GradScaler, autocast
 from wrapper import FastTD3EnvWrapper
 import time
+import re
 
 from metasim.cfg.scenario import ScenarioCfg
 from metasim.cfg.sensors import PinholeCameraCfg
@@ -258,7 +259,7 @@ def main() -> None:
         Collect a short rollout and return a list of RGB frames (H, W, 3, uint8).
         Works with FastTD3EnvWrapper: render_env.render() must return one frame.
         """
-        video_path: str = cfg("video_path", "output/rollout.mp4")
+        video_path: str = cfg("video_path", "output/rollout_1.mp4")
         os.makedirs(os.path.dirname(video_path), exist_ok=True)
         obs_normalizer.eval()
         env = FastTD3EnvWrapper(scenario_render, device=device)
@@ -393,18 +394,33 @@ def main() -> None:
     else:
         obs = envs.reset()
 
+    # Map all tensors in the checkpoint to CPU first
     if cfg("checkpoint_path"):
-        # Load checkpoint if specified
-        torch_checkpoint = torch.load(f"{cfg('checkpoint_path')}", map_location=device, weights_only=False)
+        torch_checkpoint = torch.load(
+            f"{cfg('checkpoint_path')}",
+            map_location="cpu",  # <-- tady přímo CPU
+            weights_only=False,
+        )
+
+        # Load state dicts
         actor.load_state_dict(torch_checkpoint["actor_state_dict"])
-        obs_normalizer.load_state_dict(torch_checkpoint["obs_normalizer_state"])
-        critic_obs_normalizer.load_state_dict(torch_checkpoint["critic_obs_normalizer_state"])
+        if torch_checkpoint["obs_normalizer_state"] is not None:
+            obs_normalizer.load_state_dict(torch_checkpoint["obs_normalizer_state"])
+        if torch_checkpoint["critic_obs_normalizer_state"] is not None:
+            critic_obs_normalizer.load_state_dict(torch_checkpoint["critic_obs_normalizer_state"])
         qnet.load_state_dict(torch_checkpoint["qnet_state_dict"])
         qnet_target.load_state_dict(torch_checkpoint["qnet_target_state_dict"])
-        global_step = torch_checkpoint["global_step"]
+        global_step = torch_checkpoint.get("global_step", 0)
+
+        # Pokud máš GPU, přesuň modely na něj
+        if torch.cuda.is_available():
+            actor.to("cuda")
+            qnet.to("cuda")
+            qnet_target.to("cuda")
+            obs_normalizer.to("cuda")
+            critic_obs_normalizer.to("cuda")
     else:
         global_step = 0
-
     dones = None
     pbar = tqdm.tqdm(total=cfg("total_timesteps"), initial=global_step)
     start_time = None
@@ -489,14 +505,14 @@ def main() -> None:
                 pbar.set_description(f"{speed: 4.4f} sps, " + desc)
                 with torch.no_grad():
                     logs = {
-                        "actor_loss": logs_dict["actor_loss"].mean(),
-                        "qf_loss": logs_dict["qf_loss"].mean(),
-                        "qf_max": logs_dict["qf_max"].mean(),
-                        "qf_min": logs_dict["qf_min"].mean(),
-                        "actor_grad_norm": logs_dict["actor_grad_norm"].mean(),
-                        "critic_grad_norm": logs_dict["critic_grad_norm"].mean(),
-                        "buffer_rewards": logs_dict["buffer_rewards"].mean(),
-                        "env_rewards": rewards.mean(),
+                        "actor_loss": logs_dict["actor_loss"].mean() if "actor_loss" in logs_dict.keys() else 0.0,
+                        "qf_loss": logs_dict["qf_loss"].mean() if "qf_loss" in logs_dict.keys() else 0.0,
+                        "qf_max": logs_dict["qf_max"].mean() if "qf_max" in logs_dict.keys() else 0.0,
+                        "qf_min": logs_dict["qf_min"].mean() if "qf_min" in logs_dict.keys() else 0.0,
+                        "actor_grad_norm": logs_dict["actor_grad_norm"].mean() if "actor_grad_norm" in logs_dict.keys() else 0.0,
+                        "critic_grad_norm": logs_dict["critic_grad_norm"].mean() if "critic_grad_norm" in logs_dict.keys() else 0.0,
+                        "buffer_rewards": logs_dict["buffer_rewards"].mean() if "buffer_rewards" in logs_dict.keys() else 0.0,
+                        "env_rewards": rewards.mean() if "env_rewards" in logs_dict.keys() else 0.0,
                     }
 
                     if cfg("eval_interval") > 0 and global_step % cfg("eval_interval") == 0:
@@ -518,7 +534,19 @@ def main() -> None:
                     )
 
             if cfg("save_interval") > 0 and global_step > 0 and global_step % cfg("save_interval") == 0:
-                print(f"Saving model at global step {global_step}")
+
+
+                save_path = os.path.join(cfg("save_dir"), f"checkpoint_{global_step}.pt")
+                save_params(
+                    global_step=global_step,
+                    actor=actor,
+                    qnet=qnet,
+                    qnet_target=qnet_target,
+                    obs_normalizer=obs_normalizer,
+                    critic_obs_normalizer=critic_obs_normalizer,
+                    args={"cfg": cfg},
+                    save_path=save_path,
+    )
 
         global_step += 1
         pbar.update(1)
