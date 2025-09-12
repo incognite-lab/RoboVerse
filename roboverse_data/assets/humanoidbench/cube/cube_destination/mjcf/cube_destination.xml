@@ -1,0 +1,19 @@
+<mujoco model="cube_destination">
+    <asset>
+        <material name="black" rgba="0.1 0.1 0.1 1"/>
+        <texture name="texture:object" file="block.png" gridsize="3 4" gridlayout=".U..LFRB.D.."></texture>
+        <material name="material:target" texture="texture:object" specular="1" shininess="0.3" reflectance="0" rgba="1 1 1 0.3"></material>
+    </asset>
+
+    <default>
+        <default class="visual">
+            <geom contype="0" conaffinity="0" group="2" material="black"/>
+        </default>
+    </default>
+
+    <worldbody>
+        <body name="cube_destination" pos="0.5 -0 1.5">
+            <geom type="box" pos="0 0 0" size="0.025 0.025 0.025" material="material:target" class="visual" density="500"/>
+        </body>
+    </worldbody>
+</mujoco>

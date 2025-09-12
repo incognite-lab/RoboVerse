@@ -14,6 +14,7 @@ from loguru import logger as log
 
 from metasim.cfg.objects import ArticulationObjCfg, PrimitiveCubeCfg, PrimitiveCylinderCfg, PrimitiveSphereCfg
 from metasim.cfg.robots import BaseRobotCfg
+from metasim.cfg.sensors import PinholeCameraCfg, GyroSensorCfg
 
 if TYPE_CHECKING:
     from metasim.cfg.scenario import ScenarioCfg
@@ -436,9 +437,16 @@ class MujocoHandler(BaseSimHandler):
                 depth = torch.from_numpy(depth.copy()).unsqueeze(0)
             state = CameraState(rgb=rgb, depth=depth)
             camera_states[camera.name] = state
+        sensors = {}
+        for sensor in self.scenario.sensors:
+            if isinstance(sensor, GyroSensorCfg):
+                gyro_data = sensor.get_data(robot_states,self.num_envs)
+                gyro_tensor = torch.tensor(gyro_data, dtype=torch.float32).unsqueeze(0)
+                sensors[sensor.name] = gyro_tensor
+            else:
+                log.warning(f"Unknown sensor type: {sensor.cfg_type}, skipping...")
         extras = self.get_extra()
-
-        return TensorState(objects=object_states, robots=robot_states, cameras=camera_states, sensors={}, extras=extras)
+        return TensorState(objects=object_states, robots=robot_states, cameras=camera_states, sensors = sensors, extras=extras)
 
     def _set_root_state(self, obj_name, obj_state, zero_vel=False):
         """Set root position and rotation."""

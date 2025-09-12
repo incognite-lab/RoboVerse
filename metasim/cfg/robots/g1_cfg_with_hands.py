@@ -9,13 +9,13 @@ from .base_robot_cfg import BaseActuatorCfg, BaseRobotCfg
 from metasim.cfg.sensors.gyro import GyroSensorCfg
 
 @configclass
-class G1Cfg(BaseRobotCfg):
+class G1WithHandsCfg(BaseRobotCfg):
     name: str = "g1"
-    num_joints: int = 29,
+    num_joints: int = 41,
     usd_path: str = "roboverse_data/robots/g1/usd/g1_29dof_rev_1_0.usd"
-    xml_path: str = "roboverse_data/robots/g1/mjcf/g1_29dof.xml"
-    mjcf_path: str = "roboverse_data/robots/g1/mjcf/g1_29dof.xml"
-    urdf_path: str = "roboverse_data/robots/g1/urdf/g1_29dof.urdf"
+    xml_path: str = "roboverse_data/robots/g1/mjcf/g1_mygym.xml"
+    mjcf_path: str = "roboverse_data/robots/g1/mjcf/g1_mygym.xml"
+    urdf_path: str = "roboverse_data/robots/g1/urdf/g1_mygym.urdf"
     enabled_gravity: bool = True
     fix_base_link: bool = False
     enabled_self_collisions: bool = False
@@ -54,6 +54,24 @@ class G1Cfg(BaseRobotCfg):
         "right_wrist_roll_joint": BaseActuatorCfg(stiffness=40, damping=10),
         "right_wrist_pitch_joint": BaseActuatorCfg(stiffness=40, damping=10),
         "right_wrist_yaw_joint": BaseActuatorCfg(stiffness=40, damping=10),
+        # Left hand fingers
+        "left_hand_thumb_0_joint": BaseActuatorCfg(stiffness=5, damping=0.5),
+        "left_hand_thumb_1_joint": BaseActuatorCfg(stiffness=5, damping=0.5),
+        "left_hand_thumb_2_joint": BaseActuatorCfg(stiffness=5, damping=0.5),
+        "left_hand_middle_0_joint": BaseActuatorCfg(stiffness=5, damping=0.5),
+        "left_hand_middle_1_joint": BaseActuatorCfg(stiffness=5, damping=0.5),
+        "left_hand_index_0_joint": BaseActuatorCfg(stiffness=5, damping=0.5),
+        "left_hand_index_1_joint": BaseActuatorCfg(stiffness=5, damping=0.5),
+        # Right hand fingers
+        "right_hand_thumb_0_joint": BaseActuatorCfg(stiffness=5, damping=0.5),
+        "right_hand_thumb_1_joint": BaseActuatorCfg(stiffness=5, damping=0.5),
+        "right_hand_thumb_2_joint": BaseActuatorCfg(stiffness=5, damping=0.5),
+        "right_hand_middle_0_joint": BaseActuatorCfg(stiffness=5, damping=0.5),
+        "right_hand_middle_1_joint": BaseActuatorCfg(stiffness=5, damping=0.5),
+        "right_hand_index_0_joint": BaseActuatorCfg(stiffness=5, damping=0.5),
+        "right_hand_index_1_joint": BaseActuatorCfg(stiffness=5, damping=0.5),
+
+
     }
     joint_limits: dict[str, tuple[float, float]] = {
         "left_hip_pitch_joint": (-2.5307, 2.8798),
@@ -85,6 +103,22 @@ class G1Cfg(BaseRobotCfg):
         "right_wrist_roll_joint": (-1.972222054, 1.972222054),
         "right_wrist_pitch_joint": (-1.614429558, 1.614429558),
         "right_wrist_yaw_joint": (-1.614429558, 1.614429558),
+        # Left hand fingers
+        "left_hand_thumb_0_joint": (-1.04719755, 1.04719755),
+        "left_hand_thumb_1_joint": (-0.72431163, 1.04719755),
+        "left_hand_thumb_2_joint": (0.0, 1.74532925),
+        "left_hand_middle_0_joint": (-1.57079632, 0.0),
+        "left_hand_middle_1_joint": (-1.74532925, 0.0),
+        "left_hand_index_0_joint": (-1.57079632, 0.0),
+        "left_hand_index_1_joint": (-1.74532925, 0.0),
+        # Right hand fingers
+        "right_hand_thumb_0_joint": (-1.04719755, 1.04719755),
+        "right_hand_thumb_1_joint": (-1.04719755, 0.72431163),
+        "right_hand_thumb_2_joint": (-1.74532925, 0.0),
+        "right_hand_middle_0_joint": (0.0, 1.57079632),
+        "right_hand_middle_1_joint": (0.0, 1.74532925),
+        "right_hand_index_0_joint": (0.0, 1.57079632),
+        "right_hand_index_1_joint": (0.0, 1.74532925),
     }
 
     torque_limits: dict[str, float] = {  # = target angles [rad] when action = 0.0
@@ -117,6 +151,22 @@ class G1Cfg(BaseRobotCfg):
         "right_wrist_roll_joint": 20,
         "right_wrist_pitch_joint": 20,
         "right_wrist_yaw_joint": 20,
+        # Left hand fingers
+        "left_hand_thumb_0_joint": 2.45,
+        "left_hand_thumb_1_joint": 1.4,
+        "left_hand_thumb_2_joint": 1.4,
+        "left_hand_middle_0_joint": 1.4,
+        "left_hand_middle_1_joint": 1.4,
+        "left_hand_index_0_joint": 1.4,
+        "left_hand_index_1_joint": 1.4,
+        # Right hand fingers
+        "right_hand_thumb_0_joint": 2.45,
+        "right_hand_thumb_1_joint": 1.4,
+        "right_hand_thumb_2_joint": 1.4,
+        "right_hand_middle_0_joint": 1.4,
+        "right_hand_middle_1_joint": 1.4,
+        "right_hand_index_0_joint": 1.4,
+        "right_hand_index_1_joint": 1.4,
     }
 
     default_joint_positions: dict[str, float] = {  # = target angles [rad] when action = 0.0
@@ -149,6 +199,22 @@ class G1Cfg(BaseRobotCfg):
         "right_wrist_roll_joint": 0.0,
         "right_wrist_pitch_joint": 0.0,
         "right_wrist_yaw_joint": 0.0,
+        # Left hand fingers
+        "left_hand_thumb_0_joint": 0.0,
+        "left_hand_thumb_1_joint": 0.0,
+        "left_hand_thumb_2_joint": 0.0,
+        "left_hand_middle_0_joint": 0.0,
+        "left_hand_middle_1_joint": 0.0,
+        "left_hand_index_0_joint": 0.0,
+        "left_hand_index_1_joint": 0.0,
+        # Right hand fingers
+        "right_hand_thumb_0_joint": 0.0,
+        "right_hand_thumb_1_joint": 0.0,
+        "right_hand_thumb_2_joint": 0.0,
+        "right_hand_middle_0_joint": 0.0,
+        "right_hand_middle_1_joint": 0.0,
+        "right_hand_index_0_joint": 0.0,
+        "right_hand_index_1_joint": 0.0,
     }
 
     control_type: dict[str, Literal["position", "effort"]] = {
@@ -183,6 +249,7 @@ class G1Cfg(BaseRobotCfg):
     torso_links: list[str] = ["torso_link"]
     terminate_contacts_links = ["pelvis", "torso", "waist", "shoulder", "elbow", "wrist"]
     penalized_contacts_links: list[str] = ["hip", "knee"]
+    right_palm_links: list[str] = [""]
 
     # joint substrings, to find indices of joints.
 

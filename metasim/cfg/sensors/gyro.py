@@ -4,7 +4,7 @@ from scipy.spatial.transform import Rotation as R
 from typing import Tuple, Optional
 
 @configclass
-class GyroSensorCfg:
+class BaseGyroSensor:
     """Configuration for gyroscope sensor."""
     name: str = "gyro0"
     pos: Tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -15,27 +15,24 @@ class GyroSensorCfg:
     noise_std: float = 0.01
     noise_clip: float = 0.05
 
-
-class GyroSensor:
+@configclass
+class GyroSensorCfg(BaseGyroSensor):
     """Simple gyroscope sensor wrapper."""
 
-    def __init__(self, cfg: GyroSensorCfg, sim_handler):
-        self.cfg = cfg
-        self.sim = sim_handler
+    #def __init__(self, cfg: BaseGyroSensor, sim_handler):
+    #    self.cfg = cfg
+    #    self.sim = sim_handler
 
-    def get_data(self) -> np.ndarray:
-        if not self.cfg.enabled:
+    def get_data(self, States, num_env) -> np.ndarray:
+        if not self.enabled:
             return np.zeros(3, dtype=np.float32)
         # získání stavu linku z fyzikální simulace
-        num_envs = [i for i in range(self.sim.num_envs)]
 
 
-
-        states = self.sim.get_states(num_envs)
-        link_idx = states.robots[self.cfg.mount_to].body_names.index(self.cfg.mount_link)
+        link_idx = States[self.mount_to].body_names.index(self.mount_link)
 
         # extrakce kvaternionu [x, y, z, w]
-        quats = states.robots[self.cfg.mount_to].body_state[:, link_idx, 2:6].cpu().numpy()
+        quats = States[self.mount_to].body_state[:, link_idx, 2:6].cpu().numpy()
                # převod na Eulerovy úhly (XYZ)
         euler = R.from_quat(quats).as_euler("xyz", degrees=True).astype(np.float32)
 

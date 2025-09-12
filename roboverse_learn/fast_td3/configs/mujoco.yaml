@@ -3,7 +3,7 @@
 # Environment
 # -------------------------------------------------------------------------------
 sim: mujoco
-robots: [g1]
+robots: [g1_no_hands]
 task: humanoidbench:Stand
 decimation: 10
 train_or_eval: train
@@ -22,7 +22,7 @@ device_rank: 0
 num_envs: 1
 num_eval_envs: 1
 headless: true
-total_timesteps: 30000
+total_timesteps: 10000000
 learning_starts: 10
 num_steps: 4
 
@@ -30,14 +30,14 @@ num_steps: 4
 # Replay, Batching, Discounting
 # -------------------------------------------------------------------------------
 buffer_size: 51200
-batch_size: 32768
+batch_size: 512
 gamma: 0.99
 tau: 0.1
 
 # -------------------------------------------------------------------------------
 # Update Schedule
 # -------------------------------------------------------------------------------
-policy_frequency: 1
+policy_frequency: 4
 num_updates: 4
 
 # -------------------------------------------------------------------------------
@@ -88,6 +88,6 @@ save_dir: ./checkpoints
 project: fasttd3_isaaclab
 exp_name: fasttd3_isaaclab
 use_wandb: true
-checkpoint_path: ./checkpoints/checkpoint_9000.pt
+checkpoint_path: ./checkpoints/checkpoint_1999000.pt
 eval_interval: 1000
-save_interval: 1000
+save_interval: 10000

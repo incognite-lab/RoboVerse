@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Literal
 
-try:
-    import isaacgym  # noqa: F401
-except ImportError:
-    pass
+# try:
+#     import isaacgym  # noqa: F401
+# except ImportError:
+#     pass
 
 import os
 
@@ -35,7 +35,7 @@ class Args:
     """Arguments for the static scene."""
 
     ## Handlers
-    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "mujoco"
+    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "genesis"
 
     ## Others
     num_envs: int = 1
@@ -138,7 +138,7 @@ scenario.objects = [
     ),
     ArticulationObjCfg(
         name="box_base",
-        fix_base_link=True,
+        fix_base_link=False,
         usd_path="get_started/example_assets/box_base/usd/box_base.usd",
         urdf_path="get_started/example_assets/box_base/urdf/box_base_unique.urdf",
         mjcf_path="get_started/example_assets/box_base/mjcf/box_base_unique.mjcf",

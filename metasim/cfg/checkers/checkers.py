@@ -550,6 +550,15 @@ class _CubeChecker(BaseChecker):
                 terminated.append(False)
 
         return torch.tensor(terminated)
+@configclass
+class _ReachChecker(BaseChecker):
+    def check(self, handler: BaseSimHandler) -> torch.BoolTensor:
+        states = handler.get_states()
+        terminated = []
+
+
+
+        return torch.tensor(terminated)
 
 
 ## FIXME: This checker should be removed!

@@ -1,0 +1,23 @@
+<mujoco model="cube_2">
+    <asset>
+        <material name="black" rgba="0.1 0.1 0.1 1"/>
+        <texture name="texture:object" file="block.png" gridsize="3 4" gridlayout=".U..LFRB.D.."></texture>
+        <material name="material:object" texture="texture:object" specular="1" shininess="0.3" reflectance="0"></material>
+    </asset>
+
+    <default>
+        <default class="visual">
+            <geom contype="0" conaffinity="0" group="2" material="black"/>
+        </default>
+        <default class="collision">
+            <geom group="3" mass="1" density="0"/>
+        </default>
+    </default>
+
+    <worldbody>
+        <body name="cube_2" pos="0.45 0.21 1.25">
+            <geom type="box" pos="0 0 0" size="0.025 0.025 0.025" material="material:object" class="visual" density="500"/>
+            <geom type="box" pos="0 0 0" size="0.025 0.025 0.025" class="collision"/>
+        </body>
+    </worldbody>
+</mujoco>

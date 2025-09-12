@@ -40,7 +40,7 @@ import time
 import re
 
 from metasim.cfg.scenario import ScenarioCfg
-from metasim.cfg.sensors import PinholeCameraCfg
+from metasim.cfg.sensors import PinholeCameraCfg, GyroSensorCfg
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 torch.set_float32_matmul_precision("high")
@@ -121,12 +121,21 @@ def main() -> None:
         headless=True if cfg("train_or_eval") == "train" else False,
         cameras=[],
     )
+    scenario.sensors = [GyroSensorCfg(
+        name="gyro0",
+        pos=(0.0, 0.0, 0.0),
+        mount_to='g1',
+        mount_link="torso_link"
+
+        )]
 
     # For different simulators, the decimation factor is different, so we need to set it here
     scenario.task.decimation = cfg("decimation", 1)
 
     envs = FastTD3EnvWrapper(scenario, device=device)
+
     eval_envs = envs  # reuse for evaluation
+
     scenario_render = ScenarioCfg(
         task=cfg("task"),
         robots=cfg("robots"),
@@ -143,6 +152,13 @@ def main() -> None:
             )
         ],
     )
+    scenario_render.sensors = [GyroSensorCfg(
+        name="gyro0",
+        pos=(0.0, 0.0, 0.0),
+        mount_to='g1',
+        mount_link="torso_link"
+
+        )]
     scenario_render.task.decimation = cfg("decimation", 1)
 
     # ---------------- derive shapes ------------------------------------
@@ -259,7 +275,7 @@ def main() -> None:
         Collect a short rollout and return a list of RGB frames (H, W, 3, uint8).
         Works with FastTD3EnvWrapper: render_env.render() must return one frame.
         """
-        video_path: str = cfg("video_path", "output/rollout_1.mp4")
+        video_path: str = cfg("video_path", "output/rollout_4.mp4")
         os.makedirs(os.path.dirname(video_path), exist_ok=True)
         obs_normalizer.eval()
         env = FastTD3EnvWrapper(scenario_render, device=device)
@@ -363,7 +379,7 @@ def main() -> None:
             else:
                 qf_value = (qf1_value + qf2_value) / 2.0
             actor_loss = -qf_value.mean()
-
+        #print("actor_loss", actor_loss)
         actor_optimizer.zero_grad(set_to_none=True)
         scaler.scale(actor_loss).backward()
         scaler.unscale_(actor_optimizer)
@@ -512,7 +528,7 @@ def main() -> None:
                         "actor_grad_norm": logs_dict["actor_grad_norm"].mean() if "actor_grad_norm" in logs_dict.keys() else 0.0,
                         "critic_grad_norm": logs_dict["critic_grad_norm"].mean() if "critic_grad_norm" in logs_dict.keys() else 0.0,
                         "buffer_rewards": logs_dict["buffer_rewards"].mean() if "buffer_rewards" in logs_dict.keys() else 0.0,
-                        "env_rewards": rewards.mean() if "env_rewards" in logs_dict.keys() else 0.0,
+                        "env_rewards": rewards.mean(),
                     }
 
                     if cfg("eval_interval") > 0 and global_step % cfg("eval_interval") == 0:

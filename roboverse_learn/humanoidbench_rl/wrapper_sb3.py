@@ -6,7 +6,6 @@ import torch
 from gymnasium import spaces
 from loguru import logger as log
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv
-from metasim.cfg.sensors.gyro import GyroSensor
 
 from metasim.cfg.scenario import ScenarioCfg
 from metasim.constants import SimType
@@ -32,7 +31,7 @@ class Sb3EnvWrapper(VecEnv):
 
         env_class = get_sim_env_class(SimType(scenario.sim))
         self.env = env_class(scenario)
-        self.sensors = [GyroSensor(cfg, self.env.handler) for cfg in scenario.sensors]
+
         self.init_states, _, _ = get_traj(scenario.task, scenario.robots[0], self.env.handler)
         if len(self.init_states) < self.num_envs:
             self.init_states = (
@@ -98,7 +97,7 @@ class Sb3EnvWrapper(VecEnv):
 
         humanoid_observation = self.get_humanoid_observation(self.env.handler.get_states())
         observations = humanoid_observation.cpu().numpy()
-        observations = self._combine_obs(observations)
+        #observations = self._combine_obs(observations)
 
 
         # Reset episode tracking variables
@@ -123,7 +122,7 @@ class Sb3EnvWrapper(VecEnv):
         self._async_actions = actions
     def _combine_obs(self, obs: np.ndarray) -> np.ndarray:
         """Spojí joint states a gyro data pro všechna envs."""
-        gyrodata = self.sensors[0].get_data()  # shape (num_envs, 3)
+        gyrodata = self.env.handler.sensors[0].get_data(self.env.handler.get_states().robots,self.num_envs) # shape (num_envs, 3)
 
         obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
         return np.concatenate([obs, gyrodata], axis=1).astype(np.float32)
@@ -170,7 +169,7 @@ class Sb3EnvWrapper(VecEnv):
 
         # Convert tensors to NumPy arrays
         observations = humanoid_observation.cpu().numpy()
-        observations = self._combine_obs(observations)
+        #observations = self._combine_obs(observations)
         rewards = humanoid_reward.cpu().numpy()
         terminateds = terminated_tensor.cpu().numpy()
         truncateds = truncated_tensor.cpu().numpy()
@@ -215,7 +214,7 @@ class Sb3EnvWrapper(VecEnv):
 
             reset_observations = self.get_humanoid_observation(self.env.handler.get_states())
             reset_observations_np = reset_observations.cpu().numpy()
-            reset_observations_np = self._combine_obs(reset_observations_np)
+            #reset_observations_np = self._combine_obs(reset_observations_np)
             observations[done_indices] = reset_observations_np[done_indices]
 
         # Return in the format required by SB3 VecEnv API

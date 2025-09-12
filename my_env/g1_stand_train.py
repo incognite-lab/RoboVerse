@@ -35,7 +35,6 @@ from metasim.wrapper.gym_vec_env import MetaSimVecEnv
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3 import PPO
 from gymnasium import spaces
-from metasim.cfg.sensors.gyro import GyroSensor
 from stable_baselines3.common.callbacks import BaseCallback
 from torch.utils.tensorboard import SummaryWriter
 
@@ -105,11 +104,11 @@ class StableBaseline3VecEnv(VecEnv):
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(len(joint_limits)+3,),  # joints + XYZ gyro
+            shape=(len(joint_limits),),  # joints + XYZ gyro
             dtype=np.float32,
         )
         self.env = env
-        self.sensors = [GyroSensor(cfg, env.env.handler) for cfg in env.scenario.sensors]
+        #self.sensors = [GyroSensor(cfg, env.env.handler) for cfg in env.scenario.sensors]
         self.render_mode = None
         self.timesteps = torch.zeros(env.num_envs, dtype=torch.float32, device=("cuda" if args.sim == 'isaaclab' or args.sim == 'genesis' else "cpu"))
 
@@ -125,7 +124,7 @@ class StableBaseline3VecEnv(VecEnv):
         """Reset the environment."""
         obs, _ = self.env.reset()
         obs = obs.cpu().numpy()
-        obs = self._combine_obs(obs)
+        #obs = self._combine_obs(obs)
         self.timesteps.zero_()
         return obs
 
@@ -144,7 +143,7 @@ class StableBaseline3VecEnv(VecEnv):
         """Wait for the step to complete."""
         obs, rewards, unsuccess, timeout, _ = self.env.step(self.action_dicts)
         obs = obs.cpu().numpy()
-        obs = self._combine_obs(obs)
+        #obs = self._combine_obs(obs)
 
         dones = timeout.to(unsuccess.device) | unsuccess
 
@@ -214,14 +213,14 @@ def train_ppo():
     scenario = ScenarioCfg(task=args.task, robots=[args.robot], sim=args.sim, num_envs=args.num_envs, headless=args.headless)
     scenario.episode_length = 500
     scenario.cameras = []  # XXX: remove cameras to avoid rendering to speed up
-    scenario.sensors = [GyroSensorCfg(
+    """scenario.sensors = [GyroSensorCfg(
         name="gyro0",
         pos=(0.0, 0.0, 0.0),
         mount_to=args.robot,
         mount_link="torso_link"
 
         )
-        ]
+        ]"""
     metasim_env = MetaSimVecEnv(scenario, task_name=args.task, num_envs=args.num_envs, sim=args.sim)
 
     env = StableBaseline3VecEnv(metasim_env)

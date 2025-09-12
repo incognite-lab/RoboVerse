@@ -87,11 +87,11 @@ def get_lr_schedule(config: dict) -> float | Callable:
 
 
 def main():
-    if len(sys.argv) < 2:
-        log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
-        exit(1)
-    config_name = sys.argv[1]
-    #config_name = "isaaclab"
+    # if len(sys.argv) < 2:
+        # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
+        # exit(1)
+    # config_name = sys.argv[1]
+    config_name = "mujoco_reach"
     config = load_config_from_yaml(config_name)
     log.info(f"Load config: {config_name}")
 
@@ -127,7 +127,6 @@ def main():
         cameras=[],
 
     )
-    print("debug_point1")
     scenario.sensors = [GyroSensorCfg(
         name="gyro0",
         pos=(0.0, 0.0, 0.0),
@@ -135,6 +134,10 @@ def main():
         mount_link="torso_link"
 
         )]
+    scenario.objects = [
+
+    ]
+
     # For different simulators, the decimation factor is different, so we need to set it here
     scenario.task.decimation = config.get("decimation", 1)
     print("debug_point2")
@@ -183,7 +186,7 @@ def main():
             batch_size=config.get("batch_size", 64),
             n_epochs=config.get("n_epochs", 10),
             verbose=1,
-            tensorboard_log=f"./ppo_logs/{run.id}",
+            #tensorboard_log=f"./ppo_logs/{run.id}",
             device="cuda",
             policy_kwargs=policy_kwargs,
 

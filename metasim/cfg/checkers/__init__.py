@@ -30,6 +30,7 @@ from .checkers import (
     _StandChecker,
     _UpAxisRotationChecker,
     _WalkChecker,
+    _ReachChecker,
 )
 from .detectors import (
     Relative2DSphereDetector,

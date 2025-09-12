@@ -81,11 +81,16 @@ def check_and_download_recursive(filepaths: list[str], n_processes: int = 16):
 
     ## Option 2: Use single process, but could be slow
     for filepath in filepaths:
-        _check_and_download_single(filepath)
+        if filepath is None:
+            continue
+        else:
+            _check_and_download_single(filepath)
 
     new_filepaths = []
     for filepath in filepaths:
-        if filepath.endswith(".urdf"):
+        if filepath is None:
+            continue
+        elif filepath.endswith(".urdf"):
             mesh_paths = extract_mesh_paths_from_urdf(filepath)
             new_filepaths.extend(mesh_paths)
         elif filepath.endswith(".xml"):

@@ -2,12 +2,13 @@
 
 # Environment settings
 sim: mujoco
-robots: [g1_no_hands]
-task: humanoidbench:Stand
+robots: [g1_with_hands]
+task: humanoidbench:Reach
 decimation: 10
 num_envs: 1  # MuJoCo only supports single environment
 add_table: true
-headless: true
+headless: false
+use_wandb: false
 
 # Training settings
 load_model_path: None

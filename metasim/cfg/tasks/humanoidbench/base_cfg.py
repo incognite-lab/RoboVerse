@@ -53,7 +53,11 @@ class HumanoidBaseReward:
             self._stand_height = H1_STAND_HEAD_HEIGHT
             self._stand_neck_height = H1_STAND_NECK_HEIGHT
             self._crawl_height = H1_CRAWL_HEAD_HEIGHT
-        elif robot_name == "g1":
+        elif robot_name == "g1_no_hands" or robot_name == "g1":
+            self._stand_height = G1_STAND_HEAD_HEIGHT
+            self._stand_neck_height = G1_STAND_NECK_HEIGHT
+            self._crawl_height = G1_CRAWL_HEAD_HEIGHT
+        elif robot_name == "g1_with_hands":
             self._stand_height = G1_STAND_HEAD_HEIGHT
             self._stand_neck_height = G1_STAND_NECK_HEIGHT
             self._crawl_height = G1_CRAWL_HEAD_HEIGHT
@@ -70,8 +74,9 @@ class StableReward(HumanoidBaseReward):
     success_bar = None
 
     _stand_shoulder_height = 1.2  # nastav podle svého robota
-    _fall_height = 0.5             # pokud hlava spadne pod tuto výšku, epizoda končí
+    _fall_height = 0.5             # pokud hlava spadne pod tuto výšku, hlava je moc nízko a přichází trest
     _torso_margin = 0.2            # tolerance naklonění trupu
+    _fallen_height = 0.3          # pokud hlava spadne pod tuto výšku, epizoda je považována za "spadlou" pro maximální trest
 
     def __init__(self, robot_name="h1"):
         """Initialize the locomotion reward."""
@@ -103,13 +108,13 @@ class StableReward(HumanoidBaseReward):
         ).mean(dim=-1)
 
 
-        fallen = head_height < self._fall_height
-        fall_penalty = torch.where(fallen, torch.tensor(-1.0, device=head_height.device), torch.tensor(0.0, device=head_height.device))
+        almost_fallen = head_height < self._fall_height
+        fall_penalty = torch.where(almost_fallen, torch.tensor(-1.0, device=head_height.device), torch.tensor(0.0, device=head_height.device))
 
         small_control = (4 + small_control) / 5
         stable_reward = stand_reward
         full_reward = stable_reward * small_control + fall_penalty
-        print("full reward", full_reward )
+        #print("full reward", full_reward )
         return full_reward
 
 
@@ -149,7 +154,7 @@ class BaseLocomotionReward(HumanoidBaseReward):
             move = (5 * move + 1) / 6
             moving_reward = move
         #print("full reward", stable_rewards )
-        return stable_rewards #* moving_reward
+        return stable_rewards * moving_reward
 
 
 @configclass
@@ -190,6 +195,10 @@ class HumanoidTaskCfg(BaseRLTaskCfg):
             results_state.append(robot_state.root_state)
             results_state.append(robot_state.joint_pos)
             results_state.append(robot_state.joint_vel)
+        for _, sensor_state in sorted(envstates.sensors.items()):
+            # vyflattenovat vše kromě batch dim
+            sensor_state = sensor_state.reshape(sensor_state.shape[0], -1)
+            results_state.append(sensor_state)
         return torch.cat(results_state, dim=1)
 
     def extra_spec(self):
