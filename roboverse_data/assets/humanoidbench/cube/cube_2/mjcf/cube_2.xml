@@ -15,7 +15,7 @@
     </default>
 
     <worldbody>
-        <body name="cube_2" pos="0.45 0.21 1.25">
+        <body name="cube_2" pos="0.0 0.2 0.9">
             <geom type="box" pos="0 0 0" size="0.025 0.025 0.025" material="material:object" class="visual" density="500"/>
             <geom type="box" pos="0 0 0" size="0.025 0.025 0.025" class="collision"/>
         </body>

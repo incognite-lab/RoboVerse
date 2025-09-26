@@ -5,13 +5,13 @@ from __future__ import annotations
 import torch
 
 from metasim.cfg.checkers import _ReachChecker
-from metasim.cfg.objects import RigidObjCfg
+from metasim.cfg.objects import RigidObjCfg, ArticulationObjCfg
 from metasim.constants import PhysicStateType
 from metasim.types import EnvState
 from metasim.utils import configclass, humanoid_reward_util, humanoid_robot_util
 
 from .base_cfg import HumanoidBaseReward, HumanoidTaskCfg, StableReward
-from metasim.utils.humanoid_robot_util import right_hand_position
+from metasim.utils.humanoid_robot_util import right_palm_position
 
 
 class StandingReward(HumanoidBaseReward):
@@ -47,18 +47,16 @@ class ReachReward(HumanoidBaseReward):
         results = []
         for obj in states.objects.keys():
             if obj == "cube_1":
-                cube1_state = states.objects[obj].root_state[0:3]
-                print("cube1 pos", cube1_state)
-        right_hand_pos = right_hand_position(states, self.robot_name)
-
-            # elif obj.name == "cube_2":
-            #     cube2_pos = obj.position
-        # for state in states:
-        #     hand_pos = humanoid_robot_util.right_hand_position(state, self._robot_name)
-        #     distance = torch.norm(hand_pos - self._target_position)
-        #     reach_reward = humanoid_reward_util.tolerance(distance, bounds=(0.0, 0.0), margin=1.0)
-        #     results.append(reach_reward)
-        # return torch.tensor(results)
+                cube1_state = states.objects[obj].root_state
+                cube1_state = cube1_state[0, :3]
+                cube1_state = cube1_state.unsqueeze(0)
+                #print("cube1 pos", cube1_state)
+        right_hand_pos = right_palm_position(states, self.robot_name)
+        distance = torch.norm(right_hand_pos - cube1_state)
+        reach_reward = humanoid_reward_util.tolerance(distance, bounds=(0.0, 0.0), margin=1.0)
+        results.append(torch.tensor(reach_reward))
+        print("reach reward", results)
+        return torch.tensor(results)
 
 
 class OrientationReward(HumanoidBaseReward):
@@ -115,10 +113,11 @@ class ReachCfg(HumanoidTaskCfg):
 
     episode_length = 1000
     objects = [
-        RigidObjCfg(
+        ArticulationObjCfg(
             name="cube_1",
             mjcf_path="roboverse_data/assets/humanoidbench/cube/cube_2/mjcf/cube_2.xml",
-            physics=PhysicStateType.RIGIDBODY,
+            urdf_path="roboverse_data/assets/humanoidbench/cube/cube_2/cube_2.urdf",
+            default_position= [0.3, 0.2, 0.9],
 
         ),
         # RigidObjCfg(
@@ -142,6 +141,7 @@ class ReachCfg(HumanoidTaskCfg):
 
     ]
     traj_filepath = "roboverse_data/trajs/humanoidbench/cube/v2/g1/initial_state_v2.json"
+    #traj_filepath = "my_env/initial_state_g1_v2.json"
     checker = _ReachChecker()
     reward_weights = [0.2, 0.5, 0.3]
     reward_functions = [ReachReward()]

@@ -9,7 +9,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="/meshes/table.obj"/>
+        <mesh filename="meshes/table.obj"/>
       </geometry>
     </visual>
     <collision>

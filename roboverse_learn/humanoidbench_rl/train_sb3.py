@@ -130,7 +130,7 @@ def main():
     scenario.sensors = [GyroSensorCfg(
         name="gyro0",
         pos=(0.0, 0.0, 0.0),
-        mount_to='g1',
+        mount_to='g1_with_hands',
         mount_link="torso_link"
 
         )]

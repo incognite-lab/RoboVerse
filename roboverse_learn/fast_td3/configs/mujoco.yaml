@@ -22,7 +22,7 @@ device_rank: 0
 num_envs: 1
 num_eval_envs: 1
 headless: true
-total_timesteps: 10000000
+total_timesteps: 20000000
 learning_starts: 10
 num_steps: 4
 
@@ -88,6 +88,6 @@ save_dir: ./checkpoints
 project: fasttd3_isaaclab
 exp_name: fasttd3_isaaclab
 use_wandb: true
-checkpoint_path: ./checkpoints/checkpoint_1999000.pt
+checkpoint_path: ./checkpoints/checkpoint_2270000.pt
 eval_interval: 1000
 save_interval: 10000

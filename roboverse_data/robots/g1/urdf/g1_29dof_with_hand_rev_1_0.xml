@@ -1,6 +1,46 @@
 <mujoco model="g1_29dof_with_hand_rev_1_0">
   <compiler angle="radian" meshdir="meshes"/>
+  <default>
+    <default class="g1">
+        <joint damping="1" armature="0.1"/>
 
+
+
+        <!-- nohy -->
+        <default class="hip">
+            <position forcerange="-250 250" kp="200" kv="5"/>
+        </default>
+        <default class="knee">
+            <position forcerange="-300 300" kp="250" kv="6"/>
+        </default>
+        <default class="ankle">
+            <position forcerange="-50 50" kp="40" kv="2"/>
+        </default>
+
+        <!-- trup -->
+        <default class="torso">
+            <position forcerange="-200 200" kp="300" kv="6"/>
+        </default>
+
+        <!-- ramena -->
+        <default class="shoulder1">
+            <position forcerange="-50 50" kp="100" kv="2"/>
+        </default>
+        <default class="shoulder2">
+            <position forcerange="-20 20" kp="100" kv="2"/>
+        </default>
+        <default class="elbow">
+            <position forcerange="-20 20" kp="80" kv="2"/>
+        </default>
+        <!--zápěstí-->
+        <default class="wrist">
+            <position forcerange="-5 5" kp="30" kv="2"/>
+        </default>
+        <default class="finger">
+            <position forcerange="-0.01 0.01" kp="0.1" kv="0.01"/>
+        </default>
+    </default>
+</default>
   <asset>
     <mesh name="pelvis" file="pelvis.STL"/>
     <mesh name="pelvis_contour_link" file="pelvis_contour_link.STL"/>
@@ -56,7 +96,6 @@
   <worldbody>
     <body name="pelvis" pos="0 0 0.793">
       <inertial pos="0 0 -0.07605" quat="1 0 -0.000399148 0" mass="3.813" diaginertia="0.010549 0.0093089 0.0079184"/>
-      <joint name="floating_base_joint" type="free" limited="false" actuatorfrclimited="false"/>
       <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.2 0.2 0.2 1" mesh="pelvis"/>
       <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.7 0.7 0.7 1" mesh="pelvis_contour_link"/>
       <geom type="mesh" rgba="0.7 0.7 0.7 1" mesh="pelvis_contour_link"/>
@@ -336,50 +375,61 @@
   </worldbody>
 
   <actuator>
-    <motor name="left_hip_pitch_joint" joint="left_hip_pitch_joint"/>
-    <motor name="left_hip_roll_joint" joint="left_hip_roll_joint"/>
-    <motor name="left_hip_yaw_joint" joint="left_hip_yaw_joint"/>
-    <motor name="left_knee_joint" joint="left_knee_joint"/>
-    <motor name="left_ankle_pitch_joint" joint="left_ankle_pitch_joint"/>
-    <motor name="left_ankle_roll_joint" joint="left_ankle_roll_joint"/>
-    <motor name="right_hip_pitch_joint" joint="right_hip_pitch_joint"/>
-    <motor name="right_hip_roll_joint" joint="right_hip_roll_joint"/>
-    <motor name="right_hip_yaw_joint" joint="right_hip_yaw_joint"/>
-    <motor name="right_knee_joint" joint="right_knee_joint"/>
-    <motor name="right_ankle_pitch_joint" joint="right_ankle_pitch_joint"/>
-    <motor name="right_ankle_roll_joint" joint="right_ankle_roll_joint"/>
-    <motor name="waist_yaw_joint" joint="waist_yaw_joint"/>
-    <motor name="waist_roll_joint" joint="waist_roll_joint"/>
-    <motor name="waist_pitch_joint" joint="waist_pitch_joint"/>
-    <motor name="left_shoulder_pitch_joint" joint="left_shoulder_pitch_joint"/>
-    <motor name="left_shoulder_roll_joint" joint="left_shoulder_roll_joint"/>
-    <motor name="left_shoulder_yaw_joint" joint="left_shoulder_yaw_joint"/>
-    <motor name="left_elbow_joint" joint="left_elbow_joint"/>
-    <motor name="left_wrist_roll_joint" joint="left_wrist_roll_joint"/>
-    <motor name="left_wrist_pitch_joint" joint="left_wrist_pitch_joint"/>
-    <motor name="left_wrist_yaw_joint" joint="left_wrist_yaw_joint"/>
-    <motor name="left_hand_thumb_0_joint" joint="left_hand_thumb_0_joint"/>
-    <motor name="left_hand_thumb_1_joint" joint="left_hand_thumb_1_joint"/>
-    <motor name="left_hand_thumb_2_joint" joint="left_hand_thumb_2_joint"/>
-    <motor name="left_hand_middle_0_joint" joint="left_hand_middle_0_joint"/>
-    <motor name="left_hand_middle_1_joint" joint="left_hand_middle_1_joint"/>
-    <motor name="left_hand_index_0_joint" joint="left_hand_index_0_joint"/>
-    <motor name="left_hand_index_1_joint" joint="left_hand_index_1_joint"/>
-    <motor name="right_shoulder_pitch_joint" joint="right_shoulder_pitch_joint"/>
-    <motor name="right_shoulder_roll_joint" joint="right_shoulder_roll_joint"/>
-    <motor name="right_shoulder_yaw_joint" joint="right_shoulder_yaw_joint"/>
-    <motor name="right_elbow_joint" joint="right_elbow_joint"/>
-    <motor name="right_wrist_roll_joint" joint="right_wrist_roll_joint"/>
-    <motor name="right_wrist_pitch_joint" joint="right_wrist_pitch_joint"/>
-    <motor name="right_wrist_yaw_joint" joint="right_wrist_yaw_joint"/>
-    <motor name="right_hand_thumb_0_joint" joint="right_hand_thumb_0_joint"/>
-    <motor name="right_hand_thumb_1_joint" joint="right_hand_thumb_1_joint"/>
-    <motor name="right_hand_thumb_2_joint" joint="right_hand_thumb_2_joint"/>
-    <motor name="right_hand_index_0_joint" joint="right_hand_index_0_joint"/>
-    <motor name="right_hand_index_1_joint" joint="right_hand_index_1_joint"/>
-    <motor name="right_hand_middle_0_joint" joint="right_hand_middle_0_joint"/>
-    <motor name="right_hand_middle_1_joint" joint="right_hand_middle_1_joint"/>
-  </actuator>
+    <!-- Legs -->
+    <position name="left_hip_pitch_joint" joint="left_hip_pitch_joint" ctrlrange="-3.14 2.53" class="hip"/>
+    <position name="left_hip_roll_joint" joint="left_hip_roll_joint" ctrlrange="-3.14 2.53" class="hip"/>
+    <position name="left_hip_yaw_joint" joint="left_hip_yaw_joint" ctrlrange="-3.14 2.53" class="hip"/>
+    <position name="left_knee_joint" joint="left_knee_joint" ctrlrange="-3.14 2.53" class="knee"/>
+    <position name="left_ankle_pitch_joint" joint="left_ankle_pitch_joint" ctrlrange="-3.14 2.53" class="ankle"/>
+    <position name="left_ankle_roll_joint" joint="left_ankle_roll_joint" ctrlrange="-3.14 2.53" class="ankle"/>
+    <position name="right_hip_pitch_joint" joint="right_hip_pitch_joint" ctrlrange="-3.14 2.53" class="hip"/>
+    <position name="right_hip_roll_joint" joint="right_hip_roll_joint" ctrlrange="-3.14 2.53" class="hip"/>
+    <position name="right_hip_yaw_joint" joint="right_hip_yaw_joint" ctrlrange="-3.14 2.53" class="hip"/>
+    <position name="right_knee_joint" joint="right_knee_joint" ctrlrange="-3.14 2.53" class="knee"/>
+    <position name="right_ankle_pitch_joint" joint="right_ankle_pitch_joint" ctrlrange="-3.14 2.53" class="ankle"/>
+    <position name="right_ankle_roll_joint" joint="right_ankle_roll_joint" ctrlrange="-3.14 2.53" class="ankle"/>
+
+    <!-- Torso -->
+    <position name="waist_yaw_joint" joint="waist_yaw_joint" ctrlrange="-3.14 2.53" class="torso"/>
+    <position name="waist_roll_joint" joint="waist_roll_joint" ctrlrange="-3.14 2.53" class="torso"/>
+    <position name="waist_pitch_joint" joint="waist_pitch_joint" ctrlrange="-3.14 2.53" class="torso"/>
+
+    <!-- Left Arm -->
+    <position name="left_shoulder_pitch_joint" joint="left_shoulder_pitch_joint" ctrlrange="-3.14 2.53" class="shoulder1"/>
+    <position name="left_shoulder_roll_joint" joint="left_shoulder_roll_joint" ctrlrange="-3.14 2.53" class="shoulder1"/>
+    <position name="left_shoulder_yaw_joint" joint="left_shoulder_yaw_joint" ctrlrange="-3.14 2.53" class="shoulder2"/>
+    <position name="left_elbow_joint" joint="left_elbow_joint" ctrlrange="-3.14 2.53" class="elbow"/>
+    <position name="left_wrist_roll_joint" joint="left_wrist_roll_joint" ctrlrange="-3.14 2.53" class="wrist"/>
+    <position name="left_wrist_pitch_joint" joint="left_wrist_pitch_joint" ctrlrange="-3.14 2.53" class="wrist"/>
+    <position name="left_wrist_yaw_joint" joint="left_wrist_yaw_joint" ctrlrange="-3.14 2.53" class="wrist"/>
+
+    <!-- Left Hand Fingers -->
+    <position name="left_hand_thumb_0_joint" joint="left_hand_thumb_0_joint" ctrlrange="-3.14 2.53" class="finger"/>
+    <position name="left_hand_thumb_1_joint" joint="left_hand_thumb_1_joint" ctrlrange="-3.14 2.53" class="finger"/>
+    <position name="left_hand_thumb_2_joint" joint="left_hand_thumb_2_joint" ctrlrange="-3.14 2.53" class="finger"/>
+    <position name="left_hand_middle_0_joint" joint="left_hand_middle_0_joint" ctrlrange="-3.14 2.53" class="finger"/>
+    <position name="left_hand_middle_1_joint" joint="left_hand_middle_1_joint" ctrlrange="-3.14 2.53" class="finger"/>
+    <position name="left_hand_index_0_joint" joint="left_hand_index_0_joint" ctrlrange="-3.14 2.53" class="finger"/>
+    <position name="left_hand_index_1_joint" joint="left_hand_index_1_joint" ctrlrange="-3.14 2.53" class="finger"/>
+
+    <!-- Right Arm -->
+    <position name="right_shoulder_pitch_joint" joint="right_shoulder_pitch_joint" ctrlrange="-3.14 2.53" class="shoulder1"/>
+    <position name="right_shoulder_roll_joint" joint="right_shoulder_roll_joint" ctrlrange="-3.14 2.53" class="shoulder1"/>
+    <position name="right_shoulder_yaw_joint" joint="right_shoulder_yaw_joint" ctrlrange="-3.14 2.53" class="shoulder2"/>
+    <position name="right_elbow_joint" joint="right_elbow_joint" ctrlrange="-3.14 2.53" class="elbow"/>
+    <position name="right_wrist_roll_joint" joint="right_wrist_roll_joint" ctrlrange="-3.14 2.53" class="wrist"/>
+    <position name="right_wrist_pitch_joint" joint="right_wrist_pitch_joint" ctrlrange="-3.14 2.53" class="wrist"/>
+    <position name="right_wrist_yaw_joint" joint="right_wrist_yaw_joint" ctrlrange="-3.14 2.53" class="wrist"/>
+
+    <!-- Right Hand Fingers -->
+    <position name="right_hand_thumb_0_joint" joint="right_hand_thumb_0_joint" ctrlrange="-3.14 2.53" class="finger"/>
+    <position name="right_hand_thumb_1_joint" joint="right_hand_thumb_1_joint" ctrlrange="-3.14 2.53" class="finger"/>
+    <position name="right_hand_thumb_2_joint" joint="right_hand_thumb_2_joint" ctrlrange="-3.14 2.53" class="finger"/>
+    <position name="right_hand_index_0_joint" joint="right_hand_index_0_joint" ctrlrange="-3.14 2.53" class="finger"/>
+    <position name="right_hand_index_1_joint" joint="right_hand_index_1_joint" ctrlrange="-3.14 2.53" class="finger"/>
+    <position name="right_hand_middle_0_joint" joint="right_hand_middle_0_joint" ctrlrange="-3.14 2.53" class="finger"/>
+    <position name="right_hand_middle_1_joint" joint="right_hand_middle_1_joint" ctrlrange="-3.14 2.53" class="finger"/>
+</actuator>
 
   <sensor>
     <gyro name="imu-torso-angular-velocity" site="imu_in_torso" noise="5e-4" cutoff="34.9"/>
@@ -390,19 +440,5 @@
 
 
   <!-- setup scene -->
-  <statistic center="1.0 0.7 1.0" extent="0.8"/>
-  <visual>
-    <headlight diffuse="0.6 0.6 0.6" ambient="0.1 0.1 0.1" specular="0.9 0.9 0.9"/>
-    <rgba haze="0.15 0.25 0.35 1"/>
-    <global azimuth="-140" elevation="-20"/>
-  </visual>
-  <asset>
-    <texture type="skybox" builtin="flat" rgb1="0 0 0" rgb2="0 0 0" width="512" height="3072"/>
-    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
-    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
-  </asset>
-  <worldbody>
-    <light pos="1 0 3.5" dir="0 0 -1" directional="true"/>
-    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
-  </worldbody>
+
 </mujoco>

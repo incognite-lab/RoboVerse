@@ -1,0 +1,34 @@
+
+<robot name="cube_2">
+
+  <link name="cube_2_link">
+    <!-- Vizualizace -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.05 0.05 0.05"/> <!-- strana 5 cm -->
+      </geometry>
+      <material name="blue">
+        <color rgba="0 0 1 1"/> <!-- modrá barva -->
+      </material>
+    </visual>
+
+    <!-- Kolizní model -->
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.05 0.05 0.05"/>
+      </geometry>
+    </collision>
+
+    <!-- Inerční parametry -->
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="1.0"/>
+      <!-- Moment setrvačnosti pro krychli: I = 1/6 * m * a^2 -->
+      <inertia ixx="0.000417" iyy="0.000417" izz="0.000417"
+               ixy="0.0" ixz="0.0" iyz="0.0"/>
+    </inertial>
+  </link>
+
+</robot>

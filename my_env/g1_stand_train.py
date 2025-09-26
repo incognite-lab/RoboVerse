@@ -71,9 +71,9 @@ class RewardPlotCallback(BaseCallback):
 class Args:
     """Arguments for the static scene."""
     task: str = "stand"
-    robot: str = "g1"
+    robot: str = "g1_no_hands"
     ## Handlers
-    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "isaaclab"
+    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "mujoco"
 
     ## Others
     num_envs: int = 1
@@ -133,7 +133,9 @@ class StableBaseline3VecEnv(VecEnv):
         self.action_dicts = [
             {
                 self.env.scenario.robots[0].name: {
-                    "dof_pos_target": dict(zip(self.env.scenario.robots[0].joint_limits.keys(), action))
+                    #"dof_pos_target": dict(zip(self.env.scenario.robots[0].joint_limits.keys(), action))
+                    "dof_pos_target": self.env.scenario.robots[0].default_joint_positions
+
                 }
             }
             for action in actions

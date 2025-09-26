@@ -14,7 +14,8 @@ from metasim.utils.math import euler_xyz_from_quat, matrix_from_quat, quat_from_
 from metasim.utils.tensor_util import tensor_to_str
 from metasim.utils.humanoid_robot_util import (
     neck_height_tensor,
-    neck_height
+    neck_height,
+    right_palm_position,
 )
 
 from .base_checker import BaseChecker
@@ -554,7 +555,15 @@ class _CubeChecker(BaseChecker):
 class _ReachChecker(BaseChecker):
     def check(self, handler: BaseSimHandler) -> torch.BoolTensor:
         states = handler.get_states()
-        terminated = []
+        for obj in states.objects.keys():
+            if obj == "cube_1":
+                cube1_state = states.objects[obj].root_state
+                cube1_state = cube1_state[0, :3]
+                cube1_state = cube1_state.unsqueeze(0)
+                #print("cube1 pos", cube1_state)
+        right_hand_pos = right_palm_position(states, handler.robot.name)
+        distance = torch.norm(right_hand_pos - cube1_state)
+        terminated = distance < 0.1
 
 
 

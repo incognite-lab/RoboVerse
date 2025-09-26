@@ -10,14 +10,19 @@ from metasim.cfg.sensors.gyro import GyroSensorCfg
 
 @configclass
 class G1WithHandsCfg(BaseRobotCfg):
-    name: str = "g1"
+    name: str = "g1_with_hands"
     num_joints: int = 41,
     usd_path: str = "roboverse_data/robots/g1/usd/g1_29dof_rev_1_0.usd"
     xml_path: str = "roboverse_data/robots/g1/mjcf/g1_mygym.xml"
-    mjcf_path: str = "roboverse_data/robots/g1/mjcf/g1_mygym.xml"
+    #mjcf_path: str = "roboverse_data/robots/g1/mjcf/g1_mygym.xml"
+    mjcf_path: str = "roboverse_data/robots/g1/urdf/g1_29dof_with_hand_rev_1_0.xml"
+
     urdf_path: str = "roboverse_data/robots/g1/urdf/g1_mygym.urdf"
+    #urdf to chain pelvis --> right_hand_palm_link
+    ik_urdf_path: str = "roboverse_data/robots/g1/IK_data/urdf_pelvis_to_RHPL.urdf"
+
     enabled_gravity: bool = True
-    fix_base_link: bool = False
+    fix_base_link: bool = True
     enabled_self_collisions: bool = False
     isaacgym_flip_visual_attachments: bool = False
     collapse_fixed_joints: bool = True
@@ -208,38 +213,62 @@ class G1WithHandsCfg(BaseRobotCfg):
         "left_hand_index_0_joint": 0.0,
         "left_hand_index_1_joint": 0.0,
         # Right hand fingers
-        "right_hand_thumb_0_joint": 0.0,
-        "right_hand_thumb_1_joint": 0.0,
-        "right_hand_thumb_2_joint": 0.0,
-        "right_hand_middle_0_joint": 0.0,
-        "right_hand_middle_1_joint": 0.0,
-        "right_hand_index_0_joint": 0.0,
-        "right_hand_index_1_joint": 0.0,
+        "right_hand_thumb_0_joint": 1.0,
+        "right_hand_thumb_1_joint": 1.0,
+        "right_hand_thumb_2_joint": 1.0,
+        "right_hand_middle_0_joint": 1.0,
+        "right_hand_middle_1_joint": 1.0,
+        "right_hand_index_0_joint": 1.0,
+        "right_hand_index_1_joint": 1.0,
     }
 
     control_type: dict[str, Literal["position", "effort"]] = {
-        "left_hip_pitch": "position",
-        "left_hip_roll": "position",
-        "left_hip_yaw": "position",
-        "left_knee": "position",
-        "left_ankle_pitch": "position",
-        "left_ankle_roll": "position",
-        "right_hip_pitch": "position",
-        "right_hip_roll": "position",
-        "right_hip_yaw": "position",
-        "right_knee": "position",
-        "right_ankle_pitch": "position",
-        "right_ankle_roll": "position",
-        "waist_yaw": "position",
-        "left_shoulder_pitch": "position",
-        "left_shoulder_roll": "position",
-        "left_shoulder_yaw": "position",
-        "left_elbow": "position",
-        "right_shoulder_pitch": "position",
-        "right_shoulder_roll": "position",
-        "right_shoulder_yaw": "position",
-        "right_elbow": "position",
-    }
+    "left_hip_pitch_joint": "position",
+    "left_hip_roll_joint": "position",
+    "left_hip_yaw_joint": "position",
+    "left_knee_joint": "position",
+    "left_ankle_pitch_joint": "position",
+    "left_ankle_roll_joint": "position",
+    "right_hip_pitch_joint": "position",
+    "right_hip_roll_joint": "position",
+    "right_hip_yaw_joint": "position",
+    "right_knee_joint": "position",
+    "right_ankle_pitch_joint": "position",
+    "right_ankle_roll_joint": "position",
+    "waist_yaw_joint": "position",
+    "waist_roll_joint": "position",
+    "waist_pitch_joint": "position",
+    "left_shoulder_pitch_joint": "position",
+    "left_shoulder_roll_joint": "position",
+    "left_shoulder_yaw_joint": "position",
+    "left_elbow_joint": "position",
+    "left_wrist_roll_joint": "position",
+    "left_wrist_pitch_joint": "position",
+    "left_wrist_yaw_joint": "position",
+    "right_shoulder_pitch_joint": "position",
+    "right_shoulder_roll_joint": "position",
+    "right_shoulder_yaw_joint": "position",
+    "right_elbow_joint": "position",
+    "right_wrist_roll_joint": "position",
+    "right_wrist_pitch_joint": "position",
+    "right_wrist_yaw_joint": "position",
+    # Left hand fingers
+    "left_hand_thumb_0_joint": "position",
+    "left_hand_thumb_1_joint": "position",
+    "left_hand_thumb_2_joint": "position",
+    "left_hand_middle_0_joint": "position",
+    "left_hand_middle_1_joint": "position",
+    "left_hand_index_0_joint": "position",
+    "left_hand_index_1_joint": "position",
+    # Right hand fingers
+    "right_hand_thumb_0_joint": "position",
+    "right_hand_thumb_1_joint": "position",
+    "right_hand_thumb_2_joint": "position",
+    "right_hand_middle_0_joint": "position",
+    "right_hand_middle_1_joint": "position",
+    "right_hand_index_0_joint": "position",
+    "right_hand_index_1_joint": "position",
+}
 
     # rigid body name substrings, to find indices of different rigid bodies.
     feet_links: list[str] = ["ankle_roll"]
@@ -250,9 +279,81 @@ class G1WithHandsCfg(BaseRobotCfg):
     terminate_contacts_links = ["pelvis", "torso", "waist", "shoulder", "elbow", "wrist"]
     penalized_contacts_links: list[str] = ["hip", "knee"]
     right_palm_links: list[str] = [""]
+    joint_names_right_hand_and_torso = [
+        "waist_yaw_joint",
+        "waist_roll_joint",
+        "waist_pitch_joint",
+        "right_shoulder_pitch_joint",
+        "right_shoulder_roll_joint",
+        "right_shoulder_yaw_joint",
+        "right_elbow_joint",
+        "right_wrist_roll_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_yaw_joint",
+        #"right_hand_palm_joint",
+        #"endeffector_joint"
+    ]
 
     # joint substrings, to find indices of joints.
 
     left_yaw_roll_joints = ["left_hip_yaw", "left_hip_roll"]
     right_yaw_roll_joints = ["right_hip_yaw", "right_hip_roll"]
     upper_body_joints = ["shoulder", "elbow", "torso"]
+
+    """
+        pelvis
+        pelvis_contour_link
+        left_hip_pitch_link
+        left_hip_roll_link
+        left_hip_yaw_link
+        left_knee_link
+        left_ankle_pitch_link
+        left_ankle_roll_link
+        right_hip_pitch_link
+        right_hip_roll_link
+        right_hip_yaw_link
+        right_knee_link
+        right_ankle_pitch_link
+        right_ankle_roll_link
+        waist_yaw_link
+        waist_roll_link
+        torso_link
+        logo_link
+        head_link
+        imu_in_torso
+        imu_in_pelvis
+        d435_link
+        mid360_link
+        left_shoulder_pitch_link
+        left_shoulder_roll_link
+        left_shoulder_yaw_link
+        left_elbow_link
+        left_wrist_roll_link
+        left_wrist_pitch_link
+        left_wrist_yaw_link
+        left_hand_palm_link
+        left_hand_thumb_0_link
+        left_hand_thumb_1_link
+        left_hand_thumb_2_link
+        left_hand_middle_0_link
+        left_hand_middle_1_link
+        left_hand_index_0_link
+        left_hand_index_1_link
+        right_shoulder_pitch_link
+        right_shoulder_roll_link
+        right_shoulder_yaw_link
+        right_elbow_link
+        right_wrist_roll_link
+        right_wrist_pitch_link
+        right_wrist_yaw_link
+        right_hand_palm_link
+        endeffector
+        right_hand_thumb_0_link
+        right_hand_thumb_1_link
+        right_hand_thumb_2_link
+        right_hand_middle_0_link
+        right_hand_middle_1_link
+        right_hand_index_0_link
+        right_hand_index_1_link
+
+    """

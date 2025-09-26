@@ -35,7 +35,7 @@ from metasim.wrapper.gym_vec_env import MetaSimVecEnv
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3 import PPO
 from gymnasium import spaces
-from metasim.cfg.sensors.gyro import GyroSensor
+#from metasim.cfg.sensors.gyro import GyroSensor
 from stable_baselines3.common.callbacks import BaseCallback
 from torch.utils.tensorboard import SummaryWriter
 
@@ -72,9 +72,9 @@ class RewardPlotCallback(BaseCallback):
 class Args:
     """Arguments for the static scene."""
     task: str = "stand"
-    robot: str = "g1"
+    robot: str = "g1_no_hands"
     ## Handlers
-    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "genesis"
+    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "mujoco"
 
     ## Others
     num_envs: int = 1
@@ -109,7 +109,7 @@ class StableBaseline3VecEnv(VecEnv):
             dtype=np.float32,
         )
         self.env = env
-        self.sensors = [GyroSensor(cfg, env.env.handler) for cfg in env.scenario.sensors]
+        #self.sensors = [GyroSensor(cfg, env.env.handler) for cfg in env.scenario.sensors]
         self.render_mode = None
         self.timesteps = torch.zeros(env.num_envs, dtype=torch.float32, device=("cuda" if args.sim == 'isaaclab' or args.sim == 'genesis' else "cpu"))
 

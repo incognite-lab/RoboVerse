@@ -20,7 +20,9 @@ class StandCfg(HumanoidTaskCfg):
     #episode_length = 100
     # traj_filepath = "roboverse_data/trajs/humanoidbench/stand/v2/h1_v2.pkl"
     #traj_filepath = "roboverse_data/trajs/humanoidbench/stand/v2/initial_state_v2.json"
-    traj_filepath = "my_env/initial_state_g1_v2.json"
+    #traj_filepath = "my_env/initial_state_g1_v2.json"
+    traj_filepath = "roboverse_data/trajs/humanoidbench/cube/v2/g1/initial_state_v2.json"
+
     checker = _StandChecker()
     reward_weights = [1.0]
     reward_functions = [StandReward()]
