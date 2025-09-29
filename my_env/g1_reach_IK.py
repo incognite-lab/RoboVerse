@@ -45,7 +45,7 @@ class Args:
     task: str = "reach"
     robot: str = "g1_with_hands"
     ## Handlers
-    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "sapien3"
+    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "genesis"
 
     ## Others
     num_envs: int = 1
@@ -63,7 +63,7 @@ from scipy.spatial.transform import Rotation as R
 
 from ikpy.link import OriginLink
 
-def ik_solver(robot_cfg: str, target_frame: np.ndarray, env: MetaSimVecEnv) -> dict:
+def ik_solver(robot_cfg: str, target_name: str, env: MetaSimVecEnv) -> dict:
     """
     Calculates inverse kinematics for the robot using URDF parsing and a simple geometric approach.
     This is a simplified IK solver and may not be accurate for complex poses.
@@ -76,6 +76,19 @@ def ik_solver(robot_cfg: str, target_frame: np.ndarray, env: MetaSimVecEnv) -> d
     Returns:
         dict: Dictionary of joint names and their corresponding angles.
     """
+    states = env.env.handler.get_states()
+    pose_cube = states.objects[target_name].body_state[0,0,:3]
+
+    ori_cube = env.env.handler.get_states().objects[target_name].body_state[0,0,3:7]
+
+    # Example: set a target position for the right palm
+    target_pos = pose_cube
+    target_orient = ori_cube
+    rot = R.from_quat([target_orient[0], target_orient[1], target_orient[2], target_orient[3]])  # [x, y, z, w]
+    target_rot_matrix = rot.as_matrix()
+    target_frame = np.eye(4)
+    target_frame[:3, :3] = target_rot_matrix
+    target_frame[:3, 3] = target_pos.numpy()
     chain = Chain.from_urdf_file(robot_cfg.ik_urdf_path, base_elements=["pelvis"])
     chain.active_links_mask[0] = True  # Make sure base is not actuated
     #print(chain.forward_kinematics([0]*len(chain.links), full_kinematics=True))  # should be identity matrix
@@ -104,7 +117,21 @@ def ik_solver(robot_cfg: str, target_frame: np.ndarray, env: MetaSimVecEnv) -> d
     #print(chain.links[-1])
     joint_angles = chain.inverse_kinematics_frame(target_frame_in_chain, initial_position=None)
     angles = dict(zip(robot_cfg.joint_names_right_hand_and_torso, joint_angles[1:-2]))
-    return angles
+
+    all_joint_names = list(env.scenario.robots[0].joint_limits.keys())
+
+    # Create a dict with all joints set to zero
+    full_joint_dict = {name: 0.0 for name in all_joint_names}
+
+    # Update with your specific joint positions
+    full_joint_dict.update(angles)
+    # Apply joint positions to the robot in the environment
+    action_dict = {
+        robot_cfg.name: {
+            "dof_pos_target": full_joint_dict
+        }
+    }
+    return action_dict
 
 
 
@@ -122,50 +149,33 @@ def run_ik():
 
 
     metasim_env = MetaSimVecEnv(scenario, task_name=args.task, num_envs=args.num_envs, sim=args.sim)
+    #metasim_env = get_sim_env_class(args.sim)
     env = metasim_env
     obs, _ = env.reset()
 
 
     # Get robot and target info
     robot_cfg = scenario.robots[0]
-    pose_cube = env.env.handler.get_states().objects["cube_1"].body_state[0,0,:3]
-    ori_cube = env.env.handler.get_states().objects["cube_1"].body_state[0,0,3:7]
 
-    # Example: set a target position for the right palm
-    target_pos = pose_cube
-    target_orient = ori_cube
 
-    rot = R.from_quat([target_orient[0], target_orient[1], target_orient[2], target_orient[3]])  # [x, y, z, w]
-    target_rot_matrix = rot.as_matrix()
-    target_frame = np.eye(4)
-    target_frame[:3, :3] = target_rot_matrix
-    target_frame[:3, 3] = target_pos.numpy()
-
-    # Solve IK
-    joint_positions = ik_solver(robot_cfg, target_frame, env)
-    all_joint_names = list(env.scenario.robots[0].joint_limits.keys())
-
-    # Create a dict with all joints set to zero
-    full_joint_dict = {name: 0.0 for name in all_joint_names}
-
-    # Update with your specific joint positions
-    full_joint_dict.update(joint_positions)
-    # Apply joint positions to the robot in the environment
-    action_dict = {
-        robot_cfg.name: {
-            "dof_pos_target": full_joint_dict
-        }
-    }
 
     os.makedirs("get_started/output", exist_ok=True)
     obs_saver = ObsSaver(video_path=f"get_started/output/g1_ik_solver_{args.sim}.mp4")
     obs_orin = metasim_env.env.handler.get_states()
     obs_saver.add(obs_orin)
-    for _ in range(200):
-        obs, reward, done, info, extra = env.step([action_dict])
-        obs_orin = metasim_env.env.handler.get_states()
-        obs_saver.add(obs_orin)
+    for _ in range(50):
 
+
+        joint_positions = ik_solver(robot_cfg, "cube_1", env)
+        for step in range(200):
+            if step % 10 == 0:
+                joint_positions = ik_solver(robot_cfg, "cube_1", env)
+            obs, reward, done, info, extra = env.step([joint_positions])
+            obs_orin = metasim_env.env.handler.get_states()
+            if done:
+                break
+            obs_saver.add(obs_orin)
+        env.reset()
 
 
 

@@ -338,10 +338,10 @@ def left_hand_orientation(envstate, robot_name: str):
     """Returns the orientation of the left hand."""
     # return envstate[f"{_METASIM_SITE_PREFIX}left_hand"]["rot"] # Only for mujoco
     return envstate["robots"][robot_name]["body"]["left_elbow_link"]["rot"]
-def right_palm_position(envstate, robot_name: str):
+def right_palm_position(envstate, robot_name: str, ee_name: str = "right_hand_palm_link"):
     """Returns the position of the right palm."""
     robot_body_name = envstate.robots[robot_name].body_names
-    body_id = robot_body_name.index("right_wrist_yaw_link")
+    body_id = robot_body_name.index(ee_name)
     body_pos = envstate.robots[robot_name].body_state[:, body_id, 0:3]
     return body_pos
 

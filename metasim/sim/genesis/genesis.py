@@ -252,8 +252,16 @@ class GenesisHandler(BaseSimHandler):
             # --- Joint positions (only if articulation) ---
             if isinstance(obj, ArticulationObjCfg):
                 joint_names = self.get_joint_names(obj.name, sort=False)
-                if len(joint_names) == 0:
+                if len(joint_names) == 0 or joint_names == ["root_joint"]:
                     print("DEBUG: no joints for", obj.name)
+                elif self.scenario.robots[0].fix_base_link:
+                    dof_pos = np.array([
+                        [states_flat[env_id][obj.name]["dof_pos"][jn] for jn in joint_names]
+                        for env_id in env_ids
+                    ])
+                    full_qpos = dof_pos   # [N, 7 + n_joints]
+
+                    obj_inst.set_qpos(full_qpos, envs_idx=env_ids)
                 else:
                     dof_pos = np.array([
                         [states_flat[env_id][obj.name]["dof_pos"][jn] for jn in joint_names]
@@ -353,11 +361,14 @@ class GenesisHandler(BaseSimHandler):
     def get_joint_names(self, obj_name: str, sort: bool = True) -> list[str]:
         if isinstance(self.object_dict[obj_name], ArticulationObjCfg):
             joints: list[RigidJoint] = self.object_inst_dict[obj_name].joints
+
             joint_names = [
                 j.name
                 for j in joints
-                if j.dofs_idx_local[0] is not None and j.name != self.object_inst_dict[obj_name].base_joint.name
-                #if j.dof_idx_local is not None and j.name != self.object_inst_dict[obj_name].base_joint.name
+                #if j.dofs_idx_local[0] is not None and j.name != self.object_inst_dict[obj_name].base_joint.name
+                if (j.dof_idx_local is not None and self.scenario.robots[0].fix_base_link is True) or
+                (j.dof_idx_local is not None and j.name != self.object_inst_dict[obj_name].base_joint.name and self.scenario.robots[0].fix_base_link is False)
+
             ]
             if sort:
                 joint_names.sort()

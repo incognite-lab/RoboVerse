@@ -136,7 +136,7 @@ class ReachCfg(HumanoidTaskCfg):
             urdf_path="roboverse_data/assets/humanoidbench/table/table.urdf",
             mjcf_path="roboverse_data/assets/humanoidbench/table/table.mjcf",
             physics=PhysicStateType.GEOM,
-            fix_base_link=True,
+            default_position= [0.0, 0.0, 0.0],
         ),
 
     ]

@@ -197,6 +197,8 @@ def get_sim_env_class(sim: SimType):
             log.error("mjx is not installed, please install it first")
             raise e
     else:
+        print(f"sim: {sim}")
+        print(f"SimType: {sim == SimType.SAPIEN3}")
         raise ValueError(f"Invalid simulator type: {sim}")
 
 

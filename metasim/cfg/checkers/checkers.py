@@ -1,6 +1,7 @@
 ## ruff: noqa: D102
-
 from __future__ import annotations
+
+import random
 
 from dataclasses import MISSING
 from typing import Literal
@@ -561,13 +562,38 @@ class _ReachChecker(BaseChecker):
                 cube1_state = cube1_state[0, :3]
                 cube1_state = cube1_state.unsqueeze(0)
                 #print("cube1 pos", cube1_state)
-        right_hand_pos = right_palm_position(states, handler.robot.name)
+        right_hand_pos = right_palm_position(states, handler.robot.name, ee_name="right_hand_palm_link")
         distance = torch.norm(right_hand_pos - cube1_state)
         terminated = distance < 0.1
-
-
-
         return torch.tensor(terminated)
+    def reset(self, handler: BaseSimHandler, env_ids: list[int] | None = None):
+        x = random.uniform(-0.3, 0.2)
+        y = random.uniform(-0.3, 0.3)
+        z = 0.9
+        states = [{
+            "robots": {
+                "g1_with_hands": {
+                    "pos": torch.tensor([-0.5,0.0,0.1]),
+                    "rot": torch.tensor([1.0,0.0,0.0,0.0]),
+                    "dof_pos": handler.robot.default_joint_positions,
+                }
+            },
+            "objects": {
+                "cube_1": {
+                    "pos": torch.tensor([x, y, z]),
+                    "rot": torch.tensor([0, 0, 0, 1]),
+                },
+                "table": {
+                    "pos": torch.tensor([0.5, 0.0, 0.0]),
+                    "rot": torch.tensor([0, 0, 0, 1]),
+                },
+            },
+        }
+        ]
+        handler.set_states(states=states)
+
+
+        print("reset reach checker")
 
 
 ## FIXME: This checker should be removed!

@@ -1,8 +1,7 @@
-<?xml version="1.0"?>
 <robot name="table">
   <link name="base_link">
     <inertial>
-      <mass value="0.25" />
+      <mass value="10.0" />
       <origin xyz="0 0 0" />
       <inertia  ixx="0.0002" ixy="0.0"  ixz="0.0"  iyy="0.0002"  iyz="0.0"
       izz="0.0002" />
@@ -12,12 +11,40 @@
         <mesh filename="meshes/table.obj"/>
       </geometry>
     </visual>
+    <!-- Tabletop collision -->
     <collision>
-        <origin xyz="0.2 0 0.775" />
+      <origin xyz="0.2 0 0.775" />
       <geometry>
         <box size="1.2 1.0 0.05"/>
       </geometry>
     </collision>
+    <!-- Leg 1 -->
+    <collision>
+      <origin xyz="-0.4 -0.35 0.375"/>
+      <geometry>
+        <box size="0.05 0.05 0.75"/>
+      </geometry>
+    </collision>
+    <!-- Leg 2 -->
+    <collision>
+      <origin xyz="0.8 -0.35 0.375"/>
+      <geometry>
+        <box size="0.05 0.05 0.75"/>
+      </geometry>
+    </collision>
+    <!-- Leg 3 -->
+    <collision>
+      <origin xyz="-0.4 0.35 0.375"/>
+      <geometry>
+        <box size="0.05 0.05 0.75"/>
+      </geometry>
+    </collision>
+    <!-- Leg 4 -->
+    <collision>
+      <origin xyz="0.8 0.35 0.375"/>
+      <geometry>
+        <box size="0.05 0.05 0.75"/>
+      </geometry>
+    </collision>
   </link>
-
 </robot>
