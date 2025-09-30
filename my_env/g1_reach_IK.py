@@ -45,7 +45,7 @@ class Args:
     task: str = "reach"
     robot: str = "g1_with_hands"
     ## Handlers
-    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "genesis"
+    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "mujoco"
 
     ## Others
     num_envs: int = 1
@@ -77,9 +77,11 @@ def ik_solver(robot_cfg: str, target_name: str, env: MetaSimVecEnv) -> dict:
         dict: Dictionary of joint names and their corresponding angles.
     """
     states = env.env.handler.get_states()
+
+
     pose_cube = states.objects[target_name].body_state[0,0,:3]
 
-    ori_cube = env.env.handler.get_states().objects[target_name].body_state[0,0,3:7]
+    ori_cube = states.objects[target_name].body_state[0,0,3:7]
 
     # Example: set a target position for the right palm
     target_pos = pose_cube
@@ -97,6 +99,7 @@ def ik_solver(robot_cfg: str, target_name: str, env: MetaSimVecEnv) -> dict:
     joint_pos = states.robots[robot_cfg.name].joint_pos
     body_states = states.robots[robot_cfg.name].body_state
     joint_names = robot_cfg.joint_limits.keys()
+
 
     # Get pelvis pose in world frame
     pelvis_idx = body_names.index("pelvis")

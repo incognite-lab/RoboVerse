@@ -64,18 +64,12 @@ class GenesisHandler(BaseSimHandler):
             # Fallback if Plane has issues
             log.warning(f"Could not add ground plane: {e}")
             pass
-        print(gs.morphs.URDF(
-                pos=(0, 0, 2),
-                file=self.robot.urdf_path,
-                fixed=self.robot.fix_base_link,
-                merge_fixed_links=self.robot.collapse_fixed_joints,
-            ),"robot urdf")
         ## Add robot
         self.robot_inst: RigidEntity = self.scene_inst.add_entity(
             gs.morphs.URDF(
                 pos=(0, 0, 2),
                 file=self.robot.urdf_path,
-                fixed=self.robot.fix_base_link,
+                #fixed=self.robot.fix_base_link,
                 merge_fixed_links=self.robot.collapse_fixed_joints,
             ),
             material=gs.materials.Rigid(gravity_compensation=1 if not self.robot.enabled_gravity else 0),
@@ -144,8 +138,8 @@ class GenesisHandler(BaseSimHandler):
                         ],
                         dim=-1,
                     ),
-                    body_names=None,
-                    body_state=None,  # TODO
+                    body_names=self.get_body_names(obj.name),
+                    body_state=self.get_body_states(obj.name, envs_idx=env_ids),
                     joint_pos=obj_inst.get_dofs_position(envs_idx=env_ids)[:, joint_reindex],
                     joint_vel=obj_inst.get_dofs_velocity(envs_idx=env_ids)[:, joint_reindex],
                 )
@@ -254,14 +248,6 @@ class GenesisHandler(BaseSimHandler):
                 joint_names = self.get_joint_names(obj.name, sort=False)
                 if len(joint_names) == 0 or joint_names == ["root_joint"]:
                     print("DEBUG: no joints for", obj.name)
-                elif self.scenario.robots[0].fix_base_link:
-                    dof_pos = np.array([
-                        [states_flat[env_id][obj.name]["dof_pos"][jn] for jn in joint_names]
-                        for env_id in env_ids
-                    ])
-                    full_qpos = dof_pos   # [N, 7 + n_joints]
-
-                    obj_inst.set_qpos(full_qpos, envs_idx=env_ids)
                 else:
                     dof_pos = np.array([
                         [states_flat[env_id][obj.name]["dof_pos"][jn] for jn in joint_names]
@@ -305,13 +291,9 @@ class GenesisHandler(BaseSimHandler):
                 [actions[env_id][self.robot.name]["dof_pos_target"][jn] for jn in joint_names]
                 for env_id in range(self.num_envs)
             ]
-            if self.object_dict[obj_name].fix_base_link:
-                self.robot_inst.control_dofs_position(
-                    position=position,
-                    dofs_idx_local=[j.dofs_idx_local[0] for j in self.robot_inst.joints if j.dofs_idx_local[0] is not None],
-                )
-            else:
-                self.robot_inst.control_dofs_position(
+
+
+            self.robot_inst.control_dofs_position(
                     position=position,
                     dofs_idx_local=[
                         j.dofs_idx_local[0]
@@ -366,8 +348,7 @@ class GenesisHandler(BaseSimHandler):
                 j.name
                 for j in joints
                 #if j.dofs_idx_local[0] is not None and j.name != self.object_inst_dict[obj_name].base_joint.name
-                if (j.dof_idx_local is not None and self.scenario.robots[0].fix_base_link is True) or
-                (j.dof_idx_local is not None and j.name != self.object_inst_dict[obj_name].base_joint.name and self.scenario.robots[0].fix_base_link is False)
+                if (j.dof_idx_local is not None and j.name != self.object_inst_dict[obj_name].base_joint.name)
 
             ]
             if sort:

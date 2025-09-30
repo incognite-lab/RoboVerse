@@ -131,12 +131,12 @@ class ReachCfg(HumanoidTaskCfg):
         #     physics=PhysicStateType.GEOM,
         #     fix_base_link=True,
         # ),
-        RigidObjCfg(
+        ArticulationObjCfg(
             name="table",
-            urdf_path="roboverse_data/assets/humanoidbench/table/table.urdf",
-            mjcf_path="roboverse_data/assets/humanoidbench/table/table.mjcf",
-            physics=PhysicStateType.GEOM,
-            default_position= [0.0, 0.0, 0.0],
+            urdf_path="roboverse_data/assets/humanoidbench/table/urdf/table.urdf",
+            mjcf_path="roboverse_data/assets/humanoidbench/table/mjcf/table.mjcf",
+            default_position= [0.0, 0.0, -0.2],
+            fix_base_link=True,
         ),
 
     ]
