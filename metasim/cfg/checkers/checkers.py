@@ -559,45 +559,54 @@ class _ReachChecker(BaseChecker):
         for obj in states.objects.keys():
             if obj == "cube_1":
                 cube1_state = states.objects[obj].root_state
-                cube1_state = cube1_state[0, :3]
-                cube1_state = cube1_state.unsqueeze(0)
+                cube1_state = cube1_state[:, :3]
+                #cube1_state = cube1_state[0]
                 #print("cube1 pos", cube1_state)
-        right_hand_pos = right_palm_position(states, handler.robot.name, ee_name="right_hand_index_0_link")
-        distance = torch.norm(right_hand_pos - cube1_state)
-        terminated = distance < 0.1
-        return torch.tensor(terminated)
-    def reset(self, handler: BaseSimHandler, env_ids: list[int] | None = None):
-        x = random.uniform(-0.3, 0.2)
-        y = random.uniform(-0.3, 0.3)
-        z = 0.2
         if handler.scenario.sim == "mujoco":
-            robot_pos = torch.tensor([-0.5,0.0,0.0])
+            ee = "right_hand_palm_link"
         else:
-            robot_pos = torch.tensor([-0.5,0.0,0.8])
-        states = [{
-            "robots": {
-                "g1_with_hands": {
-                    "pos": robot_pos,
-                    "rot": torch.tensor([1.0,0.0,0.0,0.0]),
-                    "dof_pos": handler.robot.default_joint_positions,
-                }
-            },
-            "objects": {
-                "cube_1": {
-                    "pos": torch.tensor([x, y, z]),
-                    "rot": torch.tensor([0, 0, 0, 1]),
+            ee = "endeffector"
+        right_hand_pos = right_palm_position(states, handler.robot.name, ee_name=ee)
+        distance = torch.norm(right_hand_pos - cube1_state, dim=1)
+        terminated = distance < 0.1
+        return terminated #torch.tensor(terminated)
+    def reset(self, handler: BaseSimHandler, env_ids: list[int] | None = None):
+        num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
+        if env_ids is None:
+            env_ids = list(range(num_envs))
+        states = []
+        for i in range(num_envs):
+            x = random.uniform(-0.2, 0.2)
+            y = random.uniform(-0.3, 0.3)
+
+            if handler.scenario.sim == "mujoco":
+                robot_pos = torch.tensor([-0.5,0.0,0.0])
+                z_cube = 0.2
+            else:
+                robot_pos = torch.tensor([-0.5,0.0,0.8])
+                z_cube = 0.73
+
+            states.append({
+                "robots": {
+                    "g1_with_hands": {
+                        "pos": robot_pos,
+                        "rot": torch.tensor([1.0,0.0,0.0,0.0]),
+                        "dof_pos": handler.robot.default_joint_positions,
+                    }
                 },
-                "table": {
-                    "pos": torch.tensor([0.6, 0.0, -0.1]),
-                    "rot": torch.tensor([0, 0, 0, 1]),
+                "objects": {
+                    "cube_1": {
+                        "pos": torch.tensor([x, y, z_cube]),
+                        "rot": torch.tensor([0, 0, 0, 1]),
+                    },
+                    "table": {
+                        "pos": torch.tensor([0.6, 0.0, -0.1]),
+                        "rot": torch.tensor([0, 0, 0, 1]),
+                    },
                 },
-            },
-        }
+            })
 
-        ]
-        handler.set_states(states=states)
-
-
+        handler.set_states(states=states, env_ids=env_ids)
         print("reset reach checker")
 
 

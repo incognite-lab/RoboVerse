@@ -25,7 +25,7 @@ class G1WithHandsCfg(BaseRobotCfg):
     fix_base_link: bool = True
     enabled_self_collisions: bool = False
     isaacgym_flip_visual_attachments: bool = False
-    collapse_fixed_joints: bool = True
+    collapse_fixed_joints: bool = False
 
 
 
@@ -180,27 +180,27 @@ class G1WithHandsCfg(BaseRobotCfg):
         "left_hip_yaw_joint": 0.0,
         "left_knee_joint": 0.0,
         "left_ankle_pitch_joint": 0.0,
-        "left_ankle_roll_joint": -1.5,
+        "left_ankle_roll_joint": 0.0,
         "right_hip_pitch_joint": 0.0,
         "right_hip_roll_joint": 0.0,
         "right_hip_yaw_joint": 0.0,
         "right_knee_joint": 0.0,
         "right_ankle_pitch_joint": 0.0,
-        "right_ankle_roll_joint": -1.5,
+        "right_ankle_roll_joint": 0.0,
         "waist_yaw_joint": 0.0,
         "waist_roll_joint": 0.0,
         "waist_pitch_joint": 0.0,
-        "left_shoulder_pitch_joint": 2.0,
-        "left_shoulder_roll_joint": 2.55,
+        "left_shoulder_pitch_joint": 0.0,
+        "left_shoulder_roll_joint": 0.0,
         "left_shoulder_yaw_joint": 0.0,
-        "left_elbow_joint": 1.43,
+        "left_elbow_joint": 1.0,
         "left_wrist_roll_joint": 0.0,
         "left_wrist_pitch_joint": 0.0,
         "left_wrist_yaw_joint": 0.0,
         "right_shoulder_pitch_joint": 0.0,
-        "right_shoulder_roll_joint": -0.55,
+        "right_shoulder_roll_joint": 0.0,
         "right_shoulder_yaw_joint": 0.0,
-        "right_elbow_joint": 1.43,
+        "right_elbow_joint": 0.0,
         "right_wrist_roll_joint": 0.0,
         "right_wrist_pitch_joint": 0.0,
         "right_wrist_yaw_joint": 0.0,
@@ -213,13 +213,13 @@ class G1WithHandsCfg(BaseRobotCfg):
         "left_hand_index_0_joint": 0.0,
         "left_hand_index_1_joint": 0.0,
         # Right hand fingers
-        "right_hand_thumb_0_joint": 1.0,
-        "right_hand_thumb_1_joint": 1.0,
-        "right_hand_thumb_2_joint": 1.0,
-        "right_hand_middle_0_joint": 1.0,
-        "right_hand_middle_1_joint": 1.0,
-        "right_hand_index_0_joint": 1.0,
-        "right_hand_index_1_joint": 1.0,
+        "right_hand_thumb_0_joint": 0.0,
+        "right_hand_thumb_1_joint": 0.0,
+        "right_hand_thumb_2_joint": 0.0,
+        "right_hand_middle_0_joint": 0.0,
+        "right_hand_middle_1_joint": 0.0,
+        "right_hand_index_0_joint": 0.0,
+        "right_hand_index_1_joint": 0.0,
     }
 
     control_type: dict[str, Literal["position", "effort"]] = {
@@ -292,6 +292,28 @@ class G1WithHandsCfg(BaseRobotCfg):
         "right_wrist_yaw_joint",
         #"right_hand_palm_joint",
         #"endeffector_joint"
+    ]
+    joint_names_right_and_left_hand_and_torso = [
+        "waist_yaw_joint",
+        "waist_roll_joint",
+        "waist_pitch_joint",
+        "right_shoulder_pitch_joint",
+        "right_shoulder_roll_joint",
+        "right_shoulder_yaw_joint",
+        "right_elbow_joint",
+        "right_wrist_roll_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_yaw_joint",
+        #"right_hand_palm_joint",
+        #"endeffector_joint",
+        "left_shoulder_pitch_joint",
+        "left_shoulder_roll_joint",
+        "left_shoulder_yaw_joint",
+        "left_elbow_joint",
+        "left_wrist_roll_joint",
+        "left_wrist_pitch_joint",
+        "left_wrist_yaw_joint",
+        #"left_hand_palm_joint"
     ]
 
     # joint substrings, to find indices of joints.

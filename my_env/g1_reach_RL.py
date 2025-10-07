@@ -70,14 +70,14 @@ class RewardPlotCallback(BaseCallback):
 @configclass
 class Args:
     """Arguments for the static scene."""
-    task: str = "stand"
-    robot: str = "g1_no_hands"
+    task: str = "reach"
+    robot: str = "g1_with_hands"
     ## Handlers
     sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "mujoco"
 
     ## Others
-    num_envs: int = 1
-    headless: bool = False
+    num_envs: int = 2
+    headless: bool = True
 
     def __post_init__(self):
         """Post-initialization configuration."""
@@ -93,18 +93,20 @@ class StableBaseline3VecEnv(VecEnv):
         """Initialize the environment."""
         joint_limits = env.scenario.robots[0].joint_limits
         scale = 0.5
+        joints_name_arms_torso = env.scenario.robots[0].joint_names_right_and_left_hand_and_torso
+        joint_limits_arms_torso = {name: joint_limits[name] for name in joints_name_arms_torso}
         self.action_space = spaces.Box(
-            #low=np.array([lim[0] for lim in joint_limits.values()]),
-            #high=np.array([lim[1] for lim in joint_limits.values()]),
-            low=-scale,
-            high=scale,
-            shape=(len(joint_limits),),
+            low=np.array([lim[0] for lim in joint_limits.values()]),
+            high=np.array([lim[1] for lim in joint_limits.values()]),
+            #low=-scale,
+            #high=scale,
+            shape=(len(joint_limits),), # joints(left arm and right arm and torso)
             dtype=np.float32,
         )
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(len(joint_limits),),  # joints + XYZ gyro
+            shape=(len(joint_limits)+7,),  # joints(left and right arm and torso) + XYZ + orientation
             dtype=np.float32,
         )
         self.env = env
@@ -119,12 +121,19 @@ class StableBaseline3VecEnv(VecEnv):
 
         obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
         return np.concatenate([obs, gyrodata], axis=1).astype(np.float32)
+    def _odd_cube_obs(self, obs: np.ndarray) -> np.ndarray:
+        """Spojí joint states a gyro data pro všechna envs."""
+        cube_pos = self.env.env.handler.get_states().objects["cube_1"].body_state[:,0,:3].cpu().numpy()
+        cube_ori = self.env.env.handler.get_states().objects["cube_1"].body_state[:,0,3:7].cpu().numpy()
 
+        obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
+        return np.concatenate([obs, cube_pos, cube_ori], axis=1).astype(np.float32)
     def reset(self):
         """Reset the environment."""
         obs, _ = self.env.reset()
         obs = obs.cpu().numpy()
         #obs = self._combine_obs(obs)
+        obs = self._odd_cube_obs(obs)
         self.timesteps.zero_()
         return obs
 
@@ -133,8 +142,8 @@ class StableBaseline3VecEnv(VecEnv):
         self.action_dicts = [
             {
                 self.env.scenario.robots[0].name: {
-                    #"dof_pos_target": dict(zip(self.env.scenario.robots[0].joint_limits.keys(), action))
-                    "dof_pos_target": self.env.scenario.robots[0].default_joint_positions
+                    "dof_pos_target": dict(zip(self.env.scenario.robots[0].joint_limits.keys(), action))
+                    #"dof_pos_target": self.env.scenario.robots[0].default_joint_positions
 
                 }
             }
@@ -143,27 +152,27 @@ class StableBaseline3VecEnv(VecEnv):
 
     def step_wait(self):
         """Wait for the step to complete."""
-        obs, rewards, unsuccess, timeout, _ = self.env.step(self.action_dicts)
+        obs, rewards, success, timeout, _ = self.env.step(self.action_dicts)
         obs = obs.cpu().numpy()
         #obs = self._combine_obs(obs)
+        obs = self._odd_cube_obs(obs)
+        dones = timeout.to(success.device) | success
 
-        dones = timeout.to(unsuccess.device) | unsuccess
-
-        self.timesteps += (~unsuccess).float()
+        self.timesteps += (~success).float()
 
         if dones.any():
             self.env.reset(env_ids=dones.nonzero().squeeze(-1).tolist())
-            self.timesteps[unsuccess.cpu()] = 0
-        if unsuccess.any():
-            self.timesteps[unsuccess.cpu()] = 0
-            rewards[unsuccess] = -10.0
-            self.env.reset(env_ids=unsuccess.nonzero(as_tuple=False).squeeze(-1).tolist())
+            self.timesteps[success.cpu()] = 0
+        if success.any():
+            self.timesteps[success.cpu()] = 0
+            rewards[success] = 10
+            self.env.reset(env_ids=success.nonzero(as_tuple=False).squeeze(-1).tolist())
             extra = [{} for _ in range(self.num_envs)]
             return obs, rewards.cpu().numpy(), dones.cpu().numpy(), extra
         # reward vynásobíme časem
 
-        time_factors = self.timesteps.to(rewards.device)
-        rewards = rewards * time_factors
+        #time_factors = self.timesteps.to(rewards.device)
+        #rewards = rewards * time_factors
 
 
         extra = [{} for _ in range(self.num_envs)]
@@ -214,6 +223,8 @@ def train_ppo():
     #Choice 1: use scenario config to initialize the environment
     scenario = ScenarioCfg(task=args.task, robots=[args.robot], sim=args.sim, num_envs=args.num_envs, headless=args.headless)
     scenario.episode_length = 500
+    if args.sim == "genesis":
+        scenario.robots[0].collapse_fixed_joints = False
     scenario.cameras = []  # XXX: remove cameras to avoid rendering to speed up
     """scenario.sensors = [GyroSensorCfg(
         name="gyro0",

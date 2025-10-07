@@ -33,7 +33,8 @@ def get_traj_v2(task: BaseTaskCfg, robot: BaseRobotCfg):
             or task.traj_filepath.endswith("_v2.json")
             or task.traj_filepath.endswith("_v2.yaml")
         )
-        data = load_traj_file(task.traj_filepath)[robot.name]
+        data = load_traj_file(task.traj_filepath)
+        data = data[robot.name]
     else:
         assert task.traj_filepath.find("v2") != -1
         paths = glob(os.path.join(task.traj_filepath, f"{robot.name}_v2.*"))

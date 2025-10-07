@@ -1,0 +1,37 @@
+# genesis config
+
+# Environment settings
+sim: genesis
+robots: [g1_with_hands]
+task: humanoidbench:reach
+decimation: 5
+num_envs: 2
+headless: false
+add_table: true
+
+# Training settings
+load_model_path: None
+train_or_eval: Eval
+total_timesteps: 90_000_000
+model_save_path: ./saved_models
+model_save_freq: 10_000_000
+
+# Eval settings
+eval_model_path: ./saved_models/6ap4n013/model_70002688.zip
+
+
+# PPO parameters
+learning_rate: 0.0003
+n_steps: 256
+num_batch: 64
+n_epochs: 4
+
+# Learning rate schedule
+use_lr_schedule: true
+lr_schedule_type: linear  # Optional: linear, constant, cosine
+final_lr_fraction: 0.1    # Optional: final learning rate is 10% of initial learning rate
+
+# Wandb settings
+use_wandb: true
+wandb_project: humanoidbench_rl_training
+wandb_entity: zemlifi1-czech-technical-university-in-prague

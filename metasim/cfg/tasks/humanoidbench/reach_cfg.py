@@ -40,23 +40,27 @@ class ReachReward(HumanoidBaseReward):
     def __init__(self, robot_name="g1_with_hands"):
         """Initialize the reach reward."""
         super().__init__(robot_name)
-        self._target_position = torch.tensor([0.5, 0.0, 1.2])  # Example target position
 
-    def __call__(self, states: list[EnvState],robot_name: str = None) -> torch.FloatTensor:
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         """Compute the reach reward."""
-        results = []
-        for obj in states.objects.keys():
-            if obj == "cube_1":
-                cube1_state = states.objects[obj].root_state
-                cube1_state = cube1_state[0, :3]
-                cube1_state = cube1_state.unsqueeze(0)
-                #print("cube1 pos", cube1_state)
-        right_hand_pos = right_palm_position(states, self.robot_name)
-        distance = torch.norm(right_hand_pos - cube1_state)
-        reach_reward = humanoid_reward_util.tolerance(distance, bounds=(0.0, 0.0), margin=1.0)
-        results.append(torch.tensor(reach_reward))
-        print("reach reward", results)
-        return torch.tensor(results)
+
+        cube1_state = states.objects["cube_1"].root_state[:, :3]  # [num_envs, 3]
+        right_hand_pos = right_palm_position(states, self.robot_name)  # [num_envs, 3]
+
+        # vzdálenost
+        distance = torch.norm(right_hand_pos - cube1_state, dim=1)  # [num_envs]
+
+        # tolerance - použij torch variantu, ne numpy
+        distance_np = distance.detach().cpu().numpy()
+        reward_np = humanoid_reward_util.tolerance(
+            distance_np,
+            bounds=(0.0, 0.05),   # <-- dej malé tolerance okno místo (0,0)
+            margin=1.0
+        )
+        # vrať to zpátky na stejný device a dtype
+        reach_reward = torch.as_tensor(reward_np, device=distance.device, dtype=distance.dtype)
+
+        return reach_reward
 
 
 class OrientationReward(HumanoidBaseReward):

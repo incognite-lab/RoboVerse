@@ -466,9 +466,7 @@ class Sapien3Handler(BaseSimHandler):
                 root_state=root_state,
                 body_names=link_names,
                 body_state=link_state.unsqueeze(0),
-                #joint_pos=torch.tensor(robot_inst.get_qpos()[joint_reindex]).unsqueeze(0),
-                joint_pos=torch.tensor(robot_inst.get_qpos()).unsqueeze(0),
-
+                joint_pos=torch.tensor(robot_inst.get_qpos()[joint_reindex]).unsqueeze(0),
                 joint_vel=torch.tensor(robot_inst.get_qvel()[joint_reindex]).unsqueeze(0),
                 joint_pos_target=pos_target,
                 joint_vel_target=vel_target,

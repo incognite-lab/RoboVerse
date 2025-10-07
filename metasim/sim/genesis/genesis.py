@@ -69,7 +69,6 @@ class GenesisHandler(BaseSimHandler):
             gs.morphs.URDF(
                 pos=(0, 0, 2),
                 file=self.robot.urdf_path,
-                #fixed=self.robot.fix_base_link,
                 merge_fixed_links=self.robot.collapse_fixed_joints,
             ),
             material=gs.materials.Rigid(gravity_compensation=1 if not self.robot.enabled_gravity else 0),
@@ -196,7 +195,7 @@ class GenesisHandler(BaseSimHandler):
         return TensorState(objects=object_states, robots=robot_states, cameras=camera_states, sensors={})
 
 
-    def get_body_names(self, obj_name: str, sort: bool = True) -> list[str]:
+    def get_body_names(self, obj_name: str, sort: bool = False) -> list[str]:
         if isinstance(self.object_dict[obj_name], ArticulationObjCfg):
             links = self.object_inst_dict[obj_name].links
             body_names = [b.name for b in links]
@@ -291,15 +290,17 @@ class GenesisHandler(BaseSimHandler):
                 [actions[env_id][self.robot.name]["dof_pos_target"][jn] for jn in joint_names]
                 for env_id in range(self.num_envs)
             ]
-
-
+            dof_idx_local = []
+            for j in self.robot_inst.joints:
+                try:
+                    if j.dofs_idx_local[0] is not None and j.name != self.robot_inst.base_joint.name:
+                        dof_idx_local.append(j.dofs_idx_local[0])
+                except IndexError:
+                    if j.dofs_idx_local[0] is not None and j.name != "root_joint":
+                        dof_idx_local.append(j.dofs_idx_local[0])
             self.robot_inst.control_dofs_position(
                     position=position,
-                    dofs_idx_local=[
-                        j.dofs_idx_local[0]
-                        for j in self.robot_inst.joints
-                        if j.dofs_idx_local[0] is not None and j.name != self.robot_inst.base_joint.name
-                    ],
+                    dofs_idx_local=dof_idx_local,
                 )
 
     def _simulate(self):
@@ -344,13 +345,17 @@ class GenesisHandler(BaseSimHandler):
         if isinstance(self.object_dict[obj_name], ArticulationObjCfg):
             joints: list[RigidJoint] = self.object_inst_dict[obj_name].joints
 
-            joint_names = [
-                j.name
-                for j in joints
-                #if j.dofs_idx_local[0] is not None and j.name != self.object_inst_dict[obj_name].base_joint.name
-                if (j.dof_idx_local is not None and j.name != self.object_inst_dict[obj_name].base_joint.name)
+            joint_names = []
 
-            ]
+            for j in joints:
+                try:
+                    if j.dofs_idx_local[0] is not None and j.name != self.object_inst_dict[obj_name].base_joint.name:
+                    #if (j.dof_idx_local is not None and j.name != self.object_inst_dict[obj_name].base_joint.name)
+                        joint_names.append(j.name)
+                except IndexError:
+                    if j.dofs_idx_local[0] is not None and j.name != "root_joint":
+                        joint_names.append(j.name)
+
             if sort:
                 joint_names.sort()
             return joint_names

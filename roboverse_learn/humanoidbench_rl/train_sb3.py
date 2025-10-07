@@ -88,10 +88,10 @@ def get_lr_schedule(config: dict) -> float | Callable:
 
 def main():
     # if len(sys.argv) < 2:
-        # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
-        # exit(1)
+    #     log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
+    #     exit(1)
     # config_name = sys.argv[1]
-    config_name = "mujoco_reach"
+    config_name = "genesis_reach"
     config = load_config_from_yaml(config_name)
     log.info(f"Load config: {config_name}")
 
@@ -130,7 +130,7 @@ def main():
     scenario.sensors = [GyroSensorCfg(
         name="gyro0",
         pos=(0.0, 0.0, 0.0),
-        mount_to='g1_with_hands',
+        mount_to='g1_no_hands',
         mount_link="torso_link"
 
         )]
@@ -186,7 +186,7 @@ def main():
             batch_size=config.get("batch_size", 64),
             n_epochs=config.get("n_epochs", 10),
             verbose=1,
-            #tensorboard_log=f"./ppo_logs/{run.id}",
+            tensorboard_log=f"./ppo_logs/{run.id}",
             device="cuda",
             policy_kwargs=policy_kwargs,
 
@@ -208,7 +208,8 @@ def main():
 
     class EpisodeLogCallback(BaseCallback):
         """
-        Custom callback for plotting additional values in tensorboard.
+        Callback for logging episode returns, lengths, and success to TensorBoard and W&B,
+        compatible with multi-environment (VecEnv).
         """
 
         def __init__(self, verbose=0):
@@ -217,29 +218,45 @@ def main():
                 "results/return": [],
                 "results/episode_length": [],
                 "results/success": [],
-                "results/success_subtasks": [],
             }
 
         def _on_step(self) -> bool:
-            infos = self.locals["infos"]
-            for idx in range(len(infos)):
-                curr_info = infos[idx]
+            # infos může být list of dicts (pro jedno env) nebo list of list of dicts (multi-env)
+            infos = self.locals.get("infos", [])
+
+            # Normalizujeme na list of dicts
+            if len(infos) > 0 and isinstance(infos[0], list):
+                # multi-env VecEnv
+                flat_infos = [item for sublist in infos for item in sublist]
+            else:
+                flat_infos = infos
+
+            for curr_info in flat_infos:
                 if "episode" in curr_info:
-                    self.returns_info["results/return"].append(curr_info["episode"]["r"])
-                    self.returns_info["results/episode_length"].append(curr_info["episode"]["l"])
-                    cur_info_success = curr_info.get("success", 0)
-                    self.returns_info["results/success"].append(cur_info_success)
-                    # cur_info_success_subtasks = curr_info.get("success_subtasks", 0)
-                    # self.returns_info["results/success_subtasks"].append(cur_info_success_subtasks)
+                    ep_info = curr_info["episode"]
+                    self.returns_info["results/return"].append(ep_info.get("r", 0.0))
+                    self.returns_info["results/episode_length"].append(ep_info.get("l", 0))
+                    self.returns_info["results/success"].append(curr_info.get("success", 0))
+
             return True
 
         def _on_rollout_end(self) -> None:
-            # Use the model's num_timesteps (cumulative across envs) as the global step.
             global_step = self.model.num_timesteps
-            for key in self.returns_info.keys():
-                if self.returns_info[key]:
-                    self.logger.record(key, np.mean(self.returns_info[key]), global_step)
+            log_dict = {}
+
+            for key, values in self.returns_info.items():
+                if len(values) > 0:
+                    mean_value = np.mean(values)
+                    # Zapiš do SB3 logger (TensorBoard)
+                    self.logger.record(key, mean_value, global_step)
+                    # Připrav pro W&B
+                    log_dict[key] = mean_value
+                    # Vyčisti seznam
                     self.returns_info[key] = []
+
+            if wandb.run is not None and log_dict:
+                log_dict["global_step"] = global_step
+                wandb.log(log_dict, commit=True)  # commit=True zaručí zobrazení v W&B
 
     class SaveModelCallback(BaseCallback):
         """

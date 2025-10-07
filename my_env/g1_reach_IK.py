@@ -45,7 +45,7 @@ class Args:
     task: str = "reach"
     robot: str = "g1_with_hands"
     ## Handlers
-    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "mujoco"
+    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "sapien3"
 
     ## Others
     num_envs: int = 1
@@ -94,13 +94,15 @@ def ik_solver(robot_cfg: str, target_name: str, env: MetaSimVecEnv) -> dict:
     chain = Chain.from_urdf_file(robot_cfg.ik_urdf_path, base_elements=["pelvis"])
     chain.active_links_mask[0] = True  # Make sure base is not actuated
     #print(chain.forward_kinematics([0]*len(chain.links), full_kinematics=True))  # should be identity matrix
-    states = env.env.handler.get_states()
     body_names = states.robots[robot_cfg.name].body_names
+
     joint_pos = states.robots[robot_cfg.name].joint_pos
     body_states = states.robots[robot_cfg.name].body_state
-    joint_names = robot_cfg.joint_limits.keys()
 
 
+    joint_names = list(robot_cfg.joint_limits.keys())
+    joint_reindex = env.env.handler.get_joint_reindex(robot_cfg.name)
+    joint_names = [joint_names[i] for i in joint_reindex]
     # Get pelvis pose in world frame
     pelvis_idx = body_names.index("pelvis")
     pelvis_pos = body_states[0,pelvis_idx, :3]      # x, y, z
@@ -118,13 +120,15 @@ def ik_solver(robot_cfg: str, target_name: str, env: MetaSimVecEnv) -> dict:
     #print("target_frame_in_chain", target_frame_in_chain)
     #print("base_frame", base_frame)
     #print(chain.links[-1])
+
     joint_angles = chain.inverse_kinematics_frame(target_frame_in_chain, initial_position=None)
     angles = dict(zip(robot_cfg.joint_names_right_hand_and_torso, joint_angles[1:-2]))
 
-    all_joint_names = list(env.scenario.robots[0].joint_limits.keys())
+
+
 
     # Create a dict with all joints set to zero
-    full_joint_dict = {name: 0.0 for name in all_joint_names}
+    full_joint_dict = {name: 0.0 for name in joint_names}
 
     # Update with your specific joint positions
     full_joint_dict.update(angles)
@@ -169,9 +173,8 @@ def run_ik():
     for _ in range(50):
 
 
-        joint_positions = ik_solver(robot_cfg, "cube_1", env)
-        for step in range(200):
-            if step % 10 == 0:
+        for step in range(100):
+            if step % 1 == 0:
                 joint_positions = ik_solver(robot_cfg, "cube_1", env)
             obs, reward, done, info, extra = env.step([joint_positions])
             obs_orin = metasim_env.env.handler.get_states()
