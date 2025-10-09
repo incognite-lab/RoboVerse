@@ -5,19 +5,20 @@ sim: genesis
 robots: [g1_with_hands]
 task: humanoidbench:reach
 decimation: 5
-num_envs: 2
+num_envs: 1 #2100
 headless: false
 add_table: true
 
 # Training settings
 load_model_path: None
-train_or_eval: Eval
+train_or_eval: eval
 total_timesteps: 90_000_000
 model_save_path: ./saved_models
 model_save_freq: 10_000_000
 
+
 # Eval settings
-eval_model_path: ./saved_models/6ap4n013/model_70002688.zip
+eval_model_path: ./saved_models/u6di3fkq/model_80001600.zip
 
 
 # PPO parameters
@@ -25,6 +26,7 @@ learning_rate: 0.0003
 n_steps: 256
 num_batch: 64
 n_epochs: 4
+ent_coef: 0.01
 
 # Learning rate schedule
 use_lr_schedule: true

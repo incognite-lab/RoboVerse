@@ -41,7 +41,8 @@ class GenesisHandler(BaseSimHandler):
         self.camera_inst_dict: dict[str, Camera] = {}
 
     def launch(self) -> None:
-        gs.init(backend=gs.gpu)  # TODO: add option for cpu
+        gs.init(backend=gs.gpu,logging_level=gs._logging.WARNING)  # TODO: add option for cpu
+        # zde změna ve vypisování logů - genesis je moc hlučný (nevypisujíse info logy ani debug)
         self.scene_inst = gs.Scene(
             sim_options=gs.options.SimOptions(
                 dt=self.scenario.sim_params.dt if self.scenario.sim_params.dt is not None else 1 / 100,

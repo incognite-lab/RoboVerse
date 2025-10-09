@@ -36,31 +36,50 @@ class StandingReward(HumanoidBaseReward):
         return torch.tensor(results_still) * stable_rewards
 class ReachReward(HumanoidBaseReward):
     """Reward function for reaching a target position."""
-
+    success_bar = 0.9
     def __init__(self, robot_name="g1_with_hands"):
         """Initialize the reach reward."""
         super().__init__(robot_name)
+        self.prev_distance = None  # pro výpočet změny vzdálenosti
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         """Compute the reach reward."""
-
         cube1_state = states.objects["cube_1"].root_state[:, :3]  # [num_envs, 3]
         right_hand_pos = right_palm_position(states, self.robot_name)  # [num_envs, 3]
 
-        # vzdálenost
+        # aktuální vzdálenost ruky od cíle
         distance = torch.norm(right_hand_pos - cube1_state, dim=1)  # [num_envs]
 
-        # tolerance - použij torch variantu, ne numpy
+        # základní odměna – blízkost k cíli
         distance_np = distance.detach().cpu().numpy()
-        reward_np = humanoid_reward_util.tolerance(
+        base_reward_np = humanoid_reward_util.tolerance(
             distance_np,
-            bounds=(0.0, 0.05),   # <-- dej malé tolerance okno místo (0,0)
-            margin=1.0
+            bounds=(0.0, 0.05),   # cílové okno
+            margin=0.5,
+            sigmoid="gaussian"
         )
-        # vrať to zpátky na stejný device a dtype
-        reach_reward = torch.as_tensor(reward_np, device=distance.device, dtype=distance.dtype)
+        base_reward = torch.as_tensor(base_reward_np, device=distance.device, dtype=distance.dtype)
 
-        return reach_reward
+        # --- BONUS: odměna za pohyb směrem k cíli ---
+        if self.prev_distance is None:
+            self.prev_distance = distance.clone()
+            approach_bonus = torch.zeros_like(distance)
+        else:
+            # delta_distance < 0 → přiblížil se
+            delta_distance = self.prev_distance - distance
+            approach_bonus = torch.clamp(delta_distance, min=0.0) * 2.0  # zesil efekt
+            self.prev_distance = distance.clone()
+
+        # --- Penalizace za vzdálení ---
+        away_penalty = torch.clamp(distance - 1.0, min=0.0) * 0.1  # pokud >1m, mírná penalizace
+
+        # --- Celková odměna ---
+        total_reward = base_reward + approach_bonus - away_penalty
+
+        # omez hodnoty (pro stabilitu)
+        total_reward = torch.clamp(total_reward, 0.0, 5.0)
+        #print("Total Reward:", total_reward)
+        return total_reward
 
 
 class OrientationReward(HumanoidBaseReward):
@@ -114,8 +133,8 @@ class HandProximityReward(HumanoidBaseReward):
 @configclass
 class ReachCfg(HumanoidTaskCfg):
     """Cube task for humanoid robots."""
-
-    episode_length = 1000
+    success_bar = 0.9
+    episode_length = 100
     objects = [
         ArticulationObjCfg(
             name="cube_1",
@@ -147,7 +166,7 @@ class ReachCfg(HumanoidTaskCfg):
     traj_filepath = "roboverse_data/trajs/humanoidbench/cube/v2/g1/initial_state_v2.json"
     #traj_filepath = "my_env/initial_state_g1_v2.json"
     checker = _ReachChecker()
-    reward_weights = [0.2, 0.5, 0.3]
+    reward_weights = [1.0, 0.5, 0.3]
     reward_functions = [ReachReward()]
 
     def extra_spec(self):

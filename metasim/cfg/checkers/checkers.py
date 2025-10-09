@@ -568,7 +568,9 @@ class _ReachChecker(BaseChecker):
             ee = "endeffector"
         right_hand_pos = right_palm_position(states, handler.robot.name, ee_name=ee)
         distance = torch.norm(right_hand_pos - cube1_state, dim=1)
-        terminated = distance < 0.1
+        terminated = (distance < 0.1) | (cube1_state[:,2] < 0.1)
+
+
         return terminated #torch.tensor(terminated)
     def reset(self, handler: BaseSimHandler, env_ids: list[int] | None = None):
         num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
@@ -576,8 +578,8 @@ class _ReachChecker(BaseChecker):
             env_ids = list(range(num_envs))
         states = []
         for i in range(num_envs):
-            x = random.uniform(-0.2, 0.2)
-            y = random.uniform(-0.3, 0.3)
+            x = 0#random.uniform(-0.2, 0.2)
+            y = 0.3#random.uniform(-0.3, 0.3)
 
             if handler.scenario.sim == "mujoco":
                 robot_pos = torch.tensor([-0.5,0.0,0.0])

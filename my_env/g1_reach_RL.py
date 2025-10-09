@@ -39,6 +39,35 @@ from stable_baselines3.common.callbacks import BaseCallback
 from torch.utils.tensorboard import SummaryWriter
 
 
+class SaveModelCallback(BaseCallback):
+        """
+        Callback for saving the model every 1M timesteps.
+
+        Args:
+            save_path (str): Path to the directory where models will be saved
+            save_freq (int): Frequency in timesteps at which to save the model
+            verbose (int): Verbosity level
+        """
+
+        def __init__(self, save_path: str, save_freq: int = 1000, verbose: int = 0):
+            super().__init__(verbose)
+            self.save_path = save_path
+            self.save_freq = save_freq
+            self.last_save_step = 0
+
+        def _init_callback(self) -> None:
+            # Create save directory if it doesn't exist
+            os.makedirs(self.save_path, exist_ok=True)
+
+        def _on_step(self) -> bool:
+            # Check if it's time to save the model
+            if self.num_timesteps - self.last_save_step >= self.save_freq:
+                path = os.path.join(self.save_path, f"model_{self.num_timesteps}")
+                self.model.save(path)
+                log.info(f"Model saved to {path}")
+                self.last_save_step = self.num_timesteps
+            return True
+
 class RewardPlotCallback(BaseCallback):
     """
     Callback pro logování akumulovaných rewardů do TensorBoard.
@@ -73,10 +102,10 @@ class Args:
     task: str = "reach"
     robot: str = "g1_with_hands"
     ## Handlers
-    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "mujoco"
+    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "genesis"
 
     ## Others
-    num_envs: int = 2
+    num_envs: int = 2048
     headless: bool = True
 
     def __post_init__(self):
@@ -165,7 +194,7 @@ class StableBaseline3VecEnv(VecEnv):
             self.timesteps[success.cpu()] = 0
         if success.any():
             self.timesteps[success.cpu()] = 0
-            rewards[success] = 10
+            rewards[success] = 10.0
             self.env.reset(env_ids=success.nonzero(as_tuple=False).squeeze(-1).tolist())
             extra = [{} for _ in range(self.num_envs)]
             return obs, rewards.cpu().numpy(), dones.cpu().numpy(), extra
@@ -239,7 +268,7 @@ def train_ppo():
     env = StableBaseline3VecEnv(metasim_env)
 
     policy_kwargs = dict(
-    net_arch=[256, 256, 128]  # dvě skryté vrstvy po 128 neuronech
+    net_arch=[128, 128, 128]  # dvě skryté vrstvy po 128 neuronech
     )
     # PPO configuration
     model = PPO(
@@ -247,9 +276,9 @@ def train_ppo():
         env,
         verbose=1,
         learning_rate=3e-4,
-        n_steps=50,
+        n_steps=256,
         batch_size=64,
-        n_epochs=100,
+        n_epochs=10,
         gamma=0.99,
         gae_lambda=0.95,
         clip_range=0.2,
@@ -263,9 +292,10 @@ def train_ppo():
     model = PPO.load(f"my_env/output/g1_stand_{task_name}_{args.sim}")
     model.set_env(env)"""
 
-    reward_callback = RewardPlotCallback("my_env/output/ppo_tensorboard/")
     #Start training
-    model.learn(total_timesteps=100_000_000)
+    model.learn(total_timesteps=50_000_000,
+                progress_bar=True,
+                )
 
     #Save the model
     task_name = scenario.task.__class__.__name__[:-3]

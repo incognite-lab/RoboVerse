@@ -183,7 +183,8 @@ class Sb3EnvWrapper(VecEnv):
         self.episode_lengths += 1
 
         # Determine whether the cumulative reward exceeds success_bar.
-        success_mask = (self.episode_rewards >= self.success_bar).astype(np.int32)
+        success_mask = (rewards >= self.success_bar).astype(np.int32)
+        #success_mask = (self.episode_rewards >= self.success_bar).astype(np.int32)
         self.episode_success = success_mask
         #log.info(f"success_mask: {success_mask}, rewards: {self.episode_rewards}")
         # Construct infos list containing "TimeLimit.truncated" required by SB3
@@ -214,7 +215,6 @@ class Sb3EnvWrapper(VecEnv):
 
             reset_observations = self.get_humanoid_observation(self.env.handler.get_states())
             reset_observations_np = reset_observations.cpu().numpy()
-            #reset_observations_np = self._combine_obs(reset_observations_np)
             observations[done_indices] = reset_observations_np[done_indices]
 
         # Return in the format required by SB3 VecEnv API

@@ -125,7 +125,7 @@ class StableBaseline3VecEnv(VecEnv):
         """Reset the environment."""
         obs, _ = self.env.reset()
         obs = obs.cpu().numpy()
-        obs = self._combine_obs(obs)
+        #obs = self._combine_obs(obs)
         self.timesteps.zero_()
         return obs
 
@@ -144,7 +144,7 @@ class StableBaseline3VecEnv(VecEnv):
         """Wait for the step to complete."""
         obs, rewards, unsuccess, timeout, _ = self.env.step(self.action_dicts)
         obs = obs.cpu().numpy()
-        obs = self._combine_obs(obs)
+        #obs = self._combine_obs(obs)
 
         dones = timeout.to(unsuccess.device) | unsuccess
 
@@ -157,7 +157,7 @@ class StableBaseline3VecEnv(VecEnv):
             self.timesteps[unsuccess.cpu()] = 0
 
             self.env.reset(env_ids=unsuccess.nonzero(as_tuple=False).squeeze(-1).tolist())
-            rewards[unsuccess] = -100.0
+            rewards[unsuccess] = 10.0
             #return obs, rewards.cpu().numpy(), dones.cpu().numpy(), _
 
 
@@ -229,42 +229,24 @@ def video_ppo():
 
     # load the model
     model = PPO.load(f"my_env/output/g1_stand_{task_name}_{args.sim}_3")
-    model.set_env(env)
+    #model.set_env(env)
 
     # inference
     obs = env.reset()
     obs_orin = metasim_env.env.handler.get_states()
     obs_saver.add(obs_orin)
 
-    plt.ion()
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection="3d")
-
-    # počáteční vektor (šípka)
-    quiver = ax.quiver(0, 0, 0, 0, 0, 0, color="r", length=1.0)
-
-    ax.set_xlim([-1, 1])
-    ax.set_ylim([-1, 1])
-    ax.set_zlim([-1, 1])
-    ax.set_xlabel("X axis")
-    ax.set_ylabel("Y axis")
-    ax.set_zlabel("Z axis")
-    ax.set_title("Gyroscope 3D Orientation")
-
-
     reward_acumulator = [0.0]
     # rollout
-    for _ in range(300):
-        actions, _ = model.predict(obs, deterministic=True)
+    for _ in range(30000):
+        actions, _ = model.predict(obs, deterministic=False)
         env.step_async(actions)
         obs, rewards, dones, infos = env.step_wait()
         reward_acumulator += rewards
         print(f"Step reward: {rewards}, Accumulated reward: {sum(reward_acumulator)}")
-        gyro = env.sensors[0].get_data()   # [gx, gy, gz]
+        #gyro = env.sensors[0].get_data()   # [gx, gy, gz]
         # aktualizace vektoru
-        quiver.remove()
-        quiver = ax.quiver(0, 0, 0, gyro[0][0], gyro[0][1], gyro[0][2],
-                        color="r", length=1.0, normalize=True)
+
         plt.pause(0.01)
 
         obs_orin = metasim_env.env.handler.get_states()

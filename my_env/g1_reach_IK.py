@@ -45,7 +45,7 @@ class Args:
     task: str = "reach"
     robot: str = "g1_with_hands"
     ## Handlers
-    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "sapien3"
+    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "genesis"
 
     ## Others
     num_envs: int = 1
@@ -86,6 +86,10 @@ def ik_solver(robot_cfg: str, target_name: str, env: MetaSimVecEnv) -> dict:
     # Example: set a target position for the right palm
     target_pos = pose_cube
     target_orient = ori_cube
+    if target_orient.device != 'cpu':
+        target_orient = target_orient.cpu()
+    if target_pos.device != 'cpu':
+        target_pos = target_pos.cpu()
     rot = R.from_quat([target_orient[0], target_orient[1], target_orient[2], target_orient[3]])  # [x, y, z, w]
     target_rot_matrix = rot.as_matrix()
     target_frame = np.eye(4)
@@ -107,6 +111,10 @@ def ik_solver(robot_cfg: str, target_name: str, env: MetaSimVecEnv) -> dict:
     pelvis_idx = body_names.index("pelvis")
     pelvis_pos = body_states[0,pelvis_idx, :3]      # x, y, z
     pelvis_quat = body_states[0,pelvis_idx, 3:7]
+    if pelvis_pos.device != 'cpu':
+        pelvis_pos = pelvis_pos.cpu()
+    if pelvis_quat.device != 'cpu':
+        pelvis_quat = pelvis_quat.cpu()
     rot = R.from_quat([pelvis_quat[1], pelvis_quat[2], pelvis_quat[3], pelvis_quat[0]])  # [x, y, z, w]
     pelvis_rot_matrix = rot.as_matrix()
     base_frame = np.eye(4)

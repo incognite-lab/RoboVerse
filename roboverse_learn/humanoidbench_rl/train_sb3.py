@@ -186,6 +186,7 @@ def main():
             batch_size=config.get("batch_size", 64),
             n_epochs=config.get("n_epochs", 10),
             verbose=1,
+            ent_coef=config.get("ent_coef", 0.005),
             tensorboard_log=f"./ppo_logs/{run.id}",
             device="cuda",
             policy_kwargs=policy_kwargs,
@@ -310,20 +311,32 @@ def main():
         # Evaluate the agent
         log.info("Starting evaluation...")
         obs = env.reset()
-        rewards = []
-        for _ in range(1000):
+        total_rewards = []
+        episode_rewards = 0
+
+        for step in range(1000):
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, done, info = env.step(action)
-            rewards.append(reward)
-            env.render()
-            if done[0]:
-                obs = env.reset()
-                import matplotlib.pyplot as plt
 
-                plt.plot(rewards)
-                plt.savefig("rewards.png")
-                plt.clf()
-                rewards = []
+            # pokud víc envs -> sum všech rewardů
+            if isinstance(reward, (list, np.ndarray)):
+                episode_rewards += np.sum(reward)
+            else:
+                episode_rewards += reward
+
+            # reset pouze tam, kde je done
+            if isinstance(done, (list, np.ndarray)):
+                if np.any(done):
+                    total_rewards.append(episode_rewards)
+                    obs = env.reset()
+                    episode_rewards = 0
+            else:
+                if done:
+                    total_rewards.append(episode_rewards)
+                    obs = env.reset()
+                    episode_rewards = 0
+
+        print("Mean reward:", np.mean(total_rewards))
 
     # Close environment and wandb
     env.close()
