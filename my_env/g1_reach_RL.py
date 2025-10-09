@@ -293,7 +293,10 @@ def train_ppo():
     model.set_env(env)"""
 
     #Start training
-    model.learn(total_timesteps=50_000_000,
+    model.learn(total_timesteps=100_000_000,
+                callback=[
+                    SaveModelCallback(save_path="my_env/output/ppo_models", save_freq=10_000_000)
+                ],
                 progress_bar=True,
                 )
 
