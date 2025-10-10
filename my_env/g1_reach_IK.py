@@ -42,10 +42,10 @@ class Args:
     task: str = "reach"
     robot: str = "g1_with_hands"
     ## Handlers
-    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "genesis"
+    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "pybullet"
 
     ## Others
-    num_envs: int = 1
+    num_envs: int = 2
     headless: bool = False
 
     def __post_init__(self):

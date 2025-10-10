@@ -35,7 +35,6 @@ from metasim.wrapper.gym_vec_env import MetaSimVecEnv
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3 import PPO
 from gymnasium import spaces
-#from metasim.cfg.sensors.gyro import GyroSensor
 from stable_baselines3.common.callbacks import BaseCallback
 from torch.utils.tensorboard import SummaryWriter
 

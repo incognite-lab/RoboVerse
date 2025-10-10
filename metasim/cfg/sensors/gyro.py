@@ -23,19 +23,25 @@ class GyroSensorCfg(BaseGyroSensor):
     #    self.cfg = cfg
     #    self.sim = sim_handler
 
-    def get_data(self, States, num_env) -> np.ndarray:
+    def get_data(self, States, envs_ids) -> np.ndarray:
         if not self.enabled:
             return np.zeros(3, dtype=np.float32)
         # získání stavu linku z fyzikální simulace
+        data = np.zeros((len(envs_ids), 3), dtype=np.float32)
+        for env in envs_ids:
+            link_idx=States[self.mount_to].body_names.index(self.mount_link)
+            quats = States[self.mount_to].body_state[env, link_idx, 2:6].cpu().numpy()
+            euler = R.from_quat(quats).as_euler("xyz", degrees=True).astype(np.float32)
+            euler = np.abs(euler)
+            data[env] = euler
+
+        # link_idx = States[self.mount_to].body_names.index(self.mount_link)
+
+        # # extrakce kvaternionu [x, y, z, w]
+        # quats = States[self.mount_to].body_state[:, link_idx, 2:6].cpu().numpy()
+        #        # převod na Eulerovy úhly (XYZ)
+        # euler = R.from_quat(quats).as_euler("xyz", degrees=True).astype(np.float32)
+        return data
 
 
-        link_idx = States[self.mount_to].body_names.index(self.mount_link)
-
-        # extrakce kvaternionu [x, y, z, w]
-        quats = States[self.mount_to].body_state[:, link_idx, 2:6].cpu().numpy()
-               # převod na Eulerovy úhly (XYZ)
-        euler = R.from_quat(quats).as_euler("xyz", degrees=True).astype(np.float32)
-
-
-
-        return np.abs(euler)
+        #return np.abs(euler)

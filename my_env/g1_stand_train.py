@@ -37,46 +37,19 @@ from stable_baselines3 import PPO
 from gymnasium import spaces
 from stable_baselines3.common.callbacks import BaseCallback
 from torch.utils.tensorboard import SummaryWriter
-
-
-class RewardPlotCallback(BaseCallback):
-    """
-    Callback pro logování akumulovaných rewardů do TensorBoard.
-    """
-
-    def __init__(self, log_dir: str, verbose: int = 0):
-        super().__init__(verbose)
-        self.writer = SummaryWriter(log_dir)
-        self.episode_rewards = []
-
-    def _on_step(self) -> bool:
-        rewards = self.locals["rewards"]
-        dones = self.locals["dones"]
-
-        for r, d in zip(rewards, dones):
-            if len(self.episode_rewards) == 0:
-                self.episode_rewards.append(0.0)
-            self.episode_rewards[-1] += r
-            if d:
-                ep_reward = self.episode_rewards[-1]
-                self.logger.record("episode/accumulated_reward", ep_reward)
-                self.episode_rewards.append(0.0)
-        return True
-
-    def _on_training_end(self) -> None:
-        self.writer.close()
+from my_env.callbacks import TensorboardMetricsCallback, SaveModelCallback
 
 
 @configclass
 class Args:
     """Arguments for the static scene."""
     task: str = "stand"
-    robot: str = "g1_no_hands"
+    robot: str = "g1_with_hands"
     ## Handlers
-    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "mujoco"
+    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "genesis"
 
     ## Others
-    num_envs: int = 1
+    num_envs: int = 2
     headless: bool = False
 
     def __post_init__(self):
@@ -94,29 +67,29 @@ class StableBaseline3VecEnv(VecEnv):
         joint_limits = env.scenario.robots[0].joint_limits
         scale = 0.5
         self.action_space = spaces.Box(
-            #low=np.array([lim[0] for lim in joint_limits.values()]),
-            #high=np.array([lim[1] for lim in joint_limits.values()]),
-            low=-scale,
-            high=scale,
+            low=np.array([lim[0] for lim in joint_limits.values()]),
+            high=np.array([lim[1] for lim in joint_limits.values()]),
+            #low=-scale,
+            #high=scale,
             shape=(len(joint_limits),),
             dtype=np.float32,
         )
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(len(joint_limits),),  # joints + XYZ gyro
+            shape=(len(joint_limits)+3,),  # joints + XYZ gyro
             dtype=np.float32,
         )
         self.env = env
-        #self.sensors = [GyroSensor(cfg, env.env.handler) for cfg in env.scenario.sensors]
         self.render_mode = None
         self.timesteps = torch.zeros(env.num_envs, dtype=torch.float32, device=("cuda" if args.sim == 'isaaclab' or args.sim == 'genesis' else "cpu"))
 
         super().__init__(env.num_envs, self.observation_space, self.action_space)
     def _combine_obs(self, obs: np.ndarray) -> np.ndarray:
         """Spojí joint states a gyro data pro všechna envs."""
-        gyrodata = self.sensors[0].get_data()  # shape (num_envs, 3)
-
+        states = self.env.env.handler.get_states()
+        gyrodata = states.sensors["gyro0"].cpu().numpy()  # shape (num_envs, 3)
+        gyrodata = gyrodata.reshape(self.num_envs, 3)
         obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
         return np.concatenate([obs, gyrodata], axis=1).astype(np.float32)
 
@@ -124,7 +97,7 @@ class StableBaseline3VecEnv(VecEnv):
         """Reset the environment."""
         obs, _ = self.env.reset()
         obs = obs.cpu().numpy()
-        #obs = self._combine_obs(obs)
+        obs = self._combine_obs(obs)
         self.timesteps.zero_()
         return obs
 
@@ -145,7 +118,7 @@ class StableBaseline3VecEnv(VecEnv):
         """Wait for the step to complete."""
         obs, rewards, unsuccess, timeout, _ = self.env.step(self.action_dicts)
         obs = obs.cpu().numpy()
-        #obs = self._combine_obs(obs)
+        obs = self._combine_obs(obs)
 
         dones = timeout.to(unsuccess.device) | unsuccess
 
@@ -212,23 +185,25 @@ class StableBaseline3VecEnv(VecEnv):
 def train_ppo():
     """Train PPO for reaching task."""
     #Choice 1: use scenario config to initialize the environment
+
     scenario = ScenarioCfg(task=args.task, robots=[args.robot], sim=args.sim, num_envs=args.num_envs, headless=args.headless)
+    scenario.robots[0].fix_base_link = False
     scenario.episode_length = 500
     scenario.cameras = []  # XXX: remove cameras to avoid rendering to speed up
-    """scenario.sensors = [GyroSensorCfg(
+    scenario.sensors = [GyroSensorCfg(
         name="gyro0",
         pos=(0.0, 0.0, 0.0),
         mount_to=args.robot,
         mount_link="torso_link"
 
         )
-        ]"""
+        ]
     metasim_env = MetaSimVecEnv(scenario, task_name=args.task, num_envs=args.num_envs, sim=args.sim)
 
     env = StableBaseline3VecEnv(metasim_env)
 
     policy_kwargs = dict(
-    net_arch=[256, 256, 128]  # dvě skryté vrstvy po 128 neuronech
+    net_arch=[128, 128, 128]  # dvě skryté vrstvy po 128 neuronech
     )
     # PPO configuration
     model = PPO(
@@ -238,7 +213,7 @@ def train_ppo():
         learning_rate=3e-4,
         n_steps=50,
         batch_size=64,
-        n_epochs=100,
+        n_epochs=10,
         gamma=0.99,
         gae_lambda=0.95,
         clip_range=0.2,
@@ -252,9 +227,13 @@ def train_ppo():
     model = PPO.load(f"my_env/output/g1_stand_{task_name}_{args.sim}")
     model.set_env(env)"""
 
-    reward_callback = RewardPlotCallback("my_env/output/ppo_tensorboard/")
     #Start training
-    model.learn(total_timesteps=100_000_000)
+    model.learn(total_timesteps=100_000_000,
+                callback=[
+                    SaveModelCallback(save_path="my_env/output/ppo_models", save_freq=10_000_000),
+                    TensorboardMetricsCallback(log_dir="my_env/output/ppo_tensorboard")
+                ],
+                progress_bar=True,)
 
     #Save the model
     task_name = scenario.task.__class__.__name__[:-3]

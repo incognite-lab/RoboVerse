@@ -22,10 +22,13 @@ class G1WithHandsCfg(BaseRobotCfg):
     ik_urdf_path: str = "roboverse_data/robots/g1/IK_data/urdf_pelvis_to_RHPL.urdf"
 
     enabled_gravity: bool = True
-    fix_base_link: bool = True
+    fix_base_link: bool = False
     enabled_self_collisions: bool = False
     isaacgym_flip_visual_attachments: bool = False
     collapse_fixed_joints: bool = False
+    if not fix_base_link and not collapse_fixed_joints:
+        urdf_path: str = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
+
 
 
 

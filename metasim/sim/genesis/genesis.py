@@ -7,6 +7,7 @@ from genesis.engine.entities.rigid_entity import RigidEntity, RigidJoint
 from genesis.vis.camera import Camera
 from loguru import logger as log
 
+from metasim.cfg.sensors import PinholeCameraCfg, GyroSensorCfg
 from metasim.cfg.objects import ArticulationObjCfg, PrimitiveCubeCfg, PrimitiveSphereCfg, RigidObjCfg, _FileBasedMixin
 from metasim.cfg.scenario import ScenarioCfg
 from metasim.queries.base import BaseQueryType
@@ -68,9 +69,9 @@ class GenesisHandler(BaseSimHandler):
         ## Add robot
         self.robot_inst: RigidEntity = self.scene_inst.add_entity(
             gs.morphs.URDF(
-                pos=(0, 0, 2),
                 file=self.robot.urdf_path,
                 merge_fixed_links=self.robot.collapse_fixed_joints,
+                fixed=self.robot.fix_base_link,
             ),
             material=gs.materials.Rigid(gravity_compensation=1 if not self.robot.enabled_gravity else 0),
         )
@@ -192,8 +193,15 @@ class GenesisHandler(BaseSimHandler):
                 depth=torch.from_numpy(depth.copy()).unsqueeze(0).repeat_interleave(self.num_envs, dim=0),  # XXX
             )
             camera_states[camera.name] = state
-
-        return TensorState(objects=object_states, robots=robot_states, cameras=camera_states, sensors={})
+        sensors = {}
+        for sensor in self.scenario.sensors:
+            if isinstance(sensor, GyroSensorCfg):
+                gyro_data = sensor.get_data(robot_states,envs_ids=env_ids)  # shape (num_envs, 3)
+                gyro_tensor = torch.tensor(gyro_data, dtype=torch.float32).unsqueeze(0)
+                sensors[sensor.name] = gyro_tensor
+            else:
+                log.warning(f"Unknown sensor type: {sensor.cfg_type}, skipping...")
+        return TensorState(objects=object_states, robots=robot_states, cameras=camera_states, sensors=sensors)
 
 
     def get_body_names(self, obj_name: str, sort: bool = False) -> list[str]:
@@ -250,7 +258,7 @@ class GenesisHandler(BaseSimHandler):
                     print("DEBUG: no joints for", obj.name)
                 else:
                     dof_pos = np.array([
-                        [states_flat[env_id][obj.name]["dof_pos"][jn] for jn in joint_names]
+                        [states_flat[env_id][obj.name]["dof_pos"][jn] for jn in joint_names if jn != 'floating_base_joint']
                         for env_id in env_ids
                     ])
                     base_pos = obj_inst.get_pos(envs_idx=env_ids)   # [N,3]

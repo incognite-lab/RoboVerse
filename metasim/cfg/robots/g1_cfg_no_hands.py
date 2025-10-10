@@ -21,7 +21,7 @@ class G1NoHandsCfg(BaseRobotCfg):
     fix_base_link: bool = False
     enabled_self_collisions: bool = False
     isaacgym_flip_visual_attachments: bool = False
-    collapse_fixed_joints: bool = True
+    collapse_fixed_joints: bool = False
 
 
 

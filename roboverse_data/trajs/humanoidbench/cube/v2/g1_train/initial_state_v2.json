@@ -4,6 +4,18 @@
             "init_state": {
                 "g1_with_hands": {
                     "dof_pos": {
+                        "left_hip_pitch_joint": 0.0,
+                        "left_hip_roll_joint": 0.0,
+                        "left_hip_yaw_joint": 0.0,
+                        "left_knee_joint": 0.0,
+                        "left_ankle_pitch_joint": 0.0,
+                        "left_ankle_roll_joint": 0.0,
+                        "right_hip_pitch_joint": 0.0,
+                        "right_hip_roll_joint": 0.0,
+                        "right_hip_yaw_joint": 0.0,
+                        "right_knee_joint": 0.0,
+                        "right_ankle_pitch_joint": 0.0,
+                        "right_ankle_roll_joint": 0.0,
                         "waist_yaw_joint": 0.0,
                         "waist_roll_joint": 0.0,
                         "waist_pitch_joint": 0.0,
