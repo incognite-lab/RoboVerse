@@ -9,7 +9,6 @@ from typing import Literal
 # except ImportError:
 #     pass
 
-import os
 
 from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.pyplot as plt
@@ -29,71 +28,14 @@ from metasim.cfg.scenario import ScenarioCfg
 from metasim.cfg.sensors import PinholeCameraCfg, GyroSensorCfg
 from metasim.constants import PhysicStateType, SimType
 from metasim.utils import configclass
-from metasim.utils.setup_util import get_sim_env_class
 from my_env.utils import ObsSaver
 from metasim.wrapper.gym_vec_env import MetaSimVecEnv
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3 import PPO
 from gymnasium import spaces
-from stable_baselines3.common.callbacks import BaseCallback
-from torch.utils.tensorboard import SummaryWriter
+from my_env.callbacks import TensorboardMetricsCallback, SaveModelCallback
 
 
-class SaveModelCallback(BaseCallback):
-        """
-        Callback for saving the model every 1M timesteps.
-
-        Args:
-            save_path (str): Path to the directory where models will be saved
-            save_freq (int): Frequency in timesteps at which to save the model
-            verbose (int): Verbosity level
-        """
-
-        def __init__(self, save_path: str, save_freq: int = 1000, verbose: int = 0):
-            super().__init__(verbose)
-            self.save_path = save_path
-            self.save_freq = save_freq
-            self.last_save_step = 0
-
-        def _init_callback(self) -> None:
-            # Create save directory if it doesn't exist
-            os.makedirs(self.save_path, exist_ok=True)
-
-        def _on_step(self) -> bool:
-            # Check if it's time to save the model
-            if self.num_timesteps - self.last_save_step >= self.save_freq:
-                path = os.path.join(self.save_path, f"model_{self.num_timesteps}")
-                self.model.save(path)
-                log.info(f"Model saved to {path}")
-                self.last_save_step = self.num_timesteps
-            return True
-
-class RewardPlotCallback(BaseCallback):
-    """
-    Callback pro logování akumulovaných rewardů do TensorBoard.
-    """
-
-    def __init__(self, log_dir: str, verbose: int = 0):
-        super().__init__(verbose)
-        self.writer = SummaryWriter(log_dir)
-        self.episode_rewards = []
-
-    def _on_step(self) -> bool:
-        rewards = self.locals["rewards"]
-        dones = self.locals["dones"]
-
-        for r, d in zip(rewards, dones):
-            if len(self.episode_rewards) == 0:
-                self.episode_rewards.append(0.0)
-            self.episode_rewards[-1] += r
-            if d:
-                ep_reward = self.episode_rewards[-1]
-                self.logger.record("episode/accumulated_reward", ep_reward)
-                self.episode_rewards.append(0.0)
-        return True
-
-    def _on_training_end(self) -> None:
-        self.writer.close()
 
 
 @configclass
@@ -276,14 +218,14 @@ def train_ppo():
         env,
         verbose=1,
         learning_rate=3e-4,
-        n_steps=256,
-        batch_size=64,
-        n_epochs=10,
-        gamma=0.99,
+        n_steps=128,
+        batch_size=256,
+        n_epochs=8,
+        gamma=0.80,
         gae_lambda=0.95,
-        clip_range=0.2,
+        clip_range=0.4,
         tensorboard_log="my_env/output/ppo_tensorboard/",
-        device="cuda" if torch.cuda.is_available() else "cpu",
+        device= 'cpu', #"cuda" if torch.cuda.is_available() else "cpu",
         policy_kwargs=policy_kwargs,
     )
 
@@ -295,7 +237,8 @@ def train_ppo():
     #Start training
     model.learn(total_timesteps=100_000_000,
                 callback=[
-                    SaveModelCallback(save_path="my_env/output/ppo_models", save_freq=10_000_000)
+                    SaveModelCallback(save_path="my_env/output/ppo_models", save_freq=10_000_000),
+                    TensorboardMetricsCallback(log_dir="my_env/output/ppo_tensorboard")
                 ],
                 progress_bar=True,
                 )

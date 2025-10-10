@@ -133,8 +133,8 @@ class StableBaseline3VecEnv(VecEnv):
         self.action_dicts = [
             {
                 self.env.scenario.robots[0].name: {
-                    #"dof_pos_target": dict(zip(self.env.scenario.robots[0].joint_limits.keys(), action))
-                    "dof_pos_target": self.env.scenario.robots[0].default_joint_positions
+                    "dof_pos_target": dict(zip(self.env.scenario.robots[0].joint_limits.keys(), action))
+                    #"dof_pos_target": self.env.scenario.robots[0].default_joint_positions
 
                 }
             }

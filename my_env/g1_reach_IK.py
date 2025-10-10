@@ -11,7 +11,6 @@ from typing import Literal
 
 import os
 
-from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.pyplot as plt
 import rootutils
 import torch
@@ -20,8 +19,6 @@ from loguru import logger as log
 from rich.logging import RichHandler
 import numpy as np
 from ikpy.chain import Chain
-from ikpy.link import URDFLink
-from metasim.utils.kinematics_utils import get_curobo_models
 
 rootutils.setup_root(__file__, pythonpath=True)
 log.configure(handlers=[{"sink": RichHandler(), "format": "{message}"}])
