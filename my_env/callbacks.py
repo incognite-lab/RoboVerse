@@ -4,6 +4,7 @@ import os
 from loguru import logger as log
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
+from datetime import datetime
 
 
 class TensorboardMetricsCallback(BaseCallback):
@@ -73,17 +74,24 @@ class SaveModelCallback(BaseCallback):
             self.save_path = save_path
             self.save_freq = save_freq
             self.last_save_step = 0
+            self.run_dir = None
 
         def _init_callback(self) -> None:
             # Create save directory if it doesn't exist
             os.makedirs(self.save_path, exist_ok=True)
 
+            # Create unique subdirectory for this run
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            self.run_dir = os.path.join(self.save_path, f"run_{timestamp}")
+            os.makedirs(self.run_dir, exist_ok=True)
+
+            log.info(f"Created new model save directory: {self.run_dir}")
         def _on_step(self) -> bool:
-            # Check if it's time to save the model
+            # Save model every N steps
             if self.num_timesteps - self.last_save_step >= self.save_freq:
-                path = os.path.join(self.save_path, f"model_{self.num_timesteps}")
-                self.model.save(path)
-                log.info(f"Model saved to {path}")
+                model_path = os.path.join(self.run_dir, f"model_{self.num_timesteps}")
+                self.model.save(model_path)
+                log.info(f"✅ Model saved to {model_path}")
                 self.last_save_step = self.num_timesteps
             return True
 

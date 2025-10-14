@@ -553,6 +553,8 @@ class _CubeChecker(BaseChecker):
                 terminated.append(False)
 
         return torch.tensor(terminated)
+
+from scipy.spatial.transform import Rotation as R
 @configclass
 class _ReachCheckerPosOri(BaseChecker):
     def check(self, handler: BaseSimHandler) -> torch.BoolTensor:
@@ -570,6 +572,9 @@ class _ReachCheckerPosOri(BaseChecker):
         right_hand_pos = right_palm_position(states, handler.robot.name, ee_name=ee)
         right_hand_ori = right_palm_orientation(states, handler.robot.name, ee_name=ee)
         cube1_orient = states.objects["cube_1"].root_state[:, 3:7]
+        angle_xis = R.from_quat(cube1_orient.cpu().numpy())
+
+
         dot_product = right_hand_ori * cube1_orient
         print(dot_product)
         diff_q1 = torch.abs(dot_product[:,0] - cube1_orient[:,0])
@@ -594,7 +599,7 @@ class _ReachCheckerPosOri(BaseChecker):
         states = []
         for i in range(num_envs):
             x = 0 #random.uniform(-0.2, 0.2)
-            y = 0.2 #random.uniform(-0.3, 0.3)
+            y = 0 #random.uniform(-0.3, 0.3)
 
             if handler.scenario.sim == "mujoco":
                 robot_pos = torch.tensor([-0.5,0.0,0.0])
@@ -614,7 +619,7 @@ class _ReachCheckerPosOri(BaseChecker):
                 "objects": {
                     "cube_1": {
                         "pos": torch.tensor([x, y, z_cube]),
-                        "rot": torch.tensor([0, 0, 0, 1]),
+                        "rot": torch.tensor([1, 0, 0, 0]),
                     },
                     "table": {
                         "pos": torch.tensor([0.6, 0.0, -0.1]),
