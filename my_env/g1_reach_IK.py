@@ -39,13 +39,13 @@ from metasim.wrapper.gym_vec_env import MetaSimVecEnv
 @configclass
 class Args:
     """Arguments for the static scene."""
-    task: str = "reach"
+    task: str = "reachposori"
     robot: str = "g1_with_hands"
     ## Handlers
-    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "pybullet"
+    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "genesis"
 
     ## Others
-    num_envs: int = 2
+    num_envs: int = 1
     headless: bool = False
 
     def __post_init__(self):
@@ -178,7 +178,7 @@ def run_ik():
     for _ in range(50):
 
 
-        for step in range(100):
+        for step in range(50):
             if step % 1 == 0:
                 joint_positions = ik_solver(robot_cfg, "cube_1", env)
             obs, reward, done, info, extra = env.step([joint_positions])

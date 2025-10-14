@@ -41,14 +41,14 @@ from my_env.callbacks import TensorboardMetricsCallback, SaveModelCallback
 @configclass
 class Args:
     """Arguments for the static scene."""
-    task: str = "reach"
+    task: str = "reachpos"
     robot: str = "g1_with_hands"
     ## Handlers
     sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "genesis"
 
     ## Others
-    num_envs: int = 2048
-    headless: bool = True
+    num_envs: int = 2
+    headless: bool = False
 
     def __post_init__(self):
         """Post-initialization configuration."""
@@ -77,7 +77,7 @@ class StableBaseline3VecEnv(VecEnv):
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(len(joint_limits)+7,),  # joints(left and right arm and torso) + XYZ + orientation
+            shape=(len(joint_limits)+3,),  # joints(left and right arm and torso) + XYZ + orientation
             dtype=np.float32,
         )
         self.env = env
@@ -95,10 +95,10 @@ class StableBaseline3VecEnv(VecEnv):
     def _odd_cube_obs(self, obs: np.ndarray) -> np.ndarray:
         """Spojí joint states a gyro data pro všechna envs."""
         cube_pos = self.env.env.handler.get_states().objects["cube_1"].body_state[:,0,:3].cpu().numpy()
-        cube_ori = self.env.env.handler.get_states().objects["cube_1"].body_state[:,0,3:7].cpu().numpy()
+        #cube_ori = self.env.env.handler.get_states().objects["cube_1"].body_state[:,0,3:7].cpu().numpy()
 
         obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
-        return np.concatenate([obs, cube_pos, cube_ori], axis=1).astype(np.float32)
+        return np.concatenate([obs, cube_pos], axis=1).astype(np.float32)
     def reset(self):
         """Reset the environment."""
         obs, _ = self.env.reset()

@@ -344,6 +344,12 @@ def right_palm_position(envstate, robot_name: str, ee_name: str = "right_hand_pa
     body_id = robot_body_name.index(ee_name)
     body_pos = envstate.robots[robot_name].body_state[:, body_id, 0:3]
     return body_pos
+def right_palm_orientation(envstate, robot_name: str, ee_name: str = "right_hand_palm_link"):
+    """Returns the orientation of the right palm."""
+    robot_body_name = envstate.robots[robot_name].body_names
+    body_id = robot_body_name.index(ee_name)
+    body_quat = envstate.robots[robot_name].body_state[:, body_id, 3:7]
+    return body_quat
 
 
 

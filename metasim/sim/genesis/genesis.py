@@ -70,8 +70,7 @@ class GenesisHandler(BaseSimHandler):
         self.robot_inst: RigidEntity = self.scene_inst.add_entity(
             gs.morphs.URDF(
                 file=self.robot.urdf_path,
-                merge_fixed_links=self.robot.collapse_fixed_joints,
-                fixed=self.robot.fix_base_link,
+                merge_fixed_links=self.robot.collapse_fixed_joints
             ),
             material=gs.materials.Rigid(gravity_compensation=1 if not self.robot.enabled_gravity else 0),
         )
@@ -255,10 +254,11 @@ class GenesisHandler(BaseSimHandler):
             if isinstance(obj, ArticulationObjCfg):
                 joint_names = self.get_joint_names(obj.name, sort=False)
                 if len(joint_names) == 0 or joint_names == ["root_joint"]:
-                    print("DEBUG: no joints for", obj.name)
+                    #print("DEBUG: no joints for", obj.name)
+                    continue
                 else:
                     dof_pos = np.array([
-                        [states_flat[env_id][obj.name]["dof_pos"][jn] for jn in joint_names if jn != 'floating_base_joint']
+                        [states_flat[env_id][obj.name]["dof_pos"][jn] for jn in joint_names]
                         for env_id in env_ids
                     ])
                     base_pos = obj_inst.get_pos(envs_idx=env_ids)   # [N,3]

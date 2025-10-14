@@ -26,10 +26,6 @@
       </material>
     </visual>
   </link>
-   <joint name="pelvis_contour_joint" type="fixed">
-    <child link="pelvis"/>
-    <parent link="pelvis_contour_link"/>
-  </joint>
   <link name="pelvis_contour_link">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -52,7 +48,10 @@
       </geometry>
     </collision>
   </link>
-
+  <joint name="pelvis_contour_joint" type="fixed">
+    <parent link="pelvis"/>
+    <child link="pelvis_contour_link"/>
+  </joint>
 
   <!-- Legs -->
   <link name="left_hip_pitch_link">

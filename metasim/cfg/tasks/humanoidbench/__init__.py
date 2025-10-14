@@ -20,4 +20,5 @@ from .spoon_cfg import SpoonCfg
 from .stair_cfg import StairCfg
 from .stand_cfg import StandCfg
 from .walk_cfg import WalkCfg
-from .reach_cfg import ReachCfg
+from .reach_cfg_pos_ori import ReachposoriCfg
+from .reach_cfg_pos import ReachposCfg

@@ -18,7 +18,8 @@ def __get_quick_ref():
     from .fetch import FetchCloseBoxCfg
     from .gapartnet import GapartnetOpenDrawerCfg
     from .humanoidbench import StandCfg
-    from .humanoidbench import ReachCfg
+    from .humanoidbench import ReachposCfg
+    from .humanoidbench import ReachposoriCfg
     from .isaacgym_envs.allegrohand_cfg import AllegroHandCfg
     from .isaacgym_envs.ant_isaacgym_cfg import AntIsaacGymCfg
     from .isaacgym_envs.anymal_cfg import AnymalCfg

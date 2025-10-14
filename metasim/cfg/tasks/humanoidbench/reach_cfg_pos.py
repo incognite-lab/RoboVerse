@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import torch
 
-from metasim.cfg.checkers import _ReachChecker
+from metasim.cfg.checkers import _ReachCheckerPos
 from metasim.cfg.objects import RigidObjCfg, ArticulationObjCfg
 from metasim.constants import PhysicStateType
 from metasim.types import EnvState
 from metasim.utils import configclass, humanoid_reward_util, humanoid_robot_util
+from scipy.spatial.transform import Rotation as R
+
+
 
 from .base_cfg import HumanoidBaseReward, HumanoidTaskCfg, StableReward
-from metasim.utils.humanoid_robot_util import right_palm_position
+from metasim.utils.humanoid_robot_util import right_palm_position,right_palm_orientation
 
 
 class StandingReward(HumanoidBaseReward):
@@ -45,7 +48,8 @@ class ReachReward(HumanoidBaseReward):
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         """Compute the reach reward."""
         cube1_state = states.objects["cube_1"].root_state[:, :3]  # [num_envs, 3]
-        right_hand_pos = right_palm_position(states, self.robot_name)  # [num_envs, 3]
+        #right_hand_pos = right_palm_position(states, self.robot_name)
+        right_hand_pos = right_palm_position(states, self.robot_name,"endeffector")  # [num_envs, 3]
 
         # aktuální vzdálenost ruky od cíle
         distance = torch.norm(right_hand_pos - cube1_state, dim=1)  # [num_envs]
@@ -82,27 +86,6 @@ class ReachReward(HumanoidBaseReward):
         return total_reward
 
 
-class OrientationReward(HumanoidBaseReward):
-    """Reward function for cube orientation alignment."""
-
-    def __init__(self, robot_name="h1_simple_hand"):
-        """Initialize the orientation reward."""
-        super().__init__(robot_name)
-
-    def __call__(self, states: list[EnvState]) -> torch.FloatTensor:
-        """Compute the orientation reward."""
-        results = []
-        for state in states:
-            left_cube_rot = state["metasim_body_cube_1/cube_1"]["rot"]
-            right_cube_rot = state["metasim_body_cube_2/cube_2"]["rot"]
-            target_cube_rot = state["metasim_body_cube_destination/cube_destination"]["rot"]
-
-            left_alignment = torch.norm(left_cube_rot - target_cube_rot)
-            right_alignment = torch.norm(right_cube_rot - target_cube_rot)
-
-            results.append(left_alignment + right_alignment)
-        return torch.tensor(results)
-
 
 class HandProximityReward(HumanoidBaseReward):
     """Reward function for hand-cube proximity."""
@@ -131,7 +114,7 @@ class HandProximityReward(HumanoidBaseReward):
 
 
 @configclass
-class ReachCfg(HumanoidTaskCfg):
+class ReachposCfg(HumanoidTaskCfg):
     """Cube task for humanoid robots."""
     success_bar = 0.9
     episode_length = 100
@@ -141,6 +124,7 @@ class ReachCfg(HumanoidTaskCfg):
             mjcf_path="roboverse_data/assets/humanoidbench/cube/cube_2/mjcf/cube_2.xml",
             urdf_path="roboverse_data/assets/humanoidbench/cube/cube_2/cube_2.urdf",
             default_position= [0.3, 0.2, 0.9],
+            fix_base_link=True,
 
         ),
         # RigidObjCfg(
@@ -165,8 +149,8 @@ class ReachCfg(HumanoidTaskCfg):
     ]
     traj_filepath = "roboverse_data/trajs/humanoidbench/cube/v2/g1/initial_state_v2.json"
     #traj_filepath = "my_env/initial_state_g1_v2.json"
-    checker = _ReachChecker()
-    reward_weights = [1.0, 0.5, 0.3]
+    checker = _ReachCheckerPos()
+    reward_weights = [1.0, 0.3, 0.3]
     reward_functions = [ReachReward()]
 
     def extra_spec(self):
