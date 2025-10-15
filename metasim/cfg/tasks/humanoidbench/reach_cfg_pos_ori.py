@@ -95,27 +95,26 @@ class OrientationReward(HumanoidBaseReward):
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         """Compute the orientation reward."""
-        right_hand_ori = right_palm_orientation(states, self.robot_name)  # [num_envs, 3]
-        #right_hand_ori = right_palm_orientation(states, self.robot_name,"endeffector")  # [num_envs, 3]
-        print("Right Hand Orientation:", right_hand_ori)
-        cube1_orient = states.objects["cube_1"].root_state[:, 3:7]  # [num_envs, 4] quaternion
-        print("Cube1 Orientation:", cube1_orient)
+        #right_hand_ori = right_palm_orientation(states, self.robot_name)  # [num_envs, 3]
+        right_hand_ori = right_palm_orientation(states, self.robot_name,"endeffector")  # [num_envs, 3]
+        #print("Right Hand Orientation:", right_hand_ori)
+        cube1_orient = states.objects["cube_1"].body_state[:,0, 3:7]  # [num_envs, 4] quaternion
+        #print("Cube1 Orientation:", cube1_orient)
         # Compute orientation difference (using dot product for quaternions)
         dot_product = torch.abs(torch.sum(right_hand_ori * cube1_orient, dim=1))  # [num_envs]
         # quaternion to angle
-        print("Dot Product:", dot_product)
-        right_hand_ori_euler = R.from_quat(right_hand_ori.cpu().numpy()).as_euler('xyz', degrees=True)
-        print("Right Hand Euler Angles:", right_hand_ori_euler)
-        cube1_orient_euler = R.from_quat(cube1_orient.cpu().numpy()).as_euler('xyz', degrees=True)
-        print("Cube1 Euler Angles:", cube1_orient_euler)
-        angle_diff = torch.acos(torch.clamp(dot_product, -1.0, 1.0)) * 2.0 * (180.0 / 3.14159265)  # [num_envs] in degrees
-        print("Angle Difference (degrees):", angle_diff.cpu().numpy())
+        # print("Dot Product:", dot_product)
+        # right_hand_ori_euler = R.from_quat(right_hand_ori.cpu().numpy()).as_euler('xyz', degrees=True)
+        # print("Right Hand Euler Angles:", right_hand_ori_euler)
+        # cube1_orient_euler = R.from_quat(cube1_orient.cpu().numpy()).as_euler('xyz', degrees=True)
+        # print("Cube1 Euler Angles:", cube1_orient_euler)
+        # print("nic")
         return torch.tensor(humanoid_reward_util.tolerance(
-            angle_diff.detach().cpu().numpy(),
+            dot_product.detach().cpu().numpy(),
             bounds=(0.0, 5.0),   # cílové okno
             margin=45.0,
             sigmoid="gaussian"
-        ), device=angle_diff.device, dtype=angle_diff.dtype)
+        ), device=dot_product.device, dtype=dot_product.dtype)
 
 
 
@@ -183,7 +182,7 @@ class ReachposoriCfg(HumanoidTaskCfg):
     traj_filepath = "roboverse_data/trajs/humanoidbench/cube/v2/g1/initial_state_v2.json"
     #traj_filepath = "my_env/initial_state_g1_v2.json"
     checker = _ReachCheckerPosOri()
-    reward_weights = [0.7, 0.3, 0.3]
+    reward_weights = [0.75, 0.25, 0.3]
     reward_functions = [ReachReward(), OrientationReward()]
 
     def extra_spec(self):

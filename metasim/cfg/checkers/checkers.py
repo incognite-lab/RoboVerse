@@ -563,8 +563,6 @@ class _ReachCheckerPosOri(BaseChecker):
             if obj == "cube_1":
                 cube1_state = states.objects[obj].root_state
                 cube1_state = cube1_state[:, :3]
-                #cube1_state = cube1_state[0]
-                #print("cube1 pos", cube1_state)
         if handler.scenario.sim == "mujoco":
             ee = "right_hand_palm_link"
         else:
@@ -572,26 +570,21 @@ class _ReachCheckerPosOri(BaseChecker):
         right_hand_pos = right_palm_position(states, handler.robot.name, ee_name=ee)
         right_hand_ori = right_palm_orientation(states, handler.robot.name, ee_name=ee)
         cube1_orient = states.objects["cube_1"].root_state[:, 3:7]
-        angle_xis = R.from_quat(cube1_orient.cpu().numpy())
 
 
-        dot_product = right_hand_ori * cube1_orient
-        print(dot_product)
-        diff_q1 = torch.abs(dot_product[:,0] - cube1_orient[:,0])
-        diff_q2 = torch.abs(dot_product[:,1] - cube1_orient[:,1])
-        diff_q3 = torch.abs(dot_product[:,2] - cube1_orient[:,2])
-        diff_q4 = torch.abs(dot_product[:,3] - cube1_orient[:,3])
-        all_diff = diff_q1 + diff_q2 + diff_q3 + diff_q4
+        dot_product = torch.abs(torch.sum(right_hand_ori * cube1_orient, dim=1))
+        #print(dot_product)
+
 
         # If you want to print, use .cpu().numpy() only for printing
 
         distance = torch.norm(right_hand_pos - cube1_state, dim=1)
-        print("distance", distance.cpu().numpy())
+        #print("distance", distance.cpu().numpy())
 
-        terminated = ((distance < 0.03) & (all_diff < 0.03)) | (cube1_state[:,2] < 0.1)
+        terminated = ((distance < 0.03) & (dot_product > 0.98)) | (cube1_state[:,2] < 0.1)
 
 
-        return terminated #torch.tensor(terminated)
+        return terminated
     def reset(self, handler: BaseSimHandler, env_ids: list[int] | None = None):
         num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
         if env_ids is None:
@@ -680,7 +673,7 @@ class _ReachCheckerPos(BaseChecker):
                 "objects": {
                     "cube_1": {
                         "pos": torch.tensor([x, y, z_cube]),
-                        "rot": torch.tensor([0, 0, 0, -1]),
+                        "rot": torch.tensor([1, 0, 0, 0]),
                     },
                     "table": {
                         "pos": torch.tensor([0.6, 0.0, -0.1]),

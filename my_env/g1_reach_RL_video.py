@@ -9,7 +9,6 @@ from loguru import logger as log
 from stable_baselines3 import PPO
 from metasim.cfg.scenario import ScenarioCfg
 from metasim.wrapper.gym_vec_env import MetaSimVecEnv
-from g1_reach_RL_pos_ori import StableBaseline3VecEnv  # importuj třídu z tvého trénovacího skriptu
 from metasim.utils import configclass
 from typing import Literal
 from metasim.cfg.sensors import PinholeCameraCfg, GyroSensorCfg
@@ -18,14 +17,14 @@ from metasim.cfg.sensors import PinholeCameraCfg, GyroSensorCfg
 
 @configclass
 class Args:
-    task: str = "reachposori"
+    task: str = "reachpos"
     robot: str = "g1_with_hands"
     sim: Literal["genesis", "isaaclab", "mujoco", "pybullet","sapien3"] = "genesis"
     num_envs: int = 1
     headless: bool = False
-    model_path: str = "my_env/output/ppo_models/reach_cluster_model/model_100000000"
-    video_path: str = "my_env/output/eval_reach_video1.mp4"
-    steps: int = 1000
+    model_path: str = "my_env/output/ppo_models/run_2025-10-14_19-56-45/model_60002304"
+    video_path: str = "my_env/output/eval_reach_OP_random_pos.mp4"
+    steps: int = 100
 
 
 def evaluate_and_record(args: Args):
@@ -68,4 +67,9 @@ def evaluate_and_record(args: Args):
 
 if __name__ == "__main__":
     args = Args()
+    if args.task == "reachpos":
+        from g1_reach_RL_pos import StableBaseline3VecEnv  # importuj třídu z tvého trénovacího skriptu
+    elif args.task == "reachposori":
+        from g1_reach_RL_pos_ori import StableBaseline3VecEnv  # importuj třídu z tvého trénovacího skriptu
+
     evaluate_and_record(args)

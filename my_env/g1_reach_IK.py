@@ -42,7 +42,7 @@ class Args:
     task: str = "reachposori"
     robot: str = "g1_with_hands"
     ## Handlers
-    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "genesis"
+    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "sapien3"
 
     ## Others
     num_envs: int = 1
@@ -79,7 +79,10 @@ def ik_solver(robot_cfg: str, target_name: str, env: MetaSimVecEnv) -> dict:
     pose_cube = states.objects[target_name].body_state[0,0,:3]
 
     ori_cube = states.objects[target_name].body_state[0,0,3:7]
-
+    rotate = R.from_quat([1,0,0,0])
+    ori_cube = R.from_quat(ori_cube.numpy())
+    ori_cube = rotate * ori_cube
+    ori_cube = torch.tensor(ori_cube.as_quat())
     # Example: set a target position for the right palm
     target_pos = pose_cube
     target_orient = ori_cube
@@ -93,7 +96,6 @@ def ik_solver(robot_cfg: str, target_name: str, env: MetaSimVecEnv) -> dict:
     target_frame[:3, :3] = target_rot_matrix
     target_frame[:3, 3] = target_pos.numpy()
     chain = Chain.from_urdf_file(robot_cfg.ik_urdf_path, base_elements=["pelvis"])
-    chain.active_links_mask[0] = True  # Make sure base is not actuated
     body_names = states.robots[robot_cfg.name].body_names
 
     joint_pos = states.robots[robot_cfg.name].joint_pos
@@ -107,6 +109,15 @@ def ik_solver(robot_cfg: str, target_name: str, env: MetaSimVecEnv) -> dict:
     pelvis_idx = body_names.index("pelvis")
     pelvis_pos = body_states[0,pelvis_idx, :3]      # x, y, z
     pelvis_quat = body_states[0,pelvis_idx, 3:7]
+
+    ee_name = body_names.index("endeffector")
+    ee_quat = body_states[0,ee_name,3:7]
+
+    right_hand_wrist_roll = joint_pos[0,37]
+    #print(ee_quat)
+    #print(right_hand_wrist_roll)
+
+
     if pelvis_pos.device != 'cpu':
         pelvis_pos = pelvis_pos.cpu()
     if pelvis_quat.device != 'cpu':
@@ -121,14 +132,14 @@ def ik_solver(robot_cfg: str, target_name: str, env: MetaSimVecEnv) -> dict:
     # Compute the target pose in the pelvis (chain) frame
     target_frame_in_chain = np.linalg.inv(base_frame)
     target_frame_in_chain = target_frame_in_chain @ target_frame
+
     #print("target_frame_in_chain", target_frame_in_chain)
     #print("base_frame", base_frame)
     #print(chain.links[-1])
 
     joint_angles = chain.inverse_kinematics_frame(target_frame_in_chain, initial_position=None)
     positions = chain.forward_kinematics(joint_angles)
-    positions = base_frame @ positions
-    print("positions", positions)
+    #print("positions", positions)
     angles = dict(zip(robot_cfg.joint_names_right_hand_and_torso, joint_angles[1:-2]))
 
 
@@ -181,7 +192,7 @@ def run_ik():
 
 
         for step in range(500):
-            if step % 1 == 0:
+            if step % 10 == 0:
                 joint_positions = ik_solver(robot_cfg, "cube_1", env)
             obs, reward, done, info, extra = env.step([joint_positions])
             obs_orin = metasim_env.env.handler.get_states()
