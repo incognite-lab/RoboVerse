@@ -164,7 +164,7 @@ class HumanoidTaskCfg(BaseRLTaskCfg):
     decimation: int = 10
     source_benchmark = BenchmarkType.HUMANOIDBENCH
     task_type = TaskType.LOCOMOTION
-    episode_length = 800  # TODO: may change
+    episode_length = 500  # TODO: may change
     objects = []
     reward_weights = [1.0]
     sim_params = SimParamCfg(

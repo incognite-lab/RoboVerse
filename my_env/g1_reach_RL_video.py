@@ -22,9 +22,9 @@ class Args:
     sim: Literal["genesis", "isaaclab", "mujoco", "pybullet","sapien3"] = "genesis"
     num_envs: int = 1
     headless: bool = False
-    model_path: str = "my_env/output/ppo_models/run_2025-10-14_19-56-45/model_60002304"
-    video_path: str = "my_env/output/eval_reach_OP_random_pos.mp4"
-    steps: int = 100
+    model_path: str = "my_env/output/ppo_models/reach_cluster_model/g1_stand_Reachpos_genesis_3.zip"
+    video_path: str = "my_env/output/eval_reach_PosOri_random_pos.mp4"
+    steps: int = 200
 
 
 def evaluate_and_record(args: Args):

@@ -10,7 +10,7 @@ class StandReward(BaseLocomotionReward):
     """Reward function for the stand task."""
 
     _move_speed = 0
-    success_bar = 800
+    success_bar = 500
 
 
 @configclass

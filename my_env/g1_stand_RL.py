@@ -117,33 +117,44 @@ class StableBaseline3VecEnv(VecEnv):
     def step_wait(self):
         """Wait for the step to complete."""
         obs, rewards, unsuccess, timeout, _ = self.env.step(self.action_dicts)
+        time_factor = (self.timesteps + 1 )/self.env.scenario.episode_length
+        rewards = rewards * time_factor
         obs = obs.cpu().numpy()
         obs = self._combine_obs(obs)
 
+        # --- Done flag ---
         dones = timeout.to(unsuccess.device) | unsuccess
 
+        # --- Update time counters ---
         self.timesteps += (~unsuccess).float()
 
-        if dones.any():
-            self.env.reset(env_ids=dones.nonzero().squeeze(-1).tolist())
-            self.timesteps[unsuccess.cpu()] = 0
-        if unsuccess.any():
-            self.timesteps[unsuccess.cpu()] = 0
-            rewards[unsuccess] = -1.0
-            self.env.reset(env_ids=unsuccess.nonzero(as_tuple=False).squeeze(-1).tolist())
-            extra = [{} for _ in range(self.num_envs)]
-            return obs, rewards.cpu().numpy(), dones.cpu().numpy(), extra
+        # --- Připrav info dicty ---
+        infos = [{} for _ in range(self.num_envs)]
 
-        extra = [{} for _ in range(self.num_envs)]
-        # for env_id in range(self.num_envs):
-        #     if dones[env_id]:
-        #         extra[env_id]["terminal_observation"] = obs[env_id].cpu().numpy()
-        #     extra[env_id]["TimeLimit.truncated"] = timeout[env_id].item() and not unsuccess[env_id].item()
+        # --- Masky ---
+        unsuccess_mask = unsuccess.cpu().numpy().astype(bool)
+        timeout_mask = timeout.cpu().numpy().astype(bool)
 
-        #obs = self.env.unwrapped._get_obs()
+        # --- Reset neúspěšných envů ---
+        if unsuccess_mask.any():
+            rewards[unsuccess_mask] = -1.0
+            self.timesteps[unsuccess_mask] = 0.0
+            unsuccess_ids = np.nonzero(unsuccess_mask)[0].tolist()
+            self.env.reset(env_ids=unsuccess_ids)
+            for i in unsuccess_ids:
+                infos[i]["is_success"] = False
+                infos[i]["TimeLimit.truncated"] = False
 
-        return obs, rewards.cpu().numpy(), dones.cpu().numpy(), extra
+        # --- Reset úspěšných envů (timeout = úspěch) ---
+        if timeout_mask.any():
+            self.timesteps[timeout_mask] = 0.0
+            timeout_ids = np.nonzero(timeout_mask)[0].tolist()
+            self.env.reset(env_ids=timeout_ids)
+            for i in timeout_ids:
+                infos[i]["is_success"] = True
+                infos[i]["TimeLimit.truncated"] = True
 
+        return obs, rewards.cpu().numpy(), dones.cpu().numpy(), infos
     def render(self):
         """Render the environment."""
         return self.env.render()
@@ -182,6 +193,7 @@ def train_ppo():
     #Choice 1: use scenario config to initialize the environment
 
     scenario = ScenarioCfg(task=args.task, robots=[args.robot], sim=args.sim, num_envs=args.num_envs, headless=args.headless)
+    scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
     scenario.robots[0].fix_base_link = False
     scenario.episode_length = 500
     scenario.cameras = []  # XXX: remove cameras to avoid rendering to speed up
@@ -206,12 +218,12 @@ def train_ppo():
         env,
         verbose=1,
         learning_rate=3e-4,
-        n_steps=50,
-        batch_size=64,
-        n_epochs=10,
-        gamma=0.99,
+        n_steps=128,
+        batch_size=256,
+        n_epochs=8,
+        gamma=0.90,
         gae_lambda=0.95,
-        clip_range=0.2,
+        clip_range=0.4,
         tensorboard_log="my_env/output/ppo_tensorboard/",
         device="cuda" if torch.cuda.is_available() else "cpu",
         policy_kwargs=policy_kwargs,

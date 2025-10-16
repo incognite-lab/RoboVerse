@@ -32,6 +32,8 @@ from metasim.sim import BaseSimHandler, EnvWrapper, GymEnvWrapper
 from metasim.types import Action, EnvState
 from metasim.utils.math import quat_from_euler_np
 from metasim.utils.state import CameraState, ObjectState, RobotState, TensorState
+from metasim.cfg.sensors import PinholeCameraCfg, GyroSensorCfg
+
 
 
 class Sapien3Handler(BaseSimHandler):
@@ -484,8 +486,16 @@ class Sapien3Handler(BaseSimHandler):
             depth = torch.from_numpy(depth.copy())
             state = CameraState(rgb=rgb.unsqueeze(0), depth=depth.unsqueeze(0))
             camera_states[camera.name] = state
+        sensors = {}
+        for sensor in self.scenario.sensors:
+            if isinstance(sensor, GyroSensorCfg):
+                gyro_data = sensor.get_data(robot_states,envs_ids=env_ids)
+                gyro_tensor = torch.tensor(gyro_data, dtype=torch.float32).unsqueeze(1)
+                sensors[sensor.name] = gyro_tensor
+            else:
+                log.warning(f"Unknown sensor type: {sensor.cfg_type}, skipping...")
 
-        return TensorState(objects=object_states, robots=robot_states, cameras=camera_states, sensors={})
+        return TensorState(objects=object_states, robots=robot_states, cameras=camera_states, sensors=sensors)
 
     def refresh_render(self):
         robot_inst = self.object_ids[self.robot.name]

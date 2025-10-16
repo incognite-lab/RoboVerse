@@ -26,12 +26,14 @@ class GyroSensorCfg(BaseGyroSensor):
     def get_data(self, States, envs_ids) -> np.ndarray:
         if not self.enabled:
             return np.zeros(3, dtype=np.float32)
+        if envs_ids is None:
+            envs_ids = [0]
         # získání stavu linku z fyzikální simulace
         data = np.zeros((len(envs_ids), 3), dtype=np.float32)
         for env in envs_ids:
             link_idx=States[self.mount_to].body_names.index(self.mount_link)
             quats = States[self.mount_to].body_state[env, link_idx, 2:6].cpu().numpy()
-            euler = R.from_quat(quats).as_euler("xyz", degrees=True).astype(np.float32)
+            euler = R.from_quat(quats).as_euler("xyz", degrees=False).astype(np.float32)
             euler = np.abs(euler)
             data[env] = euler
 

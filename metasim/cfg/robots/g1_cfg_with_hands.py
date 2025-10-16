@@ -18,6 +18,8 @@ class G1WithHandsCfg(BaseRobotCfg):
     mjcf_path: str = "roboverse_data/robots/g1/urdf/g1_29dof_with_hand_rev_1_0.xml"
 
     urdf_path: str = "roboverse_data/robots/g1/urdf/g1_mygym.urdf"
+    #urdf_path: str = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
+
     #urdf to chain pelvis --> right_hand_palm_link
     ik_urdf_path: str = "roboverse_data/robots/g1/IK_data/urdf_pelvis_to_RHPL.urdf"
 
