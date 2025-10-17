@@ -134,9 +134,7 @@ def main():
         mount_link="torso_link"
 
         )]
-    scenario.objects = [
 
-    ]
 
     # For different simulators, the decimation factor is different, so we need to set it here
     scenario.task.decimation = config.get("decimation", 1)

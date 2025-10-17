@@ -17,12 +17,12 @@ from metasim.cfg.sensors import PinholeCameraCfg, GyroSensorCfg
 
 @configclass
 class Args:
-    task: str = "reachpos"
+    task: str = "reachposori"
     robot: str = "g1_with_hands"
     sim: Literal["genesis", "isaaclab", "mujoco", "pybullet","sapien3"] = "genesis"
     num_envs: int = 1
     headless: bool = False
-    model_path: str = "my_env/output/ppo_models/reach_cluster_model/g1_stand_Reachpos_genesis_3.zip"
+    model_path: str = "my_env/output/ppo_models/run_2025-10-16_13-59-07/model_80003072"
     video_path: str = "my_env/output/eval_reach_PosOri_random_pos.mp4"
     steps: int = 200
 
