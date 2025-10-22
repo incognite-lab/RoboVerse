@@ -90,7 +90,9 @@ def robot_position(envstate, robot_name: str):
     """Returns position of the robot."""
     return envstate["robots"][robot_name]["pos"]
 
-
+def door_angle_tensor(envstate, object_name: str):
+    """Returns door angle."""
+    return None
 def robot_position_tensor(envstate, robot_name: str):
     """Returns position of the robot."""
     return envstate.robots[robot_name].root_state[:, 0:3]

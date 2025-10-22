@@ -83,34 +83,31 @@ class StableBaseline3VecEnv(VecEnv):
         """Wait for the step to complete."""
         obs, rewards, success, timeout, _ = self.env.step(self.action_dicts)
         obs = obs.cpu().numpy()
-        #obs = self._combine_obs(obs)
         obs = self._odd_cube_obs(obs)
         dones = timeout.to(success.device) | success
 
         self.timesteps += (~success).float()
+        extra = [{} for _ in range(self.num_envs)]
+        if dones.any():
+            for i in range(self.num_envs):
+                if dones[i]:
+                    # naplníme info dict (callback pak ví, že epizoda skončila)
+                    extra[i]["episode"] = {
+                        "r": float(rewards[i].cpu().item()),    # reward této epizody
+                        "l": int(self.timesteps[i].item()),     # délka epizody
+                    }
+                    extra[i]["is_success"] = bool(success[i].item())
 
         if dones.any():
             self.env.reset(env_ids=dones.nonzero().squeeze(-1).tolist())
-            self.timesteps[success.cpu()] = 0
+            self.timesteps[dones.cpu()] = 0
         if success.any():
             self.timesteps[success.cpu()] = 0
             rewards[success] = 10.0
             self.env.reset(env_ids=success.nonzero(as_tuple=False).squeeze(-1).tolist())
-            extra = [{} for _ in range(self.num_envs)]
-            return obs, rewards.cpu().numpy(), dones.cpu().numpy(), extra
-        # reward vynásobíme časem
-
-        #time_factors = self.timesteps.to(rewards.device)
-        #rewards = rewards * time_factors
 
 
-        extra = [{} for _ in range(self.num_envs)]
-        # for env_id in range(self.num_envs):
-        #     if dones[env_id]:
-        #         extra[env_id]["terminal_observation"] = obs[env_id].cpu().numpy()
-        #     extra[env_id]["TimeLimit.truncated"] = timeout[env_id].item() and not unsuccess[env_id].item()
 
-        #obs = self.env.unwrapped._get_obs()
 
         return obs, rewards.cpu().numpy(), dones.cpu().numpy(), extra
 

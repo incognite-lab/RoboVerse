@@ -37,6 +37,7 @@ class StableBaseline3VecEnv(VecEnv):
         self.timesteps = torch.zeros(env.num_envs, dtype=torch.float32, device=("cuda" if env.scenario.sim == 'isaaclab' or env.scenario.sim == 'genesis' else "cpu"))
 
         super().__init__(env.num_envs, self.observation_space, self.action_space)
+
     def _combine_obs(self, obs: np.ndarray) -> np.ndarray:
         """Spojí joint states a gyro data pro všechna envs."""
         states = self.env.env.handler.get_states()

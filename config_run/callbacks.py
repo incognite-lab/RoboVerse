@@ -9,21 +9,21 @@ from datetime import datetime
 
 class TensorboardMetricsCallback(BaseCallback):
     """
-    Callback pro logování užitečných metrik do TensorBoardu:
-    - průměrný reward
-    - success rate
+    Callback pro logování průměrných metrik epizod do TensorBoardu a terminálu.
+    Funguje s vektorizovanými env (VecEnv).
+
+    Metriky:
+    - průměrná rewarda přes všechny envy
     - průměrná délka epizody
-
-    Funguje i s vektorizovanými prostředími (VecEnv).
+    - průměrný success rate
+    - max a min reward
+    - počet dokončených epizod
     """
-
-    def __init__(self, log_dir: str, verbose: int = 0):
+    def __init__(self, log_dir: str, verbose: int = 1):
         super().__init__(verbose)
         os.makedirs(log_dir, exist_ok=True)
         self.writer = SummaryWriter(log_dir)
-        self.episode_rewards = np.zeros(0, dtype=np.float32)
-        self.episode_lengths = np.zeros(0, dtype=np.int32)
-        self.episode_success = np.zeros(0, dtype=np.int32)
+        self.verbose = verbose
 
     def _on_training_start(self) -> None:
         n_envs = self.training_env.num_envs
@@ -31,29 +31,71 @@ class TensorboardMetricsCallback(BaseCallback):
         self.episode_lengths = np.zeros(n_envs, dtype=np.int32)
         self.episode_success = np.zeros(n_envs, dtype=np.int32)
 
+        # historie dokončených epizod pro agregace
+        self.completed_rewards = []
+        self.completed_lengths = []
+        self.completed_success = []
+
     def _on_step(self) -> bool:
-        rewards = self.locals["rewards"]  # shape (num_envs,)
-        dones = self.locals["dones"]      # shape (num_envs,)
+        rewards = np.array(self.locals["rewards"])
+        dones = np.array(self.locals["dones"])
         infos = self.locals.get("infos", [{}] * len(dones))
 
+        # akumulace rewardů a délek pro každé env
         self.episode_rewards += rewards
         self.episode_lengths += 1
 
-        # Pokud prostředí vrací success flag v `infos`, můžeme ho použít
         for i, info in enumerate(infos):
             if "is_success" in info:
                 self.episode_success[i] = int(info["is_success"])
 
-        for i, done in enumerate(dones):
-            if done:
-                self.writer.add_scalar("episode/return", self.episode_rewards[i], self.num_timesteps)
-                self.writer.add_scalar("episode/length", self.episode_lengths[i], self.num_timesteps)
-                self.writer.add_scalar("episode/success", self.episode_success[i], self.num_timesteps)
+            if dones[i]:
+                # uložíme dokončenou epizodu
+                self.completed_rewards.append(self.episode_rewards[i])
+                self.completed_lengths.append(self.episode_lengths[i])
+                self.completed_success.append(self.episode_success[i])
 
-                # Reset epizody
+                # reset counters pro dané env
                 self.episode_rewards[i] = 0.0
                 self.episode_lengths[i] = 0
                 self.episode_success[i] = 0
+
+        # pokud máme dokončené epizody, vypočteme průměr přes všechny envy
+        if self.completed_rewards:
+            mean_r = np.mean(self.completed_rewards)
+            mean_l = np.mean(self.completed_lengths)
+            mean_s = np.mean(self.completed_success)
+            max_r = np.max(self.completed_rewards)
+            min_r = np.min(self.completed_rewards)
+            num_ep = len(self.completed_rewards)
+
+            # log do TensorBoardu
+            self.writer.add_scalar("episode/mean_return", mean_r, self.num_timesteps)
+            self.writer.add_scalar("episode/mean_length", mean_l, self.num_timesteps)
+            self.writer.add_scalar("episode/mean_success", mean_s, self.num_timesteps)
+            self.writer.add_scalar("episode/max_return", max_r, self.num_timesteps)
+            self.writer.add_scalar("episode/min_return", min_r, self.num_timesteps)
+            self.writer.add_scalar("episode/num_episodes", num_ep, self.num_timesteps)
+
+            # histogram rewardů
+            self.writer.add_histogram("episode/reward_hist", np.array(self.completed_rewards), self.num_timesteps)
+
+            # log do terminálu
+            if self.verbose > 0:
+                self.logger.record("episode/mean_return", mean_r)
+                self.logger.record("episode/mean_length", mean_l)
+                self.logger.record("episode/mean_success", mean_s)
+                self.logger.record("episode/max_return", max_r)
+                self.logger.record("episode/min_return", min_r)
+                self.logger.record("episode/num_episodes", num_ep)
+                self.logger.dump(self.num_timesteps)
+
+            # vyčistíme historii, aby nové dokončené epizody šly do nového kroku
+            self.completed_rewards.clear()
+            self.completed_lengths.clear()
+            self.completed_success.clear()
+
+        self.writer.flush()
         return True
 
     def _on_training_end(self) -> None:

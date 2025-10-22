@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 
 from metasim.cfg.checkers import _DoorChecker
-from metasim.cfg.objects import RigidObjCfg
+from metasim.cfg.objects import RigidObjCfg, ArticulationObjCfg
 from metasim.constants import PhysicStateType
 from metasim.types import EnvState
 from metasim.utils import configclass, humanoid_reward_util, humanoid_robot_util
@@ -71,20 +71,20 @@ class DoorReward(HumanoidBaseReward):
 @configclass
 class DoorCfg(HumanoidTaskCfg):
     """Door task for humanoid robots."""
-
-    episode_length = 1000
+    success_bar = 0.9
+    episode_length = 200
     objects = [
-        RigidObjCfg(
+        ArticulationObjCfg(
             name="door",
-            mjcf_path="roboverse_data/assets/humanoidbench/door/door/mjcf/door.xml",
-            physics=PhysicStateType.GEOM,
+            urdf_path="roboverse_data/assets/humanoidbench/door/urdf/door.urdf",
+            default_position= [1.0, 0.0, 0.0],
             fix_base_link=True,
-        ),
+        )
     ]
-    traj_filepath = "roboverse_data/trajs/humanoidbench/door/v2/initial_state_v2.json"
+    traj_filepath = "roboverse_data/trajs/humanoidbench/door/initial_state_v2.json"
     checker = _DoorChecker()
     reward_weights = [1.0]
-    reward_functions = [DoorReward]
+    reward_functions = [DoorReward()]
 
     def extra_spec(self):
         """This task does not require any extra observations."""

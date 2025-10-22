@@ -12,7 +12,7 @@ from metasim.cfg.sensors import PinholeCameraCfg, GyroSensorCfg
 from metasim.constants import PhysicStateType, SimType
 from metasim.wrapper.gym_vec_env import MetaSimVecEnv
 from stable_baselines3 import PPO
-from callbacks import TensorboardMetricsCallback, SaveModelCallback
+from callbacks import TensorboardMetricsCallback, SaveModelCallback,RewardPlotCallback
 
 
 
@@ -77,7 +77,7 @@ def main():
         log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         exit(1)
     config_name = sys.argv[1]
-    #config_name = "g1_walk_eval"
+    #config_name = "g1_reach_pos_ori_train"
     config = load_config_from_yaml(config_name)
     log.info(f"Loaded config: {config_name}")
 
@@ -174,6 +174,24 @@ def main():
                 log.info(f"Episode finished after {step + 1} steps")
         observation.save()
         log.info(f"🎬 Video saved to {config.get('video_path')}")
+        env.close()
+        quit()
+    elif config.get("train_or_eval") == "load_and_train":
+        # load the model
+        log.info(f"Loading model from {config.get('load_model_path')}")
+        model = PPO.load(config.get("load_model_path"), env=env, device="cuda" if torch.cuda.is_available() else "cpu")
+        model.set_env(env)
+        model.learn(total_timesteps=config.get("total_timesteps", 1_000_000),
+                    callback=[
+                    SaveModelCallback(save_path=config.get("model_save_path"), save_freq=config.get("model_save_freq", 1_000_000),task_name=config.get("task")),
+                    TensorboardMetricsCallback(log_dir=config.get("tensorboard_log", "./ppo_tensorboard/"))
+                    ],
+                    progress_bar=True,)
+
+        #Save the model
+        task_name = scenario.task.__class__.__name__[:-3]
+        model.save(config.get("model_save_path", f"ppo_{task_name}_{config.get('sim', 'unknown_sim')}"))
+        log.info("Model saved. Ending the training and closing the environment.")
         env.close()
         quit()
 

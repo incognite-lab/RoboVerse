@@ -18,6 +18,7 @@ from metasim.utils.humanoid_robot_util import (
     neck_height,
     right_palm_position,
     right_palm_orientation,
+    door_angle_tensor,
 )
 
 from .base_checker import BaseChecker
@@ -689,15 +690,58 @@ class _ReachCheckerPos(BaseChecker):
 class _DoorChecker(BaseChecker):
     def check(self, handler: BaseSimHandler) -> torch.BoolTensor:
         from metasim.utils.humanoid_robot_util import robot_position
-
+        obj_name = "door"
         states = handler.get_states()
-        terminated = []
-        for state in states:
-            if robot_position(state, handler.robot.name)[2] < 0.58:
-                terminated.append(True)
-            else:
-                terminated.append(False)
-        return torch.tensor(terminated)
+        terminated = neck_height_tensor(states, handler.robot.name)[:] < 0.4
+        terminated = door_angle_tensor(states, obj_name)[:] >torch.pi/4
+        return terminated
+    def reset(self, handler: BaseSimHandler, env_ids: list[int] | None = None):
+        """
+        dveře se budou spawnovat ve 4 různých pozicích náhodně. tedy robot bude mít dveře bud vpravo vlevo před sebou nebo za sebou
+        robot se bude spawnovat v náhodné pozici v malém kruhu kolem počátku
+        scéna se resetuje bud pokud robot spadne nebo pokud otevře dveře
+        """
+        num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
+        if env_ids is None:
+            env_ids = list(range(num_envs))
+        states = []
+        door_positions = [
+            torch.tensor([1.0, 0.0, 0.0]),  # in front
+            torch.tensor([-1.0, 0.0, 0.0]),  # behind
+            torch.tensor([0.0, 1.0, 0.0]),  # right
+            torch.tensor([0.0, -1.0, 0.0]),  # left
+        ]
+        for i in range(num_envs):
+            angle = random.uniform(0, 2 * torch.pi)
+            radius = random.uniform(0, 0.2)
+            robot_x = radius * torch.cos(angle)
+            robot_y = radius * torch.sin(angle)
+
+            door_pos = random.choice(door_positions)
+            door_rot_angle = torch.atan2(-door_pos[0], door_pos[1])  # face towards the origin
+            door_quat = R.from_euler('z', door_rot_angle.cpu().numpy()).as_quat()
+            door_quat = torch.tensor(door_quat, dtype=torch.float32)
+
+            states.append({
+                "robots": {
+                    "g1_with_hands": {
+                        "pos": torch.tensor([robot_x, robot_y, 0.0]),
+                        "rot": torch.tensor([1.0, 0.0, 0.0, 0.0]),
+                        "dof_pos": handler.robot.default_joint_positions,
+                    }
+                },
+                "objects": {
+                    "door": {
+                        "pos": door_pos,
+                        "rot": door_quat,
+                    },
+                },
+            })
+
+        handler.set_states(states=states, env_ids=env_ids)
+        print("reset door checker")
+
+
 
 
 ## FIXME: This checker should be removed!
