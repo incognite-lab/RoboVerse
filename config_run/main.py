@@ -77,7 +77,7 @@ def main():
         log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         exit(1)
     config_name = sys.argv[1]
-    #config_name = "genesis_stand"
+    #config_name = "g1_walk_eval"
     config = load_config_from_yaml(config_name)
     log.info(f"Loaded config: {config_name}")
 
@@ -105,6 +105,10 @@ def main():
         from SB3_reach_pos_env import StableBaseline3VecEnv
     elif config.get("task") == "reachposori":
         from SB3_reach_pos_ori_env import StableBaseline3VecEnv
+    elif config.get("task") == "walk":
+        from SB3_walk_env import StableBaseline3VecEnv
+        scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
+        scenario.robots[0].fix_base_link = False
 
     metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
 

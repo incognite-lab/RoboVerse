@@ -76,7 +76,6 @@ class StableReward(HumanoidBaseReward):
     _stand_shoulder_height = 1.2  # nastav podle svého robota
     _fall_height = 0.5             # pokud hlava spadne pod tuto výšku, hlava je moc nízko a přichází trest
     _torso_margin = 0.2            # tolerance naklonění trupu
-    _fallen_height = 0.3          # pokud hlava spadne pod tuto výšku, epizoda je považována za "spadlou" pro maximální trest
 
     def __init__(self, robot_name="h1"):
         """Initialize the locomotion reward."""

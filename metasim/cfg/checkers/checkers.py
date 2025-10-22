@@ -591,15 +591,15 @@ class _ReachCheckerPosOri(BaseChecker):
             env_ids = list(range(num_envs))
         states = []
         for i in range(num_envs):
-            x = 0 #random.uniform(-0.2, 0.2)
-            y = 0 #random.uniform(-0.3, 0.3)
+            x = random.uniform(-0.2, 0.2)
+            y = random.uniform(-0.3, 0.3)
 
             if handler.scenario.sim == "mujoco":
                 robot_pos = torch.tensor([-0.5,0.0,0.0])
                 z_cube = 0.2
             else:
                 robot_pos = torch.tensor([-0.5,0.0,0.8])
-                z_cube = 0.8#0.73
+                z_cube = 0.73
 
             states.append({
                 "robots": {

@@ -102,6 +102,8 @@ def tolerance(x, bounds=(0.0, 0.0), margin=0.0, sigmoid="gaussian", value_at_mar
       ValueError: If `bounds[0] > bounds[1]`.
       ValueError: If `margin` is negative.
     """
+    if isinstance(x, torch.Tensor):
+        return tolerance_tensor(x, bounds, margin, sigmoid, value_at_margin)
     lower, upper = bounds
     if lower > upper:
         raise ValueError("Lower bound must be <= upper bound.")

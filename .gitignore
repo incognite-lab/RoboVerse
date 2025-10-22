@@ -9,7 +9,7 @@ node_modules/
 wandb/
 *.ckpt
 GSNet
-
+config_run/output/
 my_env/output/
 deploy
 debug/

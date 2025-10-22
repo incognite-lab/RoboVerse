@@ -10,7 +10,7 @@ class WalkReward(BaseLocomotionReward):
     """Reward function for the walk task."""
 
     _move_speed = 1
-    success_bar = 700
+    success_bar = 500
 
 
 @configclass
@@ -20,7 +20,7 @@ class WalkCfg(HumanoidTaskCfg):
     episode_length = 1000
     # traj_filepath = "roboverse_data/trajs/humanoidbench/walk/v2/h1_v2.pkl"
     # traj_filepath = "roboverse_data/trajs/humanoidbench/walk/v2/initial_state_v2.json"
-    traj_filepath = "my_env/initial_state_g1_v2.json"
+    traj_filepath = "roboverse_data/trajs/humanoidbench/stand/v2/initial_state_v2.json"
 
     checker = _WalkChecker()
     reward_functions = [WalkReward()]

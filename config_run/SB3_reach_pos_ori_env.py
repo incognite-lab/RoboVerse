@@ -41,7 +41,7 @@ class StableBaseline3VecEnv(VecEnv):
         self.env = env
         #self.sensors = [GyroSensor(cfg, env.env.handler) for cfg in env.scenario.sensors]
         self.render_mode = None
-        self.timesteps = torch.zeros(env.num_envs, dtype=torch.float32, device=("cuda" if args.sim == 'isaaclab' or args.sim == 'genesis' else "cpu"))
+        self.timesteps = torch.zeros(env.num_envs, dtype=torch.float32, device=("cuda" if env.scenario.sim == 'isaaclab' or env.scenario.sim == 'genesis' else "cpu"))
 
         super().__init__(env.num_envs, self.observation_space, self.action_space)
     def _combine_obs(self, obs: np.ndarray) -> np.ndarray:

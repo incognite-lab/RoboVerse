@@ -35,7 +35,7 @@ train_or_eval: train
 #------------------------------------------
 #load_model_path: ./my_env/output/ppo_models/run_2025-10-16_13-59-07/model_80003072
 load_model_path: ./my_env/output/ppo_models/run_2025-10-15_20-22-31/model_80000000
-video_save_path: ./config_run/output/eval_videos/stand_eval.mp4
+video_save_path: ./config_run/output/eval_videos/reach_pos_eval.mp4
 eval_episodes: 200
 
 

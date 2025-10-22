@@ -55,14 +55,14 @@ class ReachReward(HumanoidBaseReward):
         distance = torch.norm(right_hand_pos - cube1_state, dim=1)  # [num_envs]
 
         # základní odměna – blízkost k cíli
-        distance_np = distance.detach().cpu().numpy()
-        base_reward_np = humanoid_reward_util.tolerance(
-            distance_np,
+        #distance_np = distance.detach().cpu().numpy()
+        base_reward = humanoid_reward_util.tolerance(
+            distance,
             bounds=(0.0, 0.05),   # cílové okno
             margin=0.5,
             sigmoid="gaussian"
         )
-        base_reward = torch.as_tensor(base_reward_np, device=distance.device, dtype=distance.dtype)
+        #base_reward = torch.as_tensor(base_reward_np, device=distance.device, dtype=distance.dtype)
 
         # --- BONUS: odměna za pohyb směrem k cíli ---
         if self.prev_distance is None:
@@ -94,27 +94,39 @@ class OrientationReward(HumanoidBaseReward):
         super().__init__(robot_name)
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
-        """Compute the orientation reward."""
-        #right_hand_ori = right_palm_orientation(states, self.robot_name)  # [num_envs, 3]
-        right_hand_ori = right_palm_orientation(states, self.robot_name,"endeffector")  # [num_envs, 3]
-        #print("Right Hand Orientation:", right_hand_ori)
-        cube1_orient = states.objects["cube_1"].body_state[:,0, 3:7]  # [num_envs, 4] quaternion
-        #print("Cube1 Orientation:", cube1_orient)
-        # Compute orientation difference (using dot product for quaternions)
-        dot_product = torch.abs(torch.sum(right_hand_ori * cube1_orient, dim=1))  # [num_envs]
-        # quaternion to angle
-        # print("Dot Product:", dot_product)
-        # right_hand_ori_euler = R.from_quat(right_hand_ori.cpu().numpy()).as_euler('xyz', degrees=True)
-        # print("Right Hand Euler Angles:", right_hand_ori_euler)
-        # cube1_orient_euler = R.from_quat(cube1_orient.cpu().numpy()).as_euler('xyz', degrees=True)
-        # print("Cube1 Euler Angles:", cube1_orient_euler)
-        # print("nic")
-        return torch.tensor(humanoid_reward_util.tolerance(
-            dot_product.detach().cpu().numpy(),
-            bounds=(0.0, 5.0),   # cílové okno
-            margin=45.0,
+        # Pozice a orientace
+        ee_name = "endeffector"
+        right_hand_pos = right_palm_position(states, self.robot_name, ee_name)
+        right_hand_ori = right_palm_orientation(states, self.robot_name, ee_name)
+        cube1_state = states.objects["cube_1"].root_state[:, :3]
+        cube1_orient = states.objects["cube_1"].body_state[:, 0, 3:7]
+
+        # vzdálenost od cíle
+        distance = torch.norm(right_hand_pos - cube1_state, dim=1)
+
+        # výpočet shody orientace (kvaternionový dot produkt)
+        dot_product = torch.abs(torch.sum(right_hand_ori * cube1_orient, dim=1))
+
+        # základní orientační odměna
+        orient_reward = humanoid_reward_util.tolerance(
+            dot_product,
+            bounds=(0.98, 1.0),   # téměř perfektní shoda
+            margin=0.2,           # plynulý přechod
             sigmoid="gaussian"
-        ), device=dot_product.device, dtype=dot_product.dtype)
+        )
+        #orient_reward = torch.as_tensor(orient_reward_np, device=dot_product.device, dtype=dot_product.dtype)
+
+        # váhový koeficient závislý na vzdálenosti
+        # (čím blíž, tím víc se orientace počítá)
+        distance_weight = torch.exp(-10.0 * torch.clamp(distance - 0.05, min=0.0))
+        # - pokud distance < 0.05 → váha ≈ 1
+        # - pokud distance = 0.1  → váha ≈ 0.6
+        # - pokud distance = 0.2  → váha ≈ 0.14
+        orient_reward *= distance_weight
+        #print("right hand ori",right_hand_ori)
+        #print("cube ori",cube1_orient)
+        #print("Orientation Reward:", orient_reward)
+        return orient_reward
 
 
 
@@ -182,7 +194,7 @@ class ReachposoriCfg(HumanoidTaskCfg):
     traj_filepath = "roboverse_data/trajs/humanoidbench/cube/v2/g1/initial_state_v2.json"
     #traj_filepath = "my_env/initial_state_g1_v2.json"
     checker = _ReachCheckerPosOri()
-    reward_weights = [0.75, 0.25, 0.3]
+    reward_weights = [0.5, 0.5]
     reward_functions = [ReachReward(), OrientationReward()]
 
     def extra_spec(self):

@@ -1,11 +1,12 @@
-#genesis config stand
+#genesis config walk
 
 # Environment settings
 sim: genesis
 robots: [g1_with_hands]
-task: stand
+task: walk
 decimation: 5
 num_envs: 1
+
 headless: false
 add_table: true
 #sensors configuration
@@ -23,15 +24,15 @@ sensors:
 #(Pro evaluaci je potřeba odkomentovat)
 #---------------------------------------
 
-# cameras:
-#    camera1:
-#      type: PinholeCameraCfg
-#      params:
-#        name: camera0
-#        pos: (1.5, -1.5, 1.5)
-#        look_at: (0.0, 0.0, 0.0)
-#        width: 1024
-#        height: 1024
+cameras:
+   camera1:
+     type: PinholeCameraCfg
+     params:
+       name: camera0
+       pos: (8.0, -8.0, 1.5)
+       look_at: (0.0, 0.0, 0.0)
+       width: 1024
+       height: 1024
 
 
 
@@ -41,21 +42,19 @@ train_or_eval: eval
 
 #eveluation settings
 #load_model_path: ./my_env/output/ppo_models/run_2025-10-16_13-59-07/model_80003072
-load_model_path: ./my_env/output/ppo_models/run_2025-10-15_20-22-31/model_80000000
-video_save_path: ./config_run/output/eval_videos/stand_eval.mp4
-eval_episodes: 200
+load_model_path: ./config_run/output/ppo_model/run_2025-10-17_20_walk/model_200000000
+video_save_path: ./config_run/output/eval_videos/walk_eval.mp4
+eval_episodes: 700
 
 
 # PPO training settings
-total_timesteps: 90_000_000
+total_timesteps: 200_000_000
 model_save_path: ./config_run/output/ppo_model
 model_save_freq: 10_000_000
 
-# Eval settings
-eval_model_path:
 
 # PPO parameters
-net_arch: [128, 128, 128]
+net_arch: [128, 256, 128]
 
 learning_rate: 0.0003
 n_steps: 128
