@@ -110,7 +110,7 @@ class StableReward(HumanoidBaseReward):
         almost_fallen = head_height < self._fall_height
         fall_penalty = torch.where(almost_fallen, torch.tensor(-1.0, device=head_height.device), torch.tensor(0.0, device=head_height.device))
 
-        small_control = (4 + small_control) / 5
+        small_control = small_control#(4 + small_control) / 5
         stable_reward = stand_reward
         full_reward = stable_reward * small_control + fall_penalty
         #print("full reward", full_reward )

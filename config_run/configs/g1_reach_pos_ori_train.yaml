@@ -41,7 +41,7 @@ eval_episodes: 200
 
 # PPO training settings
 #-------------------------------------------
-total_timesteps: 90_000_000
+total_timesteps: 200_000_000
 model_save_path: ./config_run/output/ppo_model
 model_save_freq: 10_000_000
 tensorboard_log: ./config_run/output/tensorboard

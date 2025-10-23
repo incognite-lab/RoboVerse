@@ -424,7 +424,7 @@ class _StandChecker(BaseChecker):
     """A checker that always returns False."""
     def check(self, handler: BaseSimHandler) -> torch.BoolTensor:
         states = handler.get_states()
-        terminated = neck_height_tensor(states, handler.robot.name)[:] < 0.2
+        terminated = neck_height_tensor(states, handler.robot.name)[:] < 0.3
         #print(terminated)
         return terminated
 
@@ -706,27 +706,25 @@ class _DoorChecker(BaseChecker):
             env_ids = list(range(num_envs))
         states = []
         door_positions = [
-            torch.tensor([1.0, 0.0, 0.0]),  # in front
-            torch.tensor([-1.0, 0.0, 0.0]),  # behind
-            torch.tensor([0.0, 1.0, 0.0]),  # right
-            torch.tensor([0.0, -1.0, 0.0]),  # left
+            # y x z nevím proč to je takhle obráceně
+            #(torch.tensor([0.0, 1.0, 0.0], dtype=torch.float32),  torch.tensor([0.0, 0.0, 0.0,1.0], dtype=torch.float32)),  # front (yaw 0)
+            (torch.tensor([0.0, -1.0, 0.0], dtype=torch.float32), torch.tensor([0.0,0.0,0.0,-1.0],       dtype=torch.float32)),  # back (yaw 90)
+            #(torch.tensor([0.0, 1.0, 0.0], dtype=torch.float32),  torch.tensor([0.0,         0.70710678, 0.70710678, 0.0],       dtype=torch.float32)),  # left (yaw 180)
+            #(torch.tensor([0.0, -1.0, 0.0], dtype=torch.float32), torch.tensor([0.5,        -0.5,       -0.5,        0.5],       dtype=torch.float32)),  # right (yaw 270)
         ]
         for i in range(num_envs):
-            angle = random.uniform(0, 2 * torch.pi)
-            radius = random.uniform(0, 0.2)
-            robot_x = radius * torch.cos(angle)
-            robot_y = radius * torch.sin(angle)
+            # device = handler.device if hasattr(handler, "device") else torch.device("cpu")
+            # angle = torch.rand((), device=device) * 2 * torch.pi
+            # radius = torch.rand((), device=device) * 0.2
+            # robot_x = radius * torch.cos(angle)
+            # robot_y = radius * torch.sin(angle)
 
-            door_pos = random.choice(door_positions)
-            door_rot_angle = torch.atan2(-door_pos[0], door_pos[1])  # face towards the origin
-            door_quat = R.from_euler('z', door_rot_angle.cpu().numpy()).as_quat()
-            door_quat = torch.tensor(door_quat, dtype=torch.float32)
-
+            door_pos, door_quat = random.choice(door_positions)
             states.append({
                 "robots": {
                     "g1_with_hands": {
-                        "pos": torch.tensor([robot_x, robot_y, 0.0]),
-                        "rot": torch.tensor([1.0, 0.0, 0.0, 0.0]),
+                        "pos": torch.tensor([0.0, 0.0, 0.0]),
+                        "rot": torch.tensor([0.0, 0.0, 0.0, 1.0]),
                         "dof_pos": handler.robot.default_joint_positions,
                     }
                 },
@@ -734,6 +732,8 @@ class _DoorChecker(BaseChecker):
                     "door": {
                         "pos": door_pos,
                         "rot": door_quat,
+                        "dof_pos":{'door_hinge': 0.0},
+
                     },
                 },
             })

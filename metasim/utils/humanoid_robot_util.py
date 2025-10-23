@@ -92,7 +92,8 @@ def robot_position(envstate, robot_name: str):
 
 def door_angle_tensor(envstate, object_name: str):
     """Returns door angle."""
-    return None
+
+    return envstate.objects[object_name].joint_pos[:, 0]
 def robot_position_tensor(envstate, robot_name: str):
     """Returns position of the robot."""
     return envstate.robots[robot_name].root_state[:, 0:3]
@@ -352,7 +353,11 @@ def right_palm_orientation(envstate, robot_name: str, ee_name: str = "right_hand
     body_id = robot_body_name.index(ee_name)
     body_quat = envstate.robots[robot_name].body_state[:, body_id, 3:7]
     return body_quat
-
+def feet_position(envstate, robot_name: str):
+    """Returns the position of the feet."""
+    left_foot_pos = envstate["robots"][robot_name]["body"]["left_ankle_roll_link"]["pos"]
+    right_foot_pos = envstate["robots"][robot_name]["body"]["right_ankle_roll_link"]["pos"]
+    return left_foot_pos, right_foot_pos
 
 
 def right_hand_position(envstate, robot_name: str):

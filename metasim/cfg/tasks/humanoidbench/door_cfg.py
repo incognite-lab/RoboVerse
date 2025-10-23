@@ -20,51 +20,17 @@ class DoorReward(HumanoidBaseReward):
         """Initialize the door reward."""
         super().__init__(robot_name)
 
-    def __call__(self, states: list[EnvState]) -> torch.FloatTensor:
+    def __call__(self, states: list[EnvState],robot_name:str = None) -> torch.FloatTensor:
         """Compute the door reward."""
         results = []
         for state in states:
-            # Get IMU position (for passage reward)
-            imu_pos = state[f"metasim_site_{self.robot_name}/imu"]["pos"]
-
-            # Get hinge angle (for opendoor reward)
-            door_hinge_angle = state["door"]["dof_pos"]["door_hinge"]
-
-            # Get door handle/lock angle (for openhatch reward)
-            door_hatch_angle = state["door"]["dof_pos"]["door_hatch_hinge"]
-
-            # Get left and right hand positions (for proximity reward)
-            left_hand_pos = humanoid_robot_util.left_hand_position(state, self.robot_name)
-            right_hand_pos = humanoid_robot_util.right_hand_position(state, self.robot_name)
-
-            # Get door handle position
-            door_handle_pos = state["metasim_body_door/door_hatch"]["pos"]
-
-            # Calculate the distance between the hand and the doorknob.
-            left_dist = torch.norm(left_hand_pos - door_handle_pos)
-            right_dist = torch.norm(right_hand_pos - door_handle_pos)
-            min_hand_dist = torch.min(left_dist, right_dist)
-
-            # Calculate stable reward
-            stable = StableReward(robot_name=self.robot_name)(states)
-
-            # Calculate each sub-reward
-            # opendoor = min(1, θdoor**2)
-            opendoor = min(1.0, door_hinge_angle**2)
-
-            # openhatch = tol(θhatch, (0.75, 2), 0.75)
-            openhatch = humanoid_reward_util.tolerance(door_hatch_angle, bounds=(0.75, 2.0), margin=0.75)
-
-            # proximitydoor = tol(min(d(handieft, door), d(handright, door)), (0, 0.25), 1)
-            proximitydoor = humanoid_reward_util.tolerance(min_hand_dist, bounds=(0, 0.25), margin=1.0)
-
-            # passage = tol(XIMU, (1.2, +∞), 1)
-            passage = humanoid_reward_util.tolerance(imu_pos[0], bounds=(1.2, float("inf")), margin=1.0)
-
-            # Total reward R = 0.1 * stable + 0.45 * opendoor + 0.05 * openhatch + 0.05 * proximitydoor + 0.35 * passage
-            reward = 0.1 * stable + 0.45 * opendoor + 0.05 * openhatch + 0.05 * proximitydoor + 0.35 * passage
-            results.append(reward)
-
+            door_angle = humanoid_robot_util.door_angle_tensor(state, "door")
+            door_opened = humanoid_reward_util.tolerance(
+                door_angle,
+                bounds=(1.0, 1.57),
+                margin=1.57
+                )
+            results.append(door_opened)
         return torch.tensor(results)
 
 
@@ -76,7 +42,7 @@ class DoorCfg(HumanoidTaskCfg):
     objects = [
         ArticulationObjCfg(
             name="door",
-            urdf_path="roboverse_data/assets/humanoidbench/door/urdf/door.urdf",
+            urdf_path="roboverse_data/assets/humanoidbench/door/door.urdf",
             default_position= [1.0, 0.0, 0.0],
             fix_base_link=True,
         )

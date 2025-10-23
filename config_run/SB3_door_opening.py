@@ -29,7 +29,7 @@ class StableBaseline3VecEnv(VecEnv):
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(len(joint_limits)+3+1,),  # joints + XYZ gyro + joint_pos_door
+            shape=(len(joint_limits)+3,),  # joints + XYZ gyro + joint_pos_door
             dtype=np.float32,
         )
         self.env = env
