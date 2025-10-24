@@ -79,6 +79,7 @@ def main():
     config_name = sys.argv[1]
     #config_name = "g1_reach_pos_ori_train"
     #config_name = "g1_door_open_train"
+    #config_name = "g1_stand_train"
     config = load_config_from_yaml(config_name)
     log.info(f"Loaded config: {config_name}")
 

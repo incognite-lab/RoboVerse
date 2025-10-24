@@ -17,7 +17,7 @@ class AnkleDownReward(HumanoidBaseReward):
         """Initialize the legs down reward."""
         super().__init__(robot_name)
 
-    def __call__(self, states: list[EnvState]) -> torch.FloatTensor:
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         """Compute the legs down reward."""
         left_ankle, right_ankle = feet_position(states, self.robot_name)
         sum_height = left_ankle[:, 2] + right_ankle[:, 2]
@@ -36,7 +36,7 @@ class HandDownReward(HumanoidBaseReward):
         """Initialize the hand down reward."""
         super().__init__(robot_name)
 
-    def __call__(self, states: list[EnvState]) -> torch.FloatTensor:
+    def __call__(self, states: list[EnvState],robot_name: str = None) -> torch.FloatTensor:
         """Compute the hand down reward."""
         left_hand_pos = humanoid_robot_util.left_hand_position(states, self.robot_name)
         right_hand_pos = humanoid_robot_util.right_hand_position(states, self.robot_name)
