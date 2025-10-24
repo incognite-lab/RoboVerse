@@ -58,7 +58,7 @@ class GenesisHandler(BaseSimHandler):
             renderer=gs.renderers.Rasterizer(),
             show_viewer=not self.headless,
         )
-
+        print(not self.headless)
         ## Add ground
         try:
             self.scene_inst.add_entity(gs.morphs.Plane())

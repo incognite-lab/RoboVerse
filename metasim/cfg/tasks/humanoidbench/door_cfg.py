@@ -13,7 +13,7 @@ from metasim.utils import configclass, humanoid_reward_util, humanoid_robot_util
 from .base_cfg import HumanoidBaseReward, HumanoidTaskCfg, StableReward
 
 
-class DoorReward(HumanoidBaseReward):
+class DoorOpenReward(HumanoidBaseReward):
     """Reward function for the door task."""
 
     def __init__(self, robot_name="h1"):
@@ -32,7 +32,11 @@ class DoorReward(HumanoidBaseReward):
                 )
             results.append(door_opened)
         return torch.tensor(results)
-
+class ReachHandleDoorReward(HumanoidBaseReward):
+    """Reward function for reaching the door handle."""
+    def __init__(self, robot_name="g1"):
+        super().__init__(robot_name)
+        self.
 
 @configclass
 class DoorCfg(HumanoidTaskCfg):

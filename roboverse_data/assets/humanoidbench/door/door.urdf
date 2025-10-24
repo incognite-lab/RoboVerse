@@ -1,18 +1,6 @@
 <?xml version="1.0"?>
 <robot name="wall_with_single_door">
-  <!--
-    URDF scene: wall 5.0m (length, x) x 0.05m (thickness, y) x 3.0m (height, z)
-    Center opening with a single door.
-
-    Adjustable parameters:
-      total_length = 5.0
-      wall_height  = 3.0
-      wall_thick   = 0.05
-      opening_width  = 1.0   (opening width for single door)
-      opening_height = 2.1
-      door_thickness  = 0.05
-      door_width = 1.0
-  -->
+  <!-- WALL AND DOOR AS BEFORE -->
 
   <link name="wall_base">
     <inertial>
@@ -22,18 +10,17 @@
     </inertial>
   </link>
 
-  <!-- LEFT WALL PANEL -->
-  <!-- left_panel_width = (5.0 - 1.0)/2 = 2.0 -->
+  <!-- LEFT PANEL -->
   <link name="wall_left">
     <visual>
-      <origin xyz="-1.5 0 1.5" rpy="0 0 0" />
+      <origin xyz="-1.5 0 1.5" />
       <geometry>
         <box size="2.0 0.05 3.0" />
       </geometry>
       <material name="grey"><color rgba="0.7 0.7 0.7 1.0"/></material>
     </visual>
     <collision>
-      <origin xyz="-1.5 0 1.5" rpy="0 0 0" />
+      <origin xyz="-1.5 0 1.5" />
       <geometry>
         <box size="2.0 0.05 3.0" />
       </geometry>
@@ -43,20 +30,19 @@
   <joint name="wall_left_fixed" type="fixed">
     <parent link="wall_base"/>
     <child  link="wall_left"/>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
 
-  <!-- RIGHT WALL PANEL -->
+  <!-- RIGHT PANEL -->
   <link name="wall_right">
     <visual>
-      <origin xyz="1.5 0 1.5" rpy="0 0 0" />
+      <origin xyz="1.5 0 1.5" />
       <geometry>
         <box size="2.0 0.05 3.0" />
       </geometry>
       <material name="grey"><color rgba="0.7 0.7 0.7 1.0"/></material>
     </visual>
     <collision>
-      <origin xyz="1.5 0 1.5" rpy="0 0 0" />
+      <origin xyz="1.5 0 1.5" />
       <geometry>
         <box size="2.0 0.05 3.0" />
       </geometry>
@@ -66,21 +52,19 @@
   <joint name="wall_right_fixed" type="fixed">
     <parent link="wall_base"/>
     <child  link="wall_right"/>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
 
-  <!-- LINTEL / TOP PART above the opening -->
-  <!-- lintel_height = 3.0 - 2.1 = 0.9; center z = 3.0 - 0.9/2 = 2.55 -->
+  <!-- LINTEL -->
   <link name="wall_lintel">
     <visual>
-      <origin xyz="0 0 2.55" rpy="0 0 0" />
+      <origin xyz="0 0 2.55" />
       <geometry>
         <box size="5.0 0.05 0.9" />
       </geometry>
       <material name="grey"><color rgba="0.7 0.7 0.7 1.0"/></material>
     </visual>
     <collision>
-      <origin xyz="0 0 2.55" rpy="0 0 0" />
+      <origin xyz="0 0 2.55" />
       <geometry>
         <box size="5.0 0.05 0.9" />
       </geometry>
@@ -90,20 +74,19 @@
   <joint name="wall_lintel_fixed" type="fixed">
     <parent link="wall_base"/>
     <child  link="wall_lintel"/>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
 
-  <!-- SINGLE DOOR -->
+  <!-- DOOR -->
   <link name="door">
     <visual>
-      <origin xyz="0.5 0 0" rpy="0 0 0" /> <!-- door_width/2, 0, door_height/2 -->
+      <origin xyz="0.5 0 1.05" />
       <geometry>
         <box size="1.0 0.05 2.1" />
       </geometry>
       <material name="wood"><color rgba="0.65 0.45 0.2 1.0"/></material>
     </visual>
     <collision>
-      <origin xyz="0.5 0 1.05" rpy="0 0 0" />
+      <origin xyz="0.5 0 1.05" />
       <geometry>
         <box size="1.0 0.05 2.1" />
       </geometry>
@@ -118,11 +101,50 @@
   <joint name="door_hinge" type="revolute">
     <parent link="wall_base" />
     <child  link="door" />
-    <!-- hinge located at left edge of opening: x = -0.5 -->
-    <origin xyz="-0.5 0 1.05" rpy="0 0 0" />
+    <origin xyz="-0.5 0 0.0" />
     <axis xyz="0 0 1" />
     <limit effort="10.0" velocity="2.0" lower="-1.5708" upper="1.5708" />
     <dynamics damping="0.5" friction="0.0" />
+  </joint>
+
+  <!-- ✅ FIXED DOOR HANDLE (L-shaped) -->
+  <link name="door_handle">
+    <!-- tvoří tvar písmene L-->
+    <visual>
+      <!-- horizontální část (trubka směrem ven) -->
+      <origin xyz="0.9 0.075 1.05" rpy="0 0 0" />
+      <geometry>
+        <box size="0.1 0.02 0.02" />
+      </geometry>
+      <material name="metal"><color rgba="0.3 0.3 0.3 1.0"/></material>
+    </visual>
+
+    <visual>
+      <!-- svislá část (nahoru dolů) -->
+      <origin xyz="0.95 0.035 1.05" rpy="0 0 0" />
+      <geometry>
+        <box size="0.02 0.1 0.02" />
+      </geometry>
+      <material name="metal"/>
+    </visual>
+
+    <collision>
+      <origin xyz="1.0 0.075 1.14" />
+      <geometry>
+        <box size="0.2 0.02 0.2" />
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.2" />
+      <inertia ixx="0.001" iyy="0.001" izz="0.001" />
+    </inertial>
+  </link>
+
+  <!-- Klika připojená pevně k dveřím -->
+  <joint name="door_handle_fixed" type="fixed">
+    <parent link="door"/>
+    <child link="door_handle"/>
+    <origin xyz="0 0 0" />
   </joint>
 
 </robot>

@@ -582,7 +582,7 @@ class _ReachCheckerPosOri(BaseChecker):
         distance = torch.norm(right_hand_pos - cube1_state, dim=1)
         #print("distance", distance.cpu().numpy())
 
-        terminated = ((distance < 0.03) & (dot_product > 0.98)) | (cube1_state[:,2] < 0.1)
+        terminated = ((distance < 0.03) & (dot_product > 0.96)) | (cube1_state[:,2] < 0.1)
 
 
         return terminated
@@ -600,7 +600,7 @@ class _ReachCheckerPosOri(BaseChecker):
                 z_cube = 0.2
             else:
                 robot_pos = torch.tensor([-0.5,0.0,0.8])
-                z_cube = 0.73
+                z_cube = 0.8 #0.73
 
             states.append({
                 "robots": {
