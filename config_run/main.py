@@ -73,11 +73,12 @@ def get_cameras_from_config(cameras: dict):
 
 
 def main():
-    if len(sys.argv) < 2:
-        log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
-        exit(1)
-    config_name = sys.argv[1]
+    # if len(sys.argv) < 2:
+    #     log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
+    #     exit(1)
+    # config_name = sys.argv[1]
     #config_name = "g1_reach_pos_ori_train"
+    config_name = "g1_door_open_train"
     config = load_config_from_yaml(config_name)
     log.info(f"Loaded config: {config_name}")
 
@@ -111,8 +112,7 @@ def main():
         scenario.robots[0].fix_base_link = False
     elif config.get("task") == "door":
         from SB3_door_opening import StableBaseline3VecEnv
-        scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
-        scenario.robots[0].fix_base_link = False
+
 
     metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
 

@@ -29,7 +29,7 @@ class StableBaseline3VecEnv(VecEnv):
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(len(joint_limits)+3,),  # joints + XYZ gyro + joint_pos_door
+            shape=(len(joint_limits),),  # joints + XYZ gyro + joint_pos_door
             dtype=np.float32,
         )
         self.env = env
@@ -50,7 +50,7 @@ class StableBaseline3VecEnv(VecEnv):
         """Reset the environment."""
         obs, _ = self.env.reset()
         obs = obs.cpu().numpy()
-        obs = self._combine_obs(obs)
+        #obs = self._combine_obs(obs)
         self.timesteps.zero_()
         return obs
 
@@ -73,7 +73,7 @@ class StableBaseline3VecEnv(VecEnv):
         time_factor = (self.timesteps + 1 )/self.env.scenario.episode_length
         rewards = rewards * time_factor
         obs = obs.cpu().numpy()
-        obs = self._combine_obs(obs)
+        #obs = self._combine_obs(obs)
 
         # --- Done flag ---
         dones = timeout.to(unsuccess.device) | unsuccess

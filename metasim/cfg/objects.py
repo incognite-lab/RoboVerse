@@ -94,7 +94,7 @@ class BaseObjCfg:
 
     enabled_gravity: bool = True
     """Whether to enable gravity. Default to True. If False, the robot will not be affected by gravity."""
-
+    colapse_fixed_joints: bool = True
 
 ##################################################
 # Level 1: Base rigid object and base articulation object

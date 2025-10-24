@@ -692,8 +692,8 @@ class _DoorChecker(BaseChecker):
         from metasim.utils.humanoid_robot_util import robot_position
         obj_name = "door"
         states = handler.get_states()
-        terminated = neck_height_tensor(states, handler.robot.name)[:] < 0.4
-        terminated = door_angle_tensor(states, obj_name)[:] >torch.pi/4
+        #terminated = neck_height_tensor(states, handler.robot.name)[:] < 0.4
+        terminated = door_angle_tensor(states, obj_name)[:] >1.0
         return terminated
     def reset(self, handler: BaseSimHandler, env_ids: list[int] | None = None):
         """
@@ -708,8 +708,8 @@ class _DoorChecker(BaseChecker):
         door_positions = [
             # y x z nevím proč to je takhle obráceně
             #(torch.tensor([0.0, 1.0, 0.0], dtype=torch.float32),  torch.tensor([0.0, 0.0, 0.0,1.0], dtype=torch.float32)),  # front (yaw 0)
-            (torch.tensor([0.0, -1.0, 0.0], dtype=torch.float32), torch.tensor([0.0,0.0,0.0,-1.0],       dtype=torch.float32)),  # back (yaw 90)
-            #(torch.tensor([0.0, 1.0, 0.0], dtype=torch.float32),  torch.tensor([0.0,         0.70710678, 0.70710678, 0.0],       dtype=torch.float32)),  # left (yaw 180)
+            #(torch.tensor([0.0, -1.0, 0.0], dtype=torch.float32), torch.tensor([0.0,0.0,0.0,-1.0],       dtype=torch.float32)),  # back (yaw 90)
+            (torch.tensor([-0.4, 0.0, 0.01], dtype=torch.float32),  torch.tensor([0.70710678,0.0, 0.0,-0.70710678],       dtype=torch.float32)),  # left (yaw 180)
             #(torch.tensor([0.0, -1.0, 0.0], dtype=torch.float32), torch.tensor([0.5,        -0.5,       -0.5,        0.5],       dtype=torch.float32)),  # right (yaw 270)
         ]
         for i in range(num_envs):
@@ -723,7 +723,7 @@ class _DoorChecker(BaseChecker):
             states.append({
                 "robots": {
                     "g1_with_hands": {
-                        "pos": torch.tensor([0.0, 0.0, 0.0]),
+                        "pos": torch.tensor([0.0, 0.0, 0.8]),
                         "rot": torch.tensor([0.0, 0.0, 0.0, 1.0]),
                         "dof_pos": handler.robot.default_joint_positions,
                     }

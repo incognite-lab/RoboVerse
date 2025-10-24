@@ -99,7 +99,7 @@ class GenesisHandler(BaseSimHandler):
                 )
             elif isinstance(obj, ArticulationObjCfg):
                 obj_inst = self.scene_inst.add_entity(
-                    gs.morphs.URDF(file=obj.urdf_path, fixed=obj.fix_base_link, scale=obj.scale),
+                    gs.morphs.URDF(file=obj.urdf_path, fixed=obj.fix_base_link, scale=obj.scale, merge_fixed_links=obj.colapse_fixed_joints),
                 )
             else:
                 raise NotImplementedError(f"Object type {type(obj)} not supported")
@@ -261,13 +261,24 @@ class GenesisHandler(BaseSimHandler):
                         [states_flat[env_id][obj.name]["dof_pos"][jn] for jn in joint_names]
                         for env_id in env_ids
                     ])
+                    if dof_pos.dtype != np.float32:
+                        dof_pos = dof_pos.astype(np.float32)
                     base_pos = obj_inst.get_pos(envs_idx=env_ids)   # [N,3]
                     base_quat = obj_inst.get_quat(envs_idx=env_ids) # [N,4]
 
                     root_state = np.concatenate([base_pos.detach().cpu().numpy(), base_quat.detach().cpu().numpy()], axis=1)  # [N,7]
-                    full_qpos = np.concatenate([root_state, dof_pos], axis=1)   # [N, 7 + n_joints]
+                    #full_qpos = np.concatenate([root_state, dof_pos], axis=1)   # [N, 7 + n_joints]
 
-                    obj_inst.set_qpos(full_qpos, envs_idx=env_ids)
+                    expected_qs = getattr(obj_inst, "n_qs", None)
+                    if expected_qs == dof_pos.shape[1]:
+                        qpos_to_set = dof_pos
+                    elif expected_qs == 7 + dof_pos.shape[1]:
+                        qpos_to_set = np.concatenate([root_state, dof_pos], axis=1)
+                    elif expected_qs == 7:
+                        qpos_to_set = root_state
+                    else:
+                        raise RuntimeError(...)
+                    obj_inst.set_qpos(qpos_to_set, envs_idx=env_ids)
 
     def set_dof_targets(self, obj_name: str, actions: list[Action]) -> None:
         self._actions_cache = actions

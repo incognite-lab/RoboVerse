@@ -2,23 +2,23 @@
 
 # Environment settings
 #-------------------------------------------
-sim: genesis #sapien3
+sim: genesis #genesis
 robots: [g1_with_hands]
 task: door
 decimation: 5
-num_envs: 1
-headless: false
+num_envs: 2500
+headless: true
 add_table: true
 fix_base_link: true
 
-sensors:
-  sensor1:
-    type: GyroSensorCfg
-    params:
-      name: gyro0
-      pos: (0.0, 0.0, 0.0)
-      mount_to: g1_with_hands
-      mount_link: torso_link
+# sensors:
+#   sensor1:
+#     type: GyroSensorCfg
+#     params:
+#       name: gyro0
+#       pos: (0.0, 0.0, 0.0)
+#       mount_to: g1_with_hands
+#       mount_link: torso_link
 
 #camera configuration
 #---------------------------------------
@@ -58,7 +58,7 @@ tensorboard_log: ./config_run/output/tensorboard
 
 # PPO parameters
 #-------------------------------------------
-net_arch: [256, 128, 128]
+net_arch: [128, 128, 128]
 
 learning_rate: 0.0003
 n_steps: 128
