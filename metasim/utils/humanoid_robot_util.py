@@ -328,7 +328,9 @@ def actuator_forces_tensor(envstate, robot_name: str):
 def left_hand_position(envstate, robot_name: str):
     """Returns the position of the left hand."""
     # return envstate[f"{_METASIM_SITE_PREFIX}left_hand"]["pos"] # Only for mujoco
-    return envstate["robots"][robot_name]["body"]["left_elbow_link"]["pos"]
+    left_hand_index = envstate.robots[robot_name].body_names.index("left_hand_palm_link")
+    left_hand_pos = envstate.robots[robot_name].body_state[:, left_hand_index, 0:3]
+    return left_hand_pos
 
 
 def left_hand_velocity(envstate, robot_name: str):
@@ -355,15 +357,19 @@ def right_palm_orientation(envstate, robot_name: str, ee_name: str = "right_hand
     return body_quat
 def feet_position(envstate, robot_name: str):
     """Returns the position of the feet."""
-    left_foot_pos = envstate["robots"][robot_name]["body"]["left_ankle_roll_link"]["pos"]
-    right_foot_pos = envstate["robots"][robot_name]["body"]["right_ankle_roll_link"]["pos"]
+    left_foot_index = envstate.robots[robot_name].body_names.index("left_ankle_roll_link")
+    left_foot_pos = envstate.robots[robot_name].body_state[:, left_foot_index, 0:3]
+    right_foot_index = envstate.robots[robot_name].body_names.index("right_ankle_roll_link")
+    right_foot_pos = envstate.robots[robot_name].body_state[:, right_foot_index, 0:3]
     return left_foot_pos, right_foot_pos
 
 
 def right_hand_position(envstate, robot_name: str):
     """Returns the position of the right hand."""
     # return envstate[f"{_METASIM_SITE_PREFIX}right_hand"]["pos"] # Only for mujoco
-    return envstate["robots"][robot_name]["body"]["right_elbow_link"]["pos"]
+    right_hand_index = envstate.robots[robot_name].body_names.index("right_hand_palm_link")
+    right_hand_pos = envstate.robots[robot_name].body_state[:, right_hand_index, 0:3]
+    return right_hand_pos
 
 
 def right_hand_velocity(envstate, robot_name: str):
