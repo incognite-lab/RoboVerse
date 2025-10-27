@@ -464,12 +464,16 @@ class Sapien3Handler(BaseSimHandler):
                 if self._previous_dof_torque_target[robot.name] is not None
                 else None
             )
+
+            joints_names_arr = np.array(self.get_joint_names(robot.name))
+            joints_names_reindexed = joints_names_arr[joint_reindex].tolist()
             state = RobotState(
                 root_state=root_state,
                 body_names=link_names,
                 body_state=link_state.unsqueeze(0),
                 joint_pos=torch.tensor(robot_inst.get_qpos()[joint_reindex]).unsqueeze(0),
                 joint_vel=torch.tensor(robot_inst.get_qvel()[joint_reindex]).unsqueeze(0),
+                joint_names=joints_names_reindexed,
                 joint_pos_target=pos_target,
                 joint_vel_target=vel_target,
                 joint_effort_target=effort_target,

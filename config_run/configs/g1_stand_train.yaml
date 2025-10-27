@@ -1,7 +1,7 @@
 #genesis config stand
 
 # Environment settings
-sim: genesis
+sim: sapien3
 robots: [g1_with_hands]
 task: stand
 decimation: 5

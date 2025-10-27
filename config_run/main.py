@@ -77,9 +77,10 @@ def main():
     #     log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
     #     exit(1)
     # config_name = sys.argv[1]
-    config_name = "g1_reach_pos_ori_train"
+   # config_name = "g1_reach_pos_ori_train"
     #config_name = "g1_door_open_train"
     #config_name = "g1_stand_eval"
+    config_name = "g1_stand_train"
     config = load_config_from_yaml(config_name)
     log.info(f"Loaded config: {config_name}")
 

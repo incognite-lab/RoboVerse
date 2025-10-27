@@ -49,6 +49,31 @@ class HandDownReward(HumanoidBaseReward):
             sigmoid="linear",
         )
         return results
+class DistanceFromInitPos(HumanoidBaseReward):
+
+    def __init__(self, robot_name="g1_with_hands"):
+        """Initialize the distance from initial position reward."""
+        super().__init__(robot_name)
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        diff = None
+        for name, state in self.initial_pos.items():
+            state_idx = states.robots[self.robot_name].joint_names.index(name)
+            joint_pos = states.robots[self.robot_name].joint_pos[:,state_idx]
+            state = torch.tensor(state, device=joint_pos.device)
+            if diff is None:
+                diff = torch.abs(joint_pos - state)
+            else:
+                diff += torch.abs(joint_pos - state)
+        results = humanoid_reward_util.tolerance_tensor(
+            diff,
+            bounds=(0.0, 5.0),
+            margin=5.0,
+            value_at_margin=0.0,
+            sigmoid="linear",
+        )
+        return results
+
 class StandReward(BaseLocomotionReward):
     """Reward function for the stand task."""
 
@@ -67,8 +92,8 @@ class StandCfg(HumanoidTaskCfg):
     traj_filepath = "roboverse_data/trajs/humanoidbench/stand/v2/initial_state_v2.json"
 
     checker = _StandChecker()
-    reward_weights = [0.8,0.1,0.1]
-    reward_functions = [StandReward(), AnkleDownReward(), HandDownReward()]
+    reward_weights = [0.7,0.3]
+    reward_functions = [StandReward(),DistanceFromInitPos()]
 
     def extra_spec(self):
         """This task does not require any extra observations."""

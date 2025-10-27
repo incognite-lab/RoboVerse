@@ -29,7 +29,7 @@ class StableBaseline3VecEnv(VecEnv):
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(len(joint_limits)+3,),  # joints + XYZ gyro
+            shape=(len(joint_limits)+3+9,),  # joints + XYZ gyro
             dtype=np.float32,
         )
         self.env = env
@@ -44,12 +44,24 @@ class StableBaseline3VecEnv(VecEnv):
         gyrodata = gyrodata.reshape(self.num_envs, 3)
         obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
         return np.concatenate([obs, gyrodata], axis=1).astype(np.float32)
-
+    def add_extra_to_obs(self, obs: np.ndarray) -> np.ndarray:
+        """extend obs with extra data."""
+        states = self.env.env.handler.get_states()
+        right_ankle_idx = states.robots[self.env.scenario.robots[0].name].body_names.index("right_ankle_roll_link")
+        left_ankle_idx = states.robots[self.env.scenario.robots[0].name].body_names.index("left_ankle_roll_link")
+        right_ankle_pos = states.robots[self.env.scenario.robots[0].name].body_state[:,right_ankle_idx,:3].cpu().numpy()
+        left_ankle_pos = states.robots[self.env.scenario.robots[0].name].body_state[:,left_ankle_idx,:3].cpu().numpy()
+        torso_idx = states.robots[self.env.scenario.robots[0].name].body_names.index("torso_link")
+        torso_pos = states.robots[self.env.scenario.robots[0].name].body_state[:,torso_idx,:3].cpu().numpy()
+        other_pos = np.concatenate([right_ankle_pos,left_ankle_pos,torso_pos],axis=1)
+        obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
+        return np.concatenate([obs, other_pos], axis=1).astype(np.float32)
     def reset(self):
         """Reset the environment."""
         obs, _ = self.env.reset()
         obs = obs.cpu().numpy()
         obs = self._combine_obs(obs)
+        obs = self.add_extra_to_obs(obs)
         self.timesteps.zero_()
         return obs
 
@@ -73,6 +85,7 @@ class StableBaseline3VecEnv(VecEnv):
         rewards = rewards + time_factor * 2.0
         obs = obs.cpu().numpy()
         obs = self._combine_obs(obs)
+        obs = self.add_extra_to_obs(obs)
 
         # --- Done flag ---
         dones = timeout.to(unsuccess.device) | unsuccess
