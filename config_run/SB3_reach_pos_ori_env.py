@@ -35,7 +35,7 @@ class StableBaseline3VecEnv(VecEnv):
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(len(joint_limits)+7,),  # joints(left and right arm and torso) + XYZ + orientation
+            shape=(len(joint_limits)+7+7,),  # joints(left and right arm and torso) + XYZ + orientation of cube + XYZ + orientation of endeffector
             dtype=np.float32,
         )
         self.env = env
@@ -54,9 +54,12 @@ class StableBaseline3VecEnv(VecEnv):
         """Spojí joint states a gyro data pro všechna envs."""
         cube_pos = self.env.env.handler.get_states().objects["cube_1"].body_state[:,0,:3].cpu().numpy()
         cube_ori = self.env.env.handler.get_states().objects["cube_1"].body_state[:,0,3:7].cpu().numpy()
+        ee_index = self.env.env.handler.get_states().robots[self.env.scenario.robots[0].name].body_names.index("endeffector")
+        ee_pos = self.env.env.handler.get_states().robots[self.env.scenario.robots[0].name].body_state[:,ee_index,:3].cpu().numpy()
+        ee_ori = self.env.env.handler.get_states().robots[self.env.scenario.robots[0].name].body_state[:,ee_index,3:7].cpu().numpy()
 
         obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
-        return np.concatenate([obs, cube_pos, cube_ori], axis=1).astype(np.float32)
+        return np.concatenate([obs, cube_pos, cube_ori,ee_pos,ee_ori], axis=1).astype(np.float32)
     def reset(self):
         """Reset the environment."""
         obs, _ = self.env.reset()

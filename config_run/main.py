@@ -13,7 +13,7 @@ from metasim.constants import PhysicStateType, SimType
 from metasim.wrapper.gym_vec_env import MetaSimVecEnv
 from stable_baselines3 import PPO
 from callbacks import TensorboardMetricsCallback, SaveModelCallback,RewardPlotCallback
-
+import numpy as np
 
 
 from utils import ObsSaver
@@ -77,9 +77,9 @@ def main():
     #     log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
     #     exit(1)
     # config_name = sys.argv[1]
-    #config_name = "g1_reach_pos_ori_train"
+    config_name = "g1_reach_pos_ori_train"
     #config_name = "g1_door_open_train"
-    config_name = "g1_stand_train"
+    #config_name = "g1_stand_eval"
     config = load_config_from_yaml(config_name)
     log.info(f"Loaded config: {config_name}")
 
@@ -159,13 +159,16 @@ def main():
         quit()
     elif config.get("train_or_eval") == "eval":
 
+        # sys.modules['numpy._core'] = np.core
+        # sys.modules['numpy._core.numeric'] = np.core.numeric
+
         # load the model
         log.info(f"Loading model from {config.get('load_model_path')}")
         model = PPO.load(config.get("load_model_path"), env=env, device="cuda" if torch.cuda.is_available() else "cpu")
         # --- Nastavení videa ---
         os.makedirs(os.path.dirname(config.get("video_save_path")), exist_ok=True)
         observation = ObsSaver(video_path=config.get("video_save_path"))
-        slow = config.get("video_slowdown", 5)
+        slow = config.get("video_slowdown", 3)
         # inference
         obs = env.reset()
         for step in range(config.get("eval_episodes", 1000)):

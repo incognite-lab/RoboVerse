@@ -42,6 +42,8 @@ class GenesisHandler(BaseSimHandler):
         self.camera_inst_dict: dict[str, Camera] = {}
 
     def launch(self) -> None:
+        show_viewer = not self.headless
+        print(show_viewer," show_viewer")
         gs.init(backend=gs.gpu,logging_level=gs._logging.WARNING)  # TODO: add option for cpu
         # zde změna ve vypisování logů - genesis je moc hlučný (nevypisujíse info logy ani debug)
         self.scene_inst = gs.Scene(
@@ -56,9 +58,9 @@ class GenesisHandler(BaseSimHandler):
                 camera_fov=40,
             ),
             renderer=gs.renderers.Rasterizer(),
-            show_viewer=not self.headless,
+            show_viewer=show_viewer,
         )
-        print(not self.headless)
+        #print(not self.headless)
         ## Add ground
         try:
             self.scene_inst.add_entity(gs.morphs.Plane())

@@ -47,9 +47,11 @@ class ReachReward(HumanoidBaseReward):
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         """Compute the reach reward."""
+        ee_name = "endeffector"
+
         cube1_state = states.objects["cube_1"].root_state[:, :3]  # [num_envs, 3]
-        right_hand_pos = right_palm_position(states, self.robot_name)
-        #right_hand_pos = right_palm_position(states, self.robot_name,"endeffector")  # [num_envs, 3]
+        #right_hand_pos = right_palm_position(states, self.robot_name)
+        right_hand_pos = right_palm_position(states, self.robot_name,ee_name)  # [num_envs, 3]
 
         # aktuální vzdálenost ruky od cíle
         distance = torch.norm(right_hand_pos - cube1_state, dim=1)  # [num_envs]
