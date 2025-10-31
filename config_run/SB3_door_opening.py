@@ -40,7 +40,7 @@ class StableBaseline3VecEnv(VecEnv):
     def add_extra_to_obs(self, obs: np.ndarray) -> np.ndarray:
         """extend obs with extra data."""
         states = self.env.env.handler.get_states()
-        endeffektor_idx = states.robots[self.env.scenario.robots[0].name].body_names.index("right_ankle_roll_link")
+        endeffektor_idx = states.robots[self.env.scenario.robots[0].name].body_names.index("endeffector")
         endeffektor_pos_ori = states.robots[self.env.scenario.robots[0].name].body_state[:,endeffektor_idx,:7].cpu().numpy()
         door_handle_idx = states.objects["door"].body_names.index("door_handle")
         door_handle_pos_ori = states.objects["door"].body_state[:,door_handle_idx,:7].cpu().numpy()

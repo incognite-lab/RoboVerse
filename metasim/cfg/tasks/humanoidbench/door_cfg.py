@@ -63,11 +63,10 @@ class ReachHandleDoorOriReward(HumanoidBaseReward):
 
         # Compute quaternion distance
         dot_product = torch.abs(torch.sum(handle_ori * right_hand_ori, dim=1))  # [num_envs]
-        angle_diff = 2 * torch.acos(dot_product)  # [num_envs]
         ori_reward = humanoid_reward_util.tolerance(
-            angle_diff,
-            bounds=(0.0, 0.1),
-            margin=1.0,
+            dot_product,
+            bounds=(0.9, 1.0),
+            margin=0.2,
             sigmoid="gaussian"
         )
         distance_weight = torch.exp(-10.0 * torch.clamp(torch.norm(right_hand_pos - handle_pos, dim=1) - 0.05, min=0.0, max=1.0))

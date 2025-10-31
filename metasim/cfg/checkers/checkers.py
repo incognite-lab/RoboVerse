@@ -574,15 +574,15 @@ class _ReachCheckerPosOri(BaseChecker):
 
 
         dot_product = torch.abs(torch.sum(right_hand_ori * cube1_orient, dim=1))
-        #print(dot_product)
+        print(dot_product)
 
 
         # If you want to print, use .cpu().numpy() only for printing
 
         distance = torch.norm(right_hand_pos - cube1_state, dim=1)
-        #print("distance", distance.cpu().numpy())
+        print("distance", distance.cpu().numpy())
 
-        terminated = ((distance < 0.03) & (dot_product > 0.96)) | (cube1_state[:,2] < 0.1)
+        terminated = ((distance < 0.03) & (dot_product > 0.85)) | (cube1_state[:,2] < 0.1)
 
 
         return terminated

@@ -6,7 +6,7 @@ sim: genesis #genesis
 robots: [g1_with_hands]
 task: door
 decimation: 5
-num_envs: 5000
+num_envs: 1000
 headless: true
 add_table: true
 fix_base_link: true
