@@ -94,7 +94,8 @@ class StandCfg(HumanoidTaskCfg):
     checker = _StandChecker()
     reward_weights = [0.7,0.3]
     reward_functions = [StandReward(),DistanceFromInitPos()]
-
+    # reward_weights = [0.8,0.1,0.1]
+    # reward_functions = [StandReward(), AnkleDownReward(), HandDownReward()]
     def extra_spec(self):
         """This task does not require any extra observations."""
         return {}

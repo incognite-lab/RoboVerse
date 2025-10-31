@@ -196,7 +196,7 @@ class ReachposoriCfg(HumanoidTaskCfg):
     traj_filepath = "roboverse_data/trajs/humanoidbench/cube/v2/g1/initial_state_v2.json"
     #traj_filepath = "my_env/initial_state_g1_v2.json"
     checker = _ReachCheckerPosOri()
-    reward_weights = [0.5, 0.5]
+    reward_weights = [0.3, 0.7]
     reward_functions = [ReachReward(), OrientationReward()]
 
     def extra_spec(self):

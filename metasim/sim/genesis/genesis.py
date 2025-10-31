@@ -161,8 +161,11 @@ class GenesisHandler(BaseSimHandler):
 
         robot_states = {}
         for obj in [self.robot]:
-            obj_inst = self.object_inst_dict[obj.name]
             joint_reindex = self.get_joint_reindex(obj.name)
+            joints_names_arr = np.array(self.get_joint_names(obj.name))
+            joints_names_reindexed = joints_names_arr[joint_reindex].tolist()
+            obj_inst = self.object_inst_dict[obj.name]
+
             state = RobotState(
                 root_state=torch.cat(
                     [
@@ -173,13 +176,17 @@ class GenesisHandler(BaseSimHandler):
                     ],
                     dim=-1,
                 ),
+                joint_names=joints_names_reindexed,
                 body_names=self.get_body_names(obj.name),
                 body_state=self.get_body_states(obj.name, envs_idx=env_ids),
                 joint_pos=obj_inst.get_dofs_position(envs_idx=env_ids)[:, joint_reindex],
                 joint_vel=obj_inst.get_dofs_velocity(envs_idx=env_ids)[:, joint_reindex],
                 joint_pos_target=None,  # TODO
-                joint_vel_target=None,  # TODO
-                joint_effort_target=self._get_effort_targets()
+                joint_effort_target=self._get_effort_targets(),
+                joint_vel_target=None  # TODO
+
+
+
                 if self._get_control_mode(obj.name) == "effort"
                 else None,
             )

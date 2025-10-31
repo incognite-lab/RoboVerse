@@ -29,7 +29,7 @@ class StableBaseline3VecEnv(VecEnv):
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(len(joint_limits)+3+9,),  # joints + XYZ gyro
+            shape=(len(joint_limits)+3+9,),  # joints + XYZ gyro + extra
             dtype=np.float32,
         )
         self.env = env
@@ -82,7 +82,7 @@ class StableBaseline3VecEnv(VecEnv):
         """Wait for the step to complete."""
         obs, rewards, unsuccess, timeout, _ = self.env.step(self.action_dicts)
         time_factor = (self.timesteps + 1 )/self.env.scenario.episode_length
-        rewards = rewards + time_factor * 2.0
+        rewards = 0.5 * rewards + 0.5 * rewards * time_factor
         obs = obs.cpu().numpy()
         obs = self._combine_obs(obs)
         obs = self.add_extra_to_obs(obs)

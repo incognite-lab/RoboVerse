@@ -6,8 +6,8 @@ sim: genesis #genesis
 robots: [g1_with_hands]
 task: door
 decimation: 5
-num_envs: 5000
-headless: true
+num_envs: 1
+headless: false
 add_table: true
 fix_base_link: true
 
@@ -45,7 +45,7 @@ train_or_eval: train
 #load_model_path: ./my_env/output/ppo_models/run_2025-10-16_13-59-07/model_80003072
 load_model_path: ./my_env/output/ppo_models/run_2025-10-15_20-22-31/model_80000000
 video_save_path: ./config_run/output/eval_videos/reah_pos_ori_eval.mp4
-eval_episodes: 200
+eval_episodes: 500
 
 
 # PPO training settings

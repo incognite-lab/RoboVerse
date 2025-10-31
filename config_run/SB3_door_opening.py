@@ -29,7 +29,7 @@ class StableBaseline3VecEnv(VecEnv):
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(len(joint_limits),),  # joints + XYZ gyro + joint_pos_door
+            shape=(len(joint_limits)+14,),  # joints + pos and ori of endeffector and door handle
             dtype=np.float32,
         )
         self.env = env
@@ -37,6 +37,16 @@ class StableBaseline3VecEnv(VecEnv):
         self.timesteps = torch.zeros(env.num_envs, dtype=torch.float32, device=("cuda" if env.scenario.sim == 'isaaclab' or env.scenario.sim == 'genesis' else "cpu"))
 
         super().__init__(env.num_envs, self.observation_space, self.action_space)
+    def add_extra_to_obs(self, obs: np.ndarray) -> np.ndarray:
+        """extend obs with extra data."""
+        states = self.env.env.handler.get_states()
+        endeffektor_idx = states.robots[self.env.scenario.robots[0].name].body_names.index("right_ankle_roll_link")
+        endeffektor_pos_ori = states.robots[self.env.scenario.robots[0].name].body_state[:,endeffektor_idx,:7].cpu().numpy()
+        door_handle_idx = states.objects["door"].body_names.index("door_handle")
+        door_handle_pos_ori = states.objects["door"].body_state[:,door_handle_idx,:7].cpu().numpy()
+        other_pos = np.concatenate([endeffektor_pos_ori,door_handle_pos_ori],axis=1)
+        obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
+        return np.concatenate([obs, other_pos], axis=1).astype(np.float32)
 
     def _combine_obs(self, obs: np.ndarray) -> np.ndarray:
         """Spojí joint states a gyro data pro všechna envs."""
@@ -51,6 +61,7 @@ class StableBaseline3VecEnv(VecEnv):
         obs, _ = self.env.reset()
         obs = obs.cpu().numpy()
         #obs = self._combine_obs(obs)
+        obs = self.add_extra_to_obs(obs)
         self.timesteps.zero_()
         return obs
 
@@ -73,6 +84,7 @@ class StableBaseline3VecEnv(VecEnv):
         time_factor = (self.timesteps + 1 )/self.env.scenario.episode_length
         rewards = rewards * time_factor
         obs = obs.cpu().numpy()
+        obs = self.add_extra_to_obs(obs)
         #obs = self._combine_obs(obs)
 
         # --- Done flag ---
