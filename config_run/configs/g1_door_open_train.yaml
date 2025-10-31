@@ -6,8 +6,8 @@ sim: genesis #genesis
 robots: [g1_with_hands]
 task: door
 decimation: 5
-num_envs: 1
-headless: false
+num_envs: 5000
+headless: true
 add_table: true
 fix_base_link: true
 
@@ -50,7 +50,7 @@ eval_episodes: 500
 
 # PPO training settings
 #-------------------------------------------
-total_timesteps: 90_000_000
+total_timesteps: 400_000_000
 model_save_path: ./config_run/output/ppo_model
 model_save_freq: 10_000_000
 tensorboard_log: ./config_run/output/tensorboard

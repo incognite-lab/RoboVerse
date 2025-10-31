@@ -5,8 +5,8 @@ sim: genesis
 robots: [g1_with_hands]
 task: stand
 decimation: 5
-num_envs: 1
-headless: false
+num_envs: 5000
+headless: true
 add_table: true
 #sensors configuration
 sensors:
@@ -47,7 +47,7 @@ eval_episodes: 200
 
 
 # PPO training settings
-total_timesteps: 90_000_000
+total_timesteps: 400_000_000
 model_save_path: ./config_run/output/ppo_model
 model_save_freq: 10_000_000
 
