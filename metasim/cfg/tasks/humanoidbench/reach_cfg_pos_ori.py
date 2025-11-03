@@ -98,13 +98,13 @@ class OrientationReward(HumanoidBaseReward):
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         # Pozice a orientace
         ee_name = "endeffector"
-        right_hand_pos = right_palm_position(states, self.robot_name, ee_name)
+        #right_hand_pos = right_palm_position(states, self.robot_name, ee_name)
         right_hand_ori = right_palm_orientation(states, self.robot_name, ee_name)
-        cube1_state = states.objects["cube_1"].root_state[:, :3]
+        #cube1_state = states.objects["cube_1"].root_state[:, :3]
         cube1_orient = states.objects["cube_1"].body_state[:, 0, 3:7]
 
         # vzdálenost od cíle
-        distance = torch.norm(right_hand_pos - cube1_state, dim=1)
+        #distance = torch.norm(right_hand_pos - cube1_state, dim=1)
 
         # výpočet shody orientace (kvaternionový dot produkt)
         dot_product = torch.abs(torch.sum(right_hand_ori * cube1_orient, dim=1))
@@ -120,11 +120,11 @@ class OrientationReward(HumanoidBaseReward):
 
         # váhový koeficient závislý na vzdálenosti
         # (čím blíž, tím víc se orientace počítá)
-        distance_weight = torch.exp(-10.0 * torch.clamp(distance - 0.05, min=0.0))
+        #distance_weight = torch.exp(-10.0 * torch.clamp(distance - 0.05, min=0.0))
         # - pokud distance < 0.05 → váha ≈ 1
         # - pokud distance = 0.1  → váha ≈ 0.6
         # - pokud distance = 0.2  → váha ≈ 0.14
-        orient_reward *= distance_weight
+        #orient_reward *= distance_weight
         #print("right hand ori",right_hand_ori)
         #print("cube ori",cube1_orient)
         #print("Orientation Reward:", orient_reward)
@@ -196,7 +196,7 @@ class ReachposoriCfg(HumanoidTaskCfg):
     traj_filepath = "roboverse_data/trajs/humanoidbench/cube/v2/g1/initial_state_v2.json"
     #traj_filepath = "my_env/initial_state_g1_v2.json"
     checker = _ReachCheckerPosOri()
-    reward_weights = [0.3, 0.7]
+    reward_weights = [0.8, 0.2]
     reward_functions = [ReachReward(), OrientationReward()]
 
     def extra_spec(self):

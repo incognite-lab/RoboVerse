@@ -1,4 +1,5 @@
 
+from __future__ import annotations
 
 from typing import Literal
 
@@ -10,8 +11,6 @@ import numpy as np
 from metasim.wrapper.gym_vec_env import MetaSimVecEnv
 from stable_baselines3.common.vec_env import VecEnv
 from gymnasium import spaces
-from scipy.spatial.transform import Rotation as R
-
 
 
 
@@ -21,53 +20,54 @@ class StableBaseline3VecEnv(VecEnv):
     def __init__(self, env: MetaSimVecEnv):
         """Initialize the environment."""
         joint_limits = env.scenario.robots[0].joint_limits
-        scale = 0.5
-        joints_name_arms_torso = env.scenario.robots[0].joint_names_right_and_left_hand_and_torso
-        #joint_limits_arms_torso = {name: joint_limits[name] for name in joints_name_arms_torso}
         self.action_space = spaces.Box(
             low=np.array([lim[0] for lim in joint_limits.values()]),
             high=np.array([lim[1] for lim in joint_limits.values()]),
-            #low=-scale,
-            #high=scale,
-            shape=(len(joint_limits),), # joints(left arm and right arm and torso)
+            shape=(len(joint_limits),),
             dtype=np.float32,
         )
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(len(joint_limits)+6+6,),  # joints(left and right arm and torso) + XYZ + orientation of cube + XYZ + orientation of endeffector
+            shape=(len(joint_limits)+3+17+3,),  # joints + XYZ gyro + extra + command to go
             dtype=np.float32,
         )
         self.env = env
-        #self.sensors = [GyroSensor(cfg, env.env.handler) for cfg in env.scenario.sensors]
         self.render_mode = None
         self.timesteps = torch.zeros(env.num_envs, dtype=torch.float32, device=("cuda" if env.scenario.sim == 'isaaclab' or env.scenario.sim == 'genesis' else "cpu"))
 
         super().__init__(env.num_envs, self.observation_space, self.action_space)
+    def commad_to_obs(self, obs: np.ndarray) -> np.ndarray:
+        """add command to obs"""
+        command = torch.tensor([1.0,0.0,0.0],device=self.env.env.handler.device).unsqueeze(0).repeat(self.num_envs,1).cpu().numpy()
+        obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
+        return np.concatenate([obs, command], axis=1).astype(np.float32)
+
     def _combine_obs(self, obs: np.ndarray) -> np.ndarray:
         """Spojí joint states a gyro data pro všechna envs."""
-        gyrodata = self.sensors[0].get_data()  # shape (num_envs, 3)
-
+        states = self.env.env.handler.get_states()
+        gyrodata = states.sensors["gyro0"].cpu().numpy()  # shape (num_envs, 3)
+        gyrodata = gyrodata.reshape(self.num_envs, 3)
         obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
         return np.concatenate([obs, gyrodata], axis=1).astype(np.float32)
-    def _odd_cube_obs(self, obs: np.ndarray) -> np.ndarray:
-        """Spojí joint states a gyro data pro všechna envs."""
-        cube_pos = self.env.env.handler.get_states().objects["cube_1"].body_state[:,0,:3].cpu().numpy()
-        cube_ori = self.env.env.handler.get_states().objects["cube_1"].body_state[:,0,3:7].cpu().numpy()
-        ee_index = self.env.env.handler.get_states().robots[self.env.scenario.robots[0].name].body_names.index("endeffector")
-        ee_pos = self.env.env.handler.get_states().robots[self.env.scenario.robots[0].name].body_state[:,ee_index,:3].cpu().numpy()
-        ee_ori = self.env.env.handler.get_states().robots[self.env.scenario.robots[0].name].body_state[:,ee_index,3:7].cpu().numpy()
-        ee_ori_euler = R.from_quat(ee_ori).as_euler('xyz', degrees=False)
-        cube_ori_euler = R.from_quat(cube_ori).as_euler('xyz', degrees=False)
+    def add_extra_to_obs(self, obs: np.ndarray) -> np.ndarray:
+        """extend obs with extra data."""
+        states = self.env.env.handler.get_states()
+        right_ankle_idx = states.robots[self.env.scenario.robots[0].name].body_names.index("right_ankle_roll_link")
+        left_ankle_idx = states.robots[self.env.scenario.robots[0].name].body_names.index("left_ankle_roll_link")
+        right_ankle_posori = states.robots[self.env.scenario.robots[0].name].body_state[:,right_ankle_idx,:3].cpu().numpy()
+        left_ankle_posori = states.robots[self.env.scenario.robots[0].name].body_state[:,left_ankle_idx,:3].cpu().numpy()
+        torso_idx = states.robots[self.env.scenario.robots[0].name].body_names.index("torso_link")
+        torso_pos = states.robots[self.env.scenario.robots[0].name].body_state[:,torso_idx,:3].cpu().numpy()
+        other_pos = np.concatenate([right_ankle_posori,left_ankle_posori,torso_pos],axis=1)
         obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
-        return np.concatenate([obs, cube_pos, cube_ori_euler,ee_pos,ee_ori_euler], axis=1).astype(np.float32)
-        #return np.concatenate([obs, cube_pos, cube_ori], axis=1).astype(np.float32)
+        return np.concatenate([obs, other_pos], axis=1).astype(np.float32)
     def reset(self):
         """Reset the environment."""
         obs, _ = self.env.reset()
         obs = obs.cpu().numpy()
-        #obs = self._combine_obs(obs)
-        obs = self._odd_cube_obs(obs)
+        obs = self._combine_obs(obs)
+        obs = self.add_extra_to_obs(obs)
         self.timesteps.zero_()
         return obs
 
@@ -86,36 +86,46 @@ class StableBaseline3VecEnv(VecEnv):
 
     def step_wait(self):
         """Wait for the step to complete."""
-        obs, rewards, success, timeout, _ = self.env.step(self.action_dicts)
+        obs, rewards, unsuccess, timeout, _ = self.env.step(self.action_dicts)
+        time_factor = (self.timesteps + 1 )/self.env.scenario.episode_length
+        rewards = 0.5 * rewards + 0.5 * rewards * time_factor
         obs = obs.cpu().numpy()
-        obs = self._odd_cube_obs(obs)
-        dones = timeout.to(success.device) | success
+        obs = self._combine_obs(obs)
+        obs = self.add_extra_to_obs(obs)
 
-        self.timesteps += (~success).float()
-        extra = [{} for _ in range(self.num_envs)]
-        if dones.any():
-            for i in range(self.num_envs):
-                if dones[i]:
-                    # naplníme info dict (callback pak ví, že epizoda skončila)
-                    extra[i]["episode"] = {
-                        "r": float(rewards[i].cpu().item()),    # reward této epizody
-                        "l": int(self.timesteps[i].item()),     # délka epizody
-                    }
-                    extra[i]["is_success"] = bool(success[i].item())
+        # --- Done flag ---
+        dones = timeout.to(unsuccess.device) | unsuccess
 
-        if dones.any():
-            self.env.reset(env_ids=dones.nonzero().squeeze(-1).tolist())
-            self.timesteps[dones.cpu()] = 0
-        if success.any():
-            self.timesteps[success.cpu()] = 0
-            rewards[success] = 10.0
-            self.env.reset(env_ids=success.nonzero(as_tuple=False).squeeze(-1).tolist())
+        # --- Update time counters ---
+        self.timesteps += (~unsuccess).float()
 
+        # --- Připrav info dicty ---
+        infos = [{} for _ in range(self.num_envs)]
 
+        # --- Masky ---
+        unsuccess_mask = unsuccess.cpu().numpy().astype(bool)
+        timeout_mask = timeout.cpu().numpy().astype(bool)
 
+        # --- Reset neúspěšných envů ---
+        if unsuccess_mask.any():
+            rewards[unsuccess_mask] = -1.0
+            self.timesteps[unsuccess_mask] = 0.0
+            unsuccess_ids = np.nonzero(unsuccess_mask)[0].tolist()
+            self.env.reset(env_ids=unsuccess_ids)
+            for i in unsuccess_ids:
+                infos[i]["is_success"] = False
+                infos[i]["TimeLimit.truncated"] = False
 
-        return obs, rewards.cpu().numpy(), dones.cpu().numpy(), extra
+        # --- Reset úspěšných envů (timeout = úspěch) ---
+        if timeout_mask.any():
+            self.timesteps[timeout_mask] = 0.0
+            timeout_ids = np.nonzero(timeout_mask)[0].tolist()
+            self.env.reset(env_ids=timeout_ids)
+            for i in timeout_ids:
+                infos[i]["is_success"] = True
+                infos[i]["TimeLimit.truncated"] = True
 
+        return obs, rewards.cpu().numpy(), dones.cpu().numpy(), infos
     def render(self):
         """Render the environment."""
         return self.env.render()

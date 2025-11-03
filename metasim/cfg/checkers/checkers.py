@@ -604,7 +604,7 @@ class _ReachCheckerPosOri(BaseChecker):
 
             states.append({
                 "robots": {
-                    "g1_with_hands": {
+                    "g1_with_hands_simple": {
                         "pos": robot_pos,
                         "rot": torch.tensor([1.0,0.0,0.0,0.0]),
                         "dof_pos": handler.robot.default_joint_positions,
