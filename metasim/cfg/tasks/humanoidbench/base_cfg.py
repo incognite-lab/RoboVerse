@@ -57,6 +57,10 @@ class HumanoidBaseReward:
             self._stand_height = G1_STAND_HEAD_HEIGHT
             self._stand_neck_height = G1_STAND_NECK_HEIGHT
             self._crawl_height = G1_CRAWL_HEAD_HEIGHT
+        elif robot_name == "g1_with_hands_simple" or robot_name == "g1":
+            self._stand_height = G1_STAND_HEAD_HEIGHT
+            self._stand_neck_height = G1_STAND_NECK_HEIGHT
+            self._crawl_height = G1_CRAWL_HEAD_HEIGHT
         elif robot_name == "g1_with_hands":
             self._stand_height = G1_STAND_HEAD_HEIGHT
             self._stand_neck_height = G1_STAND_NECK_HEIGHT

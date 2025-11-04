@@ -40,7 +40,7 @@ class StandingReward(HumanoidBaseReward):
 class ReachReward(HumanoidBaseReward):
     """Reward function for reaching a target position."""
     success_bar = 0.9
-    def __init__(self, robot_name="g1_with_hands"):
+    def __init__(self, robot_name="g1_with_hands_simple"):
         """Initialize the reach reward."""
         super().__init__(robot_name)
         self.prev_distance = None  # pro výpočet změny vzdálenosti
@@ -60,8 +60,8 @@ class ReachReward(HumanoidBaseReward):
         #distance_np = distance.detach().cpu().numpy()
         base_reward = humanoid_reward_util.tolerance(
             distance,
-            bounds=(0.0, 0.05),   # cílové okno
-            margin=0.5,
+            bounds=(0.0, 0.01),   # cílové okno
+            margin=0.1,
             sigmoid="gaussian"
         )
         #base_reward = torch.as_tensor(base_reward_np, device=distance.device, dtype=distance.dtype)
@@ -91,7 +91,7 @@ class ReachReward(HumanoidBaseReward):
 class OrientationReward(HumanoidBaseReward):
     """Reward function for cube orientation alignment."""
 
-    def __init__(self, robot_name="g1_with_hands"):
+    def __init__(self, robot_name="g1_with_hands_simple"):
         """Initialize the orientation reward."""
         super().__init__(robot_name)
 
@@ -112,8 +112,8 @@ class OrientationReward(HumanoidBaseReward):
         # základní orientační odměna
         orient_reward = humanoid_reward_util.tolerance(
             dot_product,
-            bounds=(0.98, 1.0),   # téměř perfektní shoda
-            margin=0.2,           # plynulý přechod
+            bounds=(0.99, 1.0),   # téměř perfektní shoda
+            margin=0.1,           # plynulý přechod
             sigmoid="gaussian"
         )
         #orient_reward = torch.as_tensor(orient_reward_np, device=dot_product.device, dtype=dot_product.dtype)

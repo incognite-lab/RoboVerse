@@ -6,7 +6,7 @@ sim: genesis
 robots: [g1_with_hands_simple]
 task: reachposori
 decimation: 5
-num_envs: 1
+num_envs: 2
 headless: false
 add_table: true
 fix_base_link: true
