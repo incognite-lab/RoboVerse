@@ -129,7 +129,7 @@ class GenesisHandler(BaseSimHandler):
         for obj in self.objects:
             obj_inst = self.object_inst_dict[obj.name]
             if isinstance(obj, ArticulationObjCfg):
-                joint_reindex = self.get_joint_reindex(obj.name)
+                #joint_reindex = self.get_joint_reindex(obj.name)
                 state = ObjectState(
                     root_state=torch.cat(
                         [
@@ -142,8 +142,8 @@ class GenesisHandler(BaseSimHandler):
                     ),
                     body_names=self.get_body_names(obj.name),
                     body_state=self.get_body_states(obj.name, envs_idx=env_ids),
-                    joint_pos=obj_inst.get_dofs_position(envs_idx=env_ids)[:, joint_reindex],
-                    joint_vel=obj_inst.get_dofs_velocity(envs_idx=env_ids)[:, joint_reindex],
+                    joint_pos=obj_inst.get_dofs_position(envs_idx=env_ids),#[:, joint_reindex],
+                    joint_vel=obj_inst.get_dofs_velocity(envs_idx=env_ids),#[:, joint_reindex],
                 )
             else:
                 state = ObjectState(
@@ -161,11 +161,13 @@ class GenesisHandler(BaseSimHandler):
 
         robot_states = {}
         for obj in [self.robot]:
-            joint_reindex = self.get_joint_reindex(obj.name)
+
             joints_names_arr = np.array(self.get_joint_names(obj.name))
-            joints_names_reindexed = joints_names_arr[joint_reindex].tolist()
+            #joints_names_reindexed = joints_names_arr[joint_reindex].tolist()
             obj_inst = self.object_inst_dict[obj.name]
 
+            #joint_reindex = self.get_joint_reindex(obj.name)
+            #print(obj_inst.get_dofs_position(envs_idx=env_ids)[:,6:])
             state = RobotState(
                 root_state=torch.cat(
                     [
@@ -176,11 +178,11 @@ class GenesisHandler(BaseSimHandler):
                     ],
                     dim=-1,
                 ),
-                joint_names=joints_names_reindexed,
+                joint_names=joints_names_arr,
                 body_names=self.get_body_names(obj.name),
                 body_state=self.get_body_states(obj.name, envs_idx=env_ids),
-                joint_pos=obj_inst.get_dofs_position(envs_idx=env_ids)[:, joint_reindex],
-                joint_vel=obj_inst.get_dofs_velocity(envs_idx=env_ids)[:, joint_reindex],
+                joint_pos=obj_inst.get_dofs_position(envs_idx=env_ids)[:, 6:],
+                joint_vel=obj_inst.get_dofs_velocity(envs_idx=env_ids)[:, 6:],
                 joint_pos_target=None,  # TODO
                 joint_effort_target=self._get_effort_targets(),
                 joint_vel_target=None  # TODO
@@ -370,7 +372,7 @@ class GenesisHandler(BaseSimHandler):
             return control_types[0] if control_types else "position"
         return "position"
 
-    def get_joint_names(self, obj_name: str, sort: bool = True) -> list[str]:
+    def get_joint_names(self, obj_name: str, sort: bool = False) -> list[str]:
         if isinstance(self.object_dict[obj_name], ArticulationObjCfg):
             joints: list[RigidJoint] = self.object_inst_dict[obj_name].joints
 

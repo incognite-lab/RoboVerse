@@ -17,7 +17,7 @@ import numpy as np
 
 
 from utils import ObsSaver
-
+import time
 
 
 
@@ -75,12 +75,15 @@ def get_cameras_from_config(cameras: dict):
 def main():
     if len(sys.argv) < 2:
         #config_name = "g1_door_open_train"
-        config_name = "g1_reach_pos_ori_train"
-
+        #config_name = "g1_door_IK"
+        config_name = "g1_reach_IK"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
-    else:
+    elif len(sys.argv) == 2:
         config_name = sys.argv[1]
+    else:
+        log.error("Too many arguments provided. Please provide only the config file path.")
+        exit(1)
     #config_name = "g1_door_open_train"
     #config_name = "g1_stand_eval"
     #config_name = "g1_stand_train"
@@ -127,8 +130,35 @@ def main():
     policy_kwargs = dict(
         net_arch=config.get("net_arch", [128, 128, 128])
     )
+    if config.get("train_or_eval") == "IK":
+        from SB3_reach_pos_ori_env import ik_solver
+        os.makedirs(os.path.dirname(config.get("video_save_path")), exist_ok=True)
+        observation = ObsSaver(video_path=config.get("video_save_path"))
+        slow = config.get("video_slowdown", 3)
+        # inference
+        obs = env.reset()
+        target_object_name = config.get("target_object_name", None)
+        for _ in range(10):
+            #joint_positions = ik_solver(scenario.robots[0], target_object_name, env)
+            for step in range(config.get("eval_episodes", 1000)):
+                time.sleep(0.2)
+                if step % 100 == 0:
+                    joint_positions = ik_solver(scenario.robots[0], target_object_name, env)
+                pos = [pos for pos in joint_positions.values()]
 
-    if config.get("train_or_eval") == "train":
+                obs, rewards, dones, infos = env.step([pos])
+                states = metasim_env.env.handler.get_states()
+                for _ in range(slow):
+                    observation.add(states)
+
+                print(f"Step reward: {rewards} at step {step}")
+
+                if dones.any():
+                    log.info(f"Episode finished after {step + 1} steps")
+            env.reset()
+
+
+    elif config.get("train_or_eval") == "train":
         # PPO configuration
         model = PPO(
             "MlpPolicy",

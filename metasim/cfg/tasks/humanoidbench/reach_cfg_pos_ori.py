@@ -60,8 +60,8 @@ class ReachReward(HumanoidBaseReward):
         #distance_np = distance.detach().cpu().numpy()
         base_reward = humanoid_reward_util.tolerance(
             distance,
-            bounds=(0.0, 0.01),   # cílové okno
-            margin=0.1,
+            bounds=(0.0, 0.03),   # cílové okno
+            margin=0.2,
             sigmoid="gaussian"
         )
         #base_reward = torch.as_tensor(base_reward_np, device=distance.device, dtype=distance.dtype)
@@ -73,7 +73,7 @@ class ReachReward(HumanoidBaseReward):
         else:
             # delta_distance < 0 → přiblížil se
             delta_distance = self.prev_distance - distance
-            approach_bonus = torch.clamp(delta_distance, min=0.0) * 2.0  # zesil efekt
+            approach_bonus = torch.clamp(delta_distance, min=0.0) * 1.0  # zesil efekt
             self.prev_distance = distance.clone()
 
         # --- Penalizace za vzdálení ---
@@ -84,7 +84,7 @@ class ReachReward(HumanoidBaseReward):
 
         # omez hodnoty (pro stabilitu)
         total_reward = torch.clamp(total_reward, 0.0, 5.0)
-        #print("Total Reward:", total_reward)
+        print("dist Reward:", total_reward)
         return total_reward
 
 
@@ -113,7 +113,7 @@ class OrientationReward(HumanoidBaseReward):
         orient_reward = humanoid_reward_util.tolerance(
             dot_product,
             bounds=(0.99, 1.0),   # téměř perfektní shoda
-            margin=0.1,           # plynulý přechod
+            margin=0.3,           # plynulý přechod
             sigmoid="gaussian"
         )
         #orient_reward = torch.as_tensor(orient_reward_np, device=dot_product.device, dtype=dot_product.dtype)
@@ -127,7 +127,7 @@ class OrientationReward(HumanoidBaseReward):
         #orient_reward *= distance_weight
         #print("right hand ori",right_hand_ori)
         #print("cube ori",cube1_orient)
-        #print("Orientation Reward:", orient_reward)
+        print("Orientation Reward:", orient_reward)
         return orient_reward
 
 

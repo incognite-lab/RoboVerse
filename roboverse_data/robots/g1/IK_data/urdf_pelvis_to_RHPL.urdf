@@ -16,6 +16,8 @@
       </material>
     </visual>
   </link>
+
+
   <link name="waist_yaw_link">
     <inertial>
       <origin xyz="0.003494 0.000233 0.018034" rpy="0 0 0"/>

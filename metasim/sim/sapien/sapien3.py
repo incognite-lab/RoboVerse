@@ -419,13 +419,12 @@ class Sapien3Handler(BaseSimHandler):
                 vel = torch.tensor(obj_inst.get_root_linear_velocity())
                 ang_vel = torch.tensor(obj_inst.get_root_angular_velocity())
                 root_state = torch.cat([pos, rot, vel, ang_vel], dim=-1).unsqueeze(0)
-                joint_reindex = self.get_joint_reindex(obj.name)
                 state = ObjectState(
                     root_state=root_state,
                     body_names=link_names,
                     body_state=link_state.unsqueeze(0),
-                    joint_pos=torch.tensor(obj_inst.get_qpos()[joint_reindex]).unsqueeze(0),
-                    joint_vel=torch.tensor(obj_inst.get_qvel()[joint_reindex]).unsqueeze(0),
+                    joint_pos=torch.tensor(obj_inst.get_qpos()).unsqueeze(0),
+                    joint_vel=torch.tensor(obj_inst.get_qvel()).unsqueeze(0),
                 )
             else:
                 assert isinstance(obj_inst, sapien_core.Entity)
@@ -447,7 +446,6 @@ class Sapien3Handler(BaseSimHandler):
             vel = torch.tensor(robot_inst.root_linear_velocity)
             ang_vel = torch.tensor(robot_inst.root_angular_velocity)
             root_state = torch.cat([pos, rot, vel, ang_vel], dim=-1).unsqueeze(0)
-            joint_reindex = self.get_joint_reindex(robot.name)
             link_names, link_state = self._get_link_states(robot.name)
             pos_target = (
                 torch.tensor(self._previous_dof_pos_target[robot.name]).unsqueeze(0)
@@ -466,14 +464,14 @@ class Sapien3Handler(BaseSimHandler):
             )
 
             joints_names_arr = np.array(self.get_joint_names(robot.name))
-            joints_names_reindexed = joints_names_arr[joint_reindex].tolist()
+
             state = RobotState(
                 root_state=root_state,
                 body_names=link_names,
                 body_state=link_state.unsqueeze(0),
-                joint_pos=torch.tensor(robot_inst.get_qpos()[joint_reindex]).unsqueeze(0),
-                joint_vel=torch.tensor(robot_inst.get_qvel()[joint_reindex]).unsqueeze(0),
-                joint_names=joints_names_reindexed,
+                joint_pos=torch.tensor(robot_inst.get_qpos()).unsqueeze(0),
+                joint_vel=torch.tensor(robot_inst.get_qvel()).unsqueeze(0),
+                joint_names=joints_names_arr,
                 joint_pos_target=pos_target,
                 joint_vel_target=vel_target,
                 joint_effort_target=effort_target,
@@ -549,7 +547,7 @@ class Sapien3Handler(BaseSimHandler):
     def device(self) -> torch.device:
         return torch.device("cpu")
 
-    def get_joint_names(self, obj_name: str, sort: bool = True) -> list[str]:
+    def get_joint_names(self, obj_name: str, sort: bool = False) -> list[str]:
         if isinstance(self.object_dict[obj_name], ArticulationObjCfg):
             joint_names = deepcopy(self.object_joint_order[obj_name])
             if sort:

@@ -6,7 +6,7 @@ sim: genesis
 robots: [g1_with_hands_simple]
 task: reachposori
 decimation: 5
-num_envs: 2
+num_envs: 1
 headless: false
 add_table: true
 fix_base_link: true
@@ -45,7 +45,7 @@ tensorboard_log: ./config_run/output/tensorboard
 
 # PPO parameters
 #-------------------------------------------
-net_arch: [128, 128, 128]
+net_arch: [64, 64, 64]
 
 learning_rate: 0.0003
 n_steps: 128
