@@ -75,8 +75,8 @@ def get_cameras_from_config(cameras: dict):
 def main():
     if len(sys.argv) < 2:
         #config_name = "g1_door_open_train"
-        config_name = "g1_door_open_train"
-        #config_name = "g1_reach_IK"
+        #config_name = "g1_door_open_train"
+        config_name = "g1_reach_IK"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
     elif len(sys.argv) == 2:

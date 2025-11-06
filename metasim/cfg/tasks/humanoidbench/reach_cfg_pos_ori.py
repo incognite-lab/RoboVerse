@@ -84,7 +84,7 @@ class ReachReward(HumanoidBaseReward):
 
         # omez hodnoty (pro stabilitu)
         total_reward = torch.clamp(total_reward, 0.0, 5.0)
-        print("dist Reward:", total_reward)
+        #print("dist Reward:", total_reward)
         return total_reward
 
 
@@ -127,7 +127,7 @@ class OrientationReward(HumanoidBaseReward):
         #orient_reward *= distance_weight
         #print("right hand ori",right_hand_ori)
         #print("cube ori",cube1_orient)
-        print("Orientation Reward:", orient_reward)
+        #print("Orientation Reward:", orient_reward)
         return orient_reward
 
 

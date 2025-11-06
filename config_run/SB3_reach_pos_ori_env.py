@@ -87,7 +87,7 @@ class StableBaseline3VecEnv(VecEnv):
     def step_wait(self):
         """Wait for the step to complete."""
         obs, rewards, success, timeout, _ = self.env.step(self.action_dicts)
-        print("FULL Rewards:", rewards)
+        #print("FULL Rewards:", rewards)
         obs = obs.cpu().numpy()
         obs = self._odd_cube_obs(obs)
         dones = timeout.to(success.device) | success
