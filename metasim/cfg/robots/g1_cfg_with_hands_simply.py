@@ -184,27 +184,27 @@ class G1WithHandsSimpleCfg(BaseRobotCfg):
 
     default_joint_positions: dict[str, float] = {  # = target angles [rad] when action = 0.0
 
-        "waist_yaw_joint": 0.0,
-        "waist_roll_joint": 0.0,
-        "waist_pitch_joint": 0.0,
+        "waist_yaw_joint": 0.01,
+        "waist_roll_joint": 0.02,
+        "waist_pitch_joint": 0.03,
 
-        "right_shoulder_pitch_joint": 0.0,
-        "right_shoulder_roll_joint": 0.0,
-        "right_shoulder_yaw_joint": 0.0,
-        "right_elbow_joint": 0.0,
-        "right_wrist_roll_joint": 0.0,
-        "right_wrist_pitch_joint": 0.0,
-        "right_wrist_yaw_joint": 0.0,
+        "right_shoulder_pitch_joint": 0.04,
+        "right_shoulder_roll_joint": 0.05,
+        "right_shoulder_yaw_joint": 0.06,
+        "right_elbow_joint": 0.07,
+        "right_wrist_roll_joint": 0.08,
+        "right_wrist_pitch_joint": 0.09,
+        "right_wrist_yaw_joint": 0.011,
         # Left hand fingers
 
         # Right hand fingers
-        "right_hand_thumb_0_joint": 0.0,
-        "right_hand_thumb_1_joint": 0.0,
-        "right_hand_thumb_2_joint": 0.0,
-        "right_hand_middle_0_joint": 0.0,
-        "right_hand_middle_1_joint": 0.0,
-        "right_hand_index_0_joint": 0.0,
-        "right_hand_index_1_joint": 0.0,
+        "right_hand_thumb_0_joint": 0.012,
+        "right_hand_thumb_1_joint": 0.013,
+        "right_hand_thumb_2_joint": 0.014,
+        "right_hand_middle_0_joint": 0.015,
+        "right_hand_middle_1_joint": 0.016,
+        "right_hand_index_0_joint": 0.017,
+        "right_hand_index_1_joint": 0.017,
     }
 
     control_type: dict[str, Literal["position", "effort"]] = {

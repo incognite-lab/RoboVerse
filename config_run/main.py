@@ -75,8 +75,8 @@ def get_cameras_from_config(cameras: dict):
 def main():
     if len(sys.argv) < 2:
         #config_name = "g1_door_open_train"
-        #config_name = "g1_door_IK"
-        config_name = "g1_reach_IK"
+        config_name = "g1_door_open_train"
+        #config_name = "g1_reach_IK"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
     elif len(sys.argv) == 2:
@@ -138,10 +138,10 @@ def main():
         # inference
         obs = env.reset()
         target_object_name = config.get("target_object_name", None)
-        for _ in range(10):
+        for _ in range(3):
             #joint_positions = ik_solver(scenario.robots[0], target_object_name, env)
             for step in range(config.get("eval_episodes", 1000)):
-                time.sleep(0.2)
+                #time.sleep(0.2)
                 if step % 100 == 0:
                     joint_positions = ik_solver(scenario.robots[0], target_object_name, env)
                 pos = [pos for pos in joint_positions.values()]
@@ -156,6 +156,12 @@ def main():
                 if dones.any():
                     log.info(f"Episode finished after {step + 1} steps")
             env.reset()
+        observation.save()
+        log.info(f"🎬 Video saved to {config.get('video_path')}")
+        env.close()
+
+        quit()
+
 
 
     elif config.get("train_or_eval") == "train":

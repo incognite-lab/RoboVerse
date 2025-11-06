@@ -20,7 +20,7 @@ cameras:
      type: PinholeCameraCfg
      params:
        name: camera0
-       pos: (1.5, -1.5, 1.5)
+       pos: (-2.0, 2.0, 1.5)
        look_at: (0.0, 0.0, 0.0)
        width: 1024
        height: 1024
@@ -38,5 +38,5 @@ target_object_name: "door"
 load_model_path: ./config_run/output/ppo_model/run_2025-11-03_19_reachposori/model_90000000
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2025-10-31_17_reachposori/model_200000000
 #load_model_path: ./config_run/output/ppo_model_cluster/tranining_1_11/run_2025-10-24_11_reachposori/model_370033300
-video_save_path: ./config_run/output/eval_videos/reah_pos_ori_eval.mp4
-eval_episodes: 10000
+video_save_path: ./config_run/output/eval_videos/door_IK.mp4
+eval_episodes: 200

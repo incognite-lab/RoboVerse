@@ -206,6 +206,9 @@ def ik_solver(robot_cfg: str, target_object_name: str, env: StableBaseline3VecEn
     #     for i, link_name in enumerate(obj.body_names):
     #         pos = obj.body_state[0, i, :3]
     #         print(f"{obj_name}:{link_name} -> z={float(pos[2]):.4f}  pos={pos.numpy()}")
+    eeefektor_idx = states.robots[robot_cfg.name].body_names.index("endeffector")
+    eeefektor_pos = states.robots[robot_cfg.name].body_state[0,eeefektor_idx,:3]
+    print(f"Endeffektor position: {eeefektor_pos}")
     if target_object_name == "cube_1":
         target_pos = states.objects[target_object_name].body_state[0,0,:3]
         target_orient = states.objects[target_object_name].body_state[0,0,3:7]
@@ -213,13 +216,14 @@ def ik_solver(robot_cfg: str, target_object_name: str, env: StableBaseline3VecEn
         door_handle_idx = states.objects["door"].body_names.index("door_handle")
         target_pos = states.objects["door"].body_state[0,door_handle_idx,:3]
         target_orient = states.objects["door"].body_state[0,door_handle_idx,3:7]
+        #target_orient = torch.tensor([1.0,0.0, 0.0,0.0],       dtype=torch.float32)
     if target_orient.device != 'cpu':
         target_orient = target_orient.cpu()
     if target_pos.device != 'cpu':
         target_pos = target_pos.cpu()
 
 
-    rot = R.from_quat([target_orient[0], target_orient[1], target_orient[2], target_orient[3]])  # [x, y, z, w]
+    rot = R.from_quat([target_orient[3], target_orient[1], target_orient[2], target_orient[0]])  # [x, y, z, w]
     #rot = R.from_quat([1,0,0,0])  # [x, y, z, w]
     target_rot_matrix = rot.as_matrix()
 
@@ -228,7 +232,6 @@ def ik_solver(robot_cfg: str, target_object_name: str, env: StableBaseline3VecEn
     target_frame[:3, 3] = target_pos.numpy()
 
     #target_frame[1, 3] *= -1.0          # flip Y translation
-
 
 
     chain = Chain.from_urdf_file(robot_cfg.ik_urdf_path, base_elements=["pelvis"])
@@ -253,7 +256,7 @@ def ik_solver(robot_cfg: str, target_object_name: str, env: StableBaseline3VecEn
         pelvis_pos = pelvis_pos.cpu()
     if pelvis_quat.device != 'cpu':
         pelvis_quat = pelvis_quat.cpu()
-    rot = R.from_quat([pelvis_quat[0],pelvis_quat[1], pelvis_quat[2], pelvis_quat[3]])  # [x, y, z, w]
+    rot = R.from_quat([pelvis_quat[3],pelvis_quat[1], pelvis_quat[2], pelvis_quat[0]])  # [x, y, z, w]
     pelvis_rot_matrix = rot.as_matrix()
     base_frame = np.eye(4)
     base_frame[:3, :3] = pelvis_rot_matrix
@@ -275,7 +278,8 @@ def ik_solver(robot_cfg: str, target_object_name: str, env: StableBaseline3VecEn
     angles = dict(zip(robot_cfg.joint_names_right_hand_and_torso, joint_angles[1:-2]))
     # Create a dict with all joints set to zero
     full_joint_dict = {name: 0.0 for name in joint_names}
-
+    forword_poses = chain.forward_kinematics(joint_angles)
+    #print("IKPY Endeffektor pos:", forword_poses[:3,3])
     # Update with your specific joint positions
     full_joint_dict.update(angles)
     # Apply joint positions to the robot in the environment

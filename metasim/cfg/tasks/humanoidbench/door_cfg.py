@@ -22,15 +22,18 @@ class ReachHandleDoorPosReward(HumanoidBaseReward):
         self.prev_dist = None
     def __call__(self, states:list[EnvState], robot_name:str = None) -> torch.FloatTensor:
         """Compute the reach pos door handle reward."""
+        eefektor = "endeffector"
         handle_idx = states.objects["door"].body_names.index("door_handle")
         handle_pos = states.objects["door"].body_state[:, handle_idx, :3]  # [num_envs, 3]
-        right_hand_pos = humanoid_robot_util.right_palm_position(states, self.robot_name)  # [num_envs, 3]
+        #print("Handle position:", handle_pos)
+        right_hand_pos = humanoid_robot_util.right_palm_position(states, self.robot_name,ee_name=eefektor)  # [num_envs, 3]
         distance = torch.norm(right_hand_pos - handle_pos, dim=1)  # [num_envs]
-
+        #print("Right hand position:", right_hand_pos)
+        #print("Distance to handle:", distance)
         reach_reward = humanoid_reward_util.tolerance(
             distance,
-            bounds=(0.0, 0.05),
-            margin=0.5,
+            bounds=(0.0, 0.03),
+            margin=0.2,
             sigmoid="gaussian"
         )
         if self.prev_dist is None:
@@ -47,7 +50,7 @@ class ReachHandleDoorPosReward(HumanoidBaseReward):
 
 
 
-
+        #print("Reach reward:", reach_reward)
         return total_reward
 class ReachHandleDoorOriReward(HumanoidBaseReward):
     """Reward function for reaching the door handle orientation."""
@@ -55,12 +58,13 @@ class ReachHandleDoorOriReward(HumanoidBaseReward):
         super().__init__(robot_name)
     def __call__(self, states:list[EnvState], robot_name:str = None) -> torch.FloatTensor:
         """Compute the reach ori door handle reward."""
+        eefector = "endeffector"
         handle_idx = states.objects["door"].body_names.index("door_handle")
         handle_ori = states.objects["door"].body_state[:, handle_idx, 3:7]  # [num_envs, 4]
         handle_pos = states.objects["door"].body_state[:, handle_idx, :3]  # [num_envs, 3]
-        right_hand_ori = humanoid_robot_util.right_palm_orientation(states, self.robot_name)  # [num_envs, 4]
-        right_hand_pos = humanoid_robot_util.right_palm_position(states, self.robot_name)  # [num_envs, 3]
-
+        right_hand_ori = humanoid_robot_util.right_palm_orientation(states, self.robot_name,ee_name=eefector)  # [num_envs, 4]
+        right_hand_pos = humanoid_robot_util.right_palm_position(states, self.robot_name,ee_name=eefector)  # [num_envs, 3]
+        #if torch.norm(right_hand_pos - handle_pos, dim=1)
         # Compute quaternion distance
         dot_product = torch.abs(torch.sum(handle_ori * right_hand_ori, dim=1))  # [num_envs]
         ori_reward = humanoid_reward_util.tolerance(
@@ -69,8 +73,10 @@ class ReachHandleDoorOriReward(HumanoidBaseReward):
             margin=0.2,
             sigmoid="gaussian"
         )
+
         distance_weight = torch.exp(-10.0 * torch.clamp(torch.norm(right_hand_pos - handle_pos, dim=1) - 0.05, min=0.0, max=1.0))
         ori_reward = ori_reward * distance_weight
+        #print("Orientation reward:", ori_reward)
         return ori_reward
 class DoorReward(HumanoidBaseReward):
     """Reward function for the door task."""
@@ -87,6 +93,7 @@ class DoorReward(HumanoidBaseReward):
 
         # boolean mask per-env where reach is above threshold
         thresh = 0.98
+        #print("Reach reward total:", reach_reward)
         mask = reach_reward > thresh  # tensor of shape [num_envs], dtype=bool
 
         # compute door open reward for all envs (must be tensor)
@@ -94,13 +101,14 @@ class DoorReward(HumanoidBaseReward):
         door_angle = humanoid_robot_util.door_angle_tensor(states, obj_name)
         door_op_reward = humanoid_reward_util.tolerance(
             door_angle,
-            bounds=(1.0, 1.57),
+            bounds=(0.785, 1.57),
             sigmoid="exponential"
         )
 
         # final: reach component scaled by 0.5 for all envs, add door_op_reward*0.5 only where mask is True
         final_reward = reach_reward * 0.5 + torch.where(mask, door_op_reward * 0.5, torch.zeros_like(door_op_reward))
-
+        #print("Door open reward:", door_op_reward)
+        #print("Final reward:", final_reward)
         return final_reward
 
 
@@ -113,7 +121,7 @@ class DoorCfg(HumanoidTaskCfg):
         ArticulationObjCfg(
             name="door",
             urdf_path="roboverse_data/assets/humanoidbench/door/door.urdf",
-            default_position= [1.0, 0.0, 0.0],
+            default_position= [0.0, 0.0, 0.0],
             fix_base_link=True,
             colapse_fixed_joints=False
         )
