@@ -49,6 +49,7 @@ class MetaSimVecEnv(VectorEnv):
         self.observation_space = spaces.Box(-np.inf, np.inf)
         self.action_space = spaces.Box(-np.inf, np.inf)
 
+
     ############################################################
     ## Gym-like interface
     ############################################################
@@ -104,6 +105,7 @@ class MetaSimVecEnv(VectorEnv):
             return tot_reward
 
         for reward_fn, weight in zip(self.scenario.task.reward_functions, self.scenario.task.reward_weights):
+
             reward_fn_ret = reward_fn(states, self.scenario.robots[0].name)
             tot_reward += weight * reward_fn_ret
         return tot_reward

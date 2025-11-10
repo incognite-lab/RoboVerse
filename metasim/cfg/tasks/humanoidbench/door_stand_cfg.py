@@ -93,21 +93,18 @@ class DoorReward(HumanoidBaseReward):
 
         # boolean mask per-env where reach is above threshold
         thresh = 0.98
-        #print("Reach reward:", reach_reward)
         #print("Reach reward total:", reach_reward)
         mask = reach_reward > thresh  # tensor of shape [num_envs], dtype=bool
 
         # compute door open reward for all envs (must be tensor)
         obj_name = "door"
         door_angle = humanoid_robot_util.door_angle_tensor(states, obj_name)
-        #print("Door angle:", door_angle)
         door_op_reward = humanoid_reward_util.tolerance(
-            -door_angle,
+            door_angle,
             bounds=(0.785, 1.57),
-            sigmoid="linear",
-            margin=1.0
+            sigmoid="exponential"
         )
-        #print("Door open reward (before mask):", door_op_reward)
+
         # final: reach component scaled by 0.5 for all envs, add door_op_reward*0.5 only where mask is True
         final_reward = reach_reward * 0.5 + torch.where(mask, door_op_reward * 0.5, torch.zeros_like(door_op_reward))
         #print("Door open reward:", door_op_reward)
@@ -116,7 +113,7 @@ class DoorReward(HumanoidBaseReward):
 
 
 @configclass
-class DoorCfg(HumanoidTaskCfg):
+class DoorstandCfg(HumanoidTaskCfg):
     """Door task for humanoid robots."""
     success_bar = 0.9
     episode_length = 400

@@ -6,3 +6,4 @@ from .base_sensor import BaseSensorCfg
 from .cameras import BaseCameraCfg, PinholeCameraCfg
 from .contact import ContactForceSensorCfg
 from .gyro import GyroSensorCfg
+from .command import CommandCfg

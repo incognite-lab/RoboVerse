@@ -22,3 +22,5 @@ from .stand_cfg import StandCfg
 from .walk_cfg import WalkCfg
 from .reach_cfg_pos_ori import ReachposoriCfg
 from .reach_cfg_pos import ReachposCfg
+from .door_stand_cfg import DoorstandCfg
+from .walk_new_cfg import WalkNewCfg

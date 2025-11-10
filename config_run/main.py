@@ -8,7 +8,7 @@ from loguru import logger as log
 from metasim.cfg.objects import ArticulationObjCfg, PrimitiveCubeCfg, PrimitiveSphereCfg, RigidObjCfg
 from metasim.cfg.robots.base_robot_cfg import BaseActuatorCfg, BaseRobotCfg
 from metasim.cfg.scenario import ScenarioCfg
-from metasim.cfg.sensors import PinholeCameraCfg, GyroSensorCfg
+from metasim.cfg.sensors import PinholeCameraCfg, GyroSensorCfg, CommandCfg
 from metasim.constants import PhysicStateType, SimType
 from metasim.wrapper.gym_vec_env import MetaSimVecEnv
 from stable_baselines3 import PPO
@@ -48,6 +48,8 @@ def get_sensors_from_config(sensors_config: dict):
         if sensor_type == "GyroSensorCfg":
             sensor = GyroSensorCfg(**params)
             sensor.pos = tuple(map(float, sensor.pos.strip("()").split(",")))
+        elif sensor_type == "CommandCfg":
+            sensor = CommandCfg(**params)
         else:
             log.warning(f"Unknown sensor type: {sensor_type}, skipping...")
             continue
@@ -74,9 +76,11 @@ def get_cameras_from_config(cameras: dict):
 
 def main():
     if len(sys.argv) < 2:
-        #config_name = "g1_door_open_train"
-        #config_name = "g1_door_open_train"
-        config_name = "g1_reach_IK"
+        config_name = "g1_door_open_train"
+        #config_name = "g1_door_open_eval"
+        #config_name = "g1_reach_IK"
+        #config_name = "g1_walk_new_train"
+        #config_name = "g1_reach_pos_ori_train"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
     elif len(sys.argv) == 2:
@@ -84,9 +88,6 @@ def main():
     else:
         log.error("Too many arguments provided. Please provide only the config file path.")
         exit(1)
-    #config_name = "g1_door_open_train"
-    #config_name = "g1_stand_eval"
-    #config_name = "g1_stand_train"
     config = load_config_from_yaml(config_name)
     log.info(f"Loaded config: {config_name}")
 
@@ -120,6 +121,10 @@ def main():
         scenario.robots[0].fix_base_link = False
     elif config.get("task") == "door":
         from SB3_door_opening import StableBaseline3VecEnv
+    elif config.get("task") == "walk_new":
+        from SB3_walk_new_env import StableBaseline3VecEnv
+        scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
+        scenario.robots[0].fix_base_link = False
 
 
     metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))

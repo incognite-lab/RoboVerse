@@ -582,9 +582,23 @@ class _ReachCheckerPosOri(BaseChecker):
         distance = torch.norm(right_hand_pos - cube1_state, dim=1)
         #print("distance", distance.cpu().numpy())
 
-        terminated = ((distance < 0.06) & (dot_product > 0.85)) | (cube1_state[:,2] < 0.1)
+        terminated = ((distance < 0.03) & (dot_product > 0.9)) | (cube1_state[:,2] < 0.1)
+        if terminated.any():
 
+            print("some env was successful in reach checker pos ori")
+        # Najdi indexy envů, které splnily podmínku
+        success_indices = terminated.nonzero(as_tuple=False).squeeze(-1)
 
+        if len(success_indices) > 0:
+            print(f"Env(s) {success_indices.cpu().numpy()} were successful!")
+
+            # Vypiš pozici a orientaci ruky pro tyto envy
+            print("Right hand positions:", right_hand_pos[success_indices].cpu().numpy())
+            print("Right hand orientations (quaternion):", right_hand_ori[success_indices].cpu().numpy())
+            print("Cube positions:", cube1_state[success_indices].cpu().numpy())
+            print("Cube orientations (quaternion):", cube1_orient[success_indices].cpu().numpy())
+            print("Dot products:", dot_product[success_indices].cpu().numpy())
+            print("Distances:", distance[success_indices].cpu().numpy())
         return terminated
     def reset(self, handler: BaseSimHandler, env_ids: list[int] | None = None):
         num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
@@ -623,7 +637,7 @@ class _ReachCheckerPosOri(BaseChecker):
             })
 
         handler.set_states(states=states, env_ids=env_ids)
-        print("reset reach checker")
+        #print("reset reach checker")
 
 class _ReachCheckerPos(BaseChecker):
     def check(self, handler: BaseSimHandler) -> torch.BoolTensor:

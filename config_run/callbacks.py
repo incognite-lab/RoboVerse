@@ -7,7 +7,7 @@ import numpy as np
 from datetime import datetime
 
 
-class TensorboardMetricsCallback(BaseCallback):
+class TensorboardMetricsCallbackOld(BaseCallback):
     """
     Callback pro logování průměrných metrik epizod do TensorBoardu a terminálu.
     Funguje s vektorizovanými env (VecEnv).
@@ -101,6 +101,85 @@ class TensorboardMetricsCallback(BaseCallback):
     def _on_training_end(self) -> None:
         self.writer.close()
 
+class TensorboardMetricsCallback(BaseCallback):
+    """
+    Callback pro logování průměrných metrik epizod do TensorBoardu
+    každých log_interval kroků. Nevypisuje do terminálu.
+    """
+
+    def __init__(self, log_dir: str, log_interval: int = 10000):
+        """
+        Args:
+            log_dir: cesta do adresáře pro TensorBoard
+            log_interval: počet kroků mezi jednotlivými logy
+        """
+        super().__init__()
+        os.makedirs(log_dir, exist_ok=True)
+        self.writer = SummaryWriter(log_dir)
+        self.log_interval = log_interval
+
+    def _on_training_start(self) -> None:
+        n_envs = self.training_env.num_envs
+        self.episode_rewards = np.zeros(n_envs, dtype=np.float32)
+        self.episode_lengths = np.zeros(n_envs, dtype=np.int32)
+        self.episode_success = np.zeros(n_envs, dtype=np.int32)
+
+        self.completed_rewards = []
+        self.completed_lengths = []
+        self.completed_success = []
+
+    def _on_step(self) -> bool:
+        rewards = np.array(self.locals["rewards"])
+        dones = np.array(self.locals["dones"])
+        infos = self.locals.get("infos", [{}] * len(dones))
+
+        self.episode_rewards += rewards
+        self.episode_lengths += 1
+
+        for i, info in enumerate(infos):
+            if "is_success" in info:
+                self.episode_success[i] = int(info["is_success"])
+
+            if dones[i]:
+                self.completed_rewards.append(self.episode_rewards[i])
+                self.completed_lengths.append(self.episode_lengths[i])
+                self.completed_success.append(self.episode_success[i])
+
+                self.episode_rewards[i] = 0.0
+                self.episode_lengths[i] = 0
+                self.episode_success[i] = 0
+
+        # log do TensorBoard každých log_interval kroků
+        if self.num_timesteps % self.log_interval == 0 and len(self.completed_rewards) > 0:
+            mean_r = np.mean(self.completed_rewards)
+            mean_l = np.mean(self.completed_lengths)
+            mean_s = np.mean(self.completed_success)
+            max_r = np.max(self.completed_rewards)
+            min_r = np.min(self.completed_rewards)
+            success_count = np.sum(self.completed_success)
+            fail_count = len(self.completed_success) - success_count
+            success_rate = 100.0 * mean_s
+
+            self.writer.add_scalar("episode/mean_return", mean_r, self.num_timesteps)
+            self.writer.add_scalar("episode/mean_length", mean_l, self.num_timesteps)
+            self.writer.add_scalar("episode/success_rate_%", success_rate, self.num_timesteps)
+            self.writer.add_scalar("episode/max_return", max_r, self.num_timesteps)
+            self.writer.add_scalar("episode/min_return", min_r, self.num_timesteps)
+            self.writer.add_scalar("episode/success_count", success_count, self.num_timesteps)
+            self.writer.add_scalar("episode/fail_count", fail_count, self.num_timesteps)
+            self.writer.add_histogram("episode/reward_hist", np.array(self.completed_rewards), self.num_timesteps)
+
+            # vyčistíme historii pro další interval
+            self.completed_rewards.clear()
+            self.completed_lengths.clear()
+            self.completed_success.clear()
+
+            self.writer.flush()
+
+        return True
+
+    def _on_training_end(self) -> None:
+        self.writer.close()
 class SaveModelCallback(BaseCallback):
         """
         Callback for saving the model every 1M timesteps.

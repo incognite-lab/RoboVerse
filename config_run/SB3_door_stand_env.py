@@ -29,42 +29,38 @@ class StableBaseline3VecEnv(VecEnv):
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(len(joint_limits)+3+17,),  # joints + XYZ gyro + extra + command to go
+            shape=(len(joint_limits)+14,),  # joints + pos and ori of endeffector and door handle
             dtype=np.float32,
         )
         self.env = env
         self.render_mode = None
-        self.command = None
         self.timesteps = torch.zeros(env.num_envs, dtype=torch.float32, device=("cuda" if env.scenario.sim == 'isaaclab' or env.scenario.sim == 'genesis' else "cpu"))
 
         super().__init__(env.num_envs, self.observation_space, self.action_space)
-
-    def _combine_obs(self, obs: np.ndarray) -> np.ndarray:
-        """Spojí joint states, gyro data a command pro všechna envs."""
-        states = self.env.env.handler.get_states()
-        gyrodata = states.sensors["gyro0"]  # shape (num_envs, 3)
-        gyrodata = gyrodata.reshape(self.num_envs, 3)
-        command_data = states.sensors["command0"]  # shape (num_envs, 3)
-        command_data = command_data.reshape(self.num_envs, 3)
-        obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
-        return np.concatenate([obs, gyrodata], axis=1).astype(np.float32)
     def add_extra_to_obs(self, obs: np.ndarray) -> np.ndarray:
         """extend obs with extra data."""
         states = self.env.env.handler.get_states()
-        right_ankle_idx = states.robots[self.env.scenario.robots[0].name].body_names.index("right_ankle_roll_link")
-        left_ankle_idx = states.robots[self.env.scenario.robots[0].name].body_names.index("left_ankle_roll_link")
-        right_ankle_posori = states.robots[self.env.scenario.robots[0].name].body_state[:,right_ankle_idx,:7].cpu().numpy()
-        left_ankle_posori = states.robots[self.env.scenario.robots[0].name].body_state[:,left_ankle_idx,:7].cpu().numpy()
-        torso_idx = states.robots[self.env.scenario.robots[0].name].body_names.index("torso_link")
-        torso_pos = states.robots[self.env.scenario.robots[0].name].body_state[:,torso_idx,:3].cpu().numpy()
-        other_pos = np.concatenate([right_ankle_posori,left_ankle_posori,torso_pos],axis=1)
+        endeffektor_idx = states.robots[self.env.scenario.robots[0].name].body_names.index("endeffector")
+        endeffektor_pos_ori = states.robots[self.env.scenario.robots[0].name].body_state[:,endeffektor_idx,:7].cpu().numpy()
+        door_handle_idx = states.objects["door"].body_names.index("door_handle")
+        door_handle_pos_ori = states.objects["door"].body_state[:,door_handle_idx,:7].cpu().numpy()
+        other_pos = np.concatenate([endeffektor_pos_ori,door_handle_pos_ori],axis=1)
         obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
         return np.concatenate([obs, other_pos], axis=1).astype(np.float32)
+
+    def _combine_obs(self, obs: np.ndarray) -> np.ndarray:
+        """Spojí joint states a gyro data pro všechna envs."""
+        states = self.env.env.handler.get_states()
+        gyrodata = states.sensors["gyro0"].cpu().numpy()  # shape (num_envs, 3)
+        gyrodata = gyrodata.reshape(self.num_envs, 3)
+        obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
+        return np.concatenate([obs, gyrodata], axis=1).astype(np.float32)
+
     def reset(self):
         """Reset the environment."""
         obs, _ = self.env.reset()
         obs = obs.cpu().numpy()
-        obs = self._combine_obs(obs)
+        #obs = self._combine_obs(obs)
         obs = self.add_extra_to_obs(obs)
         self.timesteps.zero_()
         return obs
@@ -84,13 +80,10 @@ class StableBaseline3VecEnv(VecEnv):
 
     def step_wait(self):
         """Wait for the step to complete."""
-
         obs, rewards, unsuccess, timeout, _ = self.env.step(self.action_dicts)
-        time_factor = (self.timesteps + 1 )/self.env.scenario.episode_length
-        rewards = 0.5 * rewards + 0.5 * rewards * time_factor
         obs = obs.cpu().numpy()
-        obs = self._combine_obs(obs)
         obs = self.add_extra_to_obs(obs)
+        #obs = self._combine_obs(obs)
 
         # --- Done flag ---
         dones = timeout.to(unsuccess.device) | unsuccess

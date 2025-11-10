@@ -21,6 +21,7 @@ def __get_quick_ref():
     from .humanoidbench import ReachposCfg
     from .humanoidbench import ReachposoriCfg
     from .humanoidbench import WalkCfg
+    from .humanoidbench import WalkNewCfg
     from .humanoidbench.door_cfg import DoorCfg
     from .isaacgym_envs.allegrohand_cfg import AllegroHandCfg
     from .isaacgym_envs.ant_isaacgym_cfg import AntIsaacGymCfg

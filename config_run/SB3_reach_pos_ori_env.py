@@ -44,12 +44,6 @@ class StableBaseline3VecEnv(VecEnv):
         self.timesteps = torch.zeros(env.num_envs, dtype=torch.float32, device=("cuda" if env.scenario.sim == 'isaaclab' or env.scenario.sim == 'genesis' else "cpu"))
 
         super().__init__(env.num_envs, self.observation_space, self.action_space)
-    def _combine_obs(self, obs: np.ndarray) -> np.ndarray:
-        """Spojí joint states a gyro data pro všechna envs."""
-        gyrodata = self.sensors[0].get_data()  # shape (num_envs, 3)
-
-        obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
-        return np.concatenate([obs, gyrodata], axis=1).astype(np.float32)
     def _odd_cube_obs(self, obs: np.ndarray) -> np.ndarray:
         """Spojí joint states a gyro data pro všechna envs."""
         cube_pos = self.env.env.handler.get_states().objects["cube_1"].body_state[:,0,:3].cpu().numpy()
