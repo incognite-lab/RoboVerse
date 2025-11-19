@@ -492,8 +492,8 @@ class Sapien3Handler(BaseSimHandler):
         for sensor in self.scenario.sensors:
             if isinstance(sensor, GyroSensorCfg):
                 gyro_data = sensor.get_data(robot_states,envs_ids=env_ids)
-                #gyro_tensor = torch.tensor(gyro_data, dtype=torch.float32).unsqueeze(1)
-                sensors[sensor.name] = gyro_data
+                gyro_tensor = torch.tensor(gyro_data, dtype=torch.float32).unsqueeze(1)
+                sensors[sensor.name] = gyro_tensor
             elif isinstance(sensor, CommandCfg):
                 command_data = sensor.get_command()
                 #command_tensor = torch.tensor(command_data, dtype=torch.float32).unsqueeze(1)

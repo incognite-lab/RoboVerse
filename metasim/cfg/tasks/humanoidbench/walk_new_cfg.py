@@ -16,12 +16,6 @@ from metasim.utils.humanoid_robot_util import (
 def quat_to_euler_rpy(q: torch.Tensor) -> torch.Tensor:
     """
     Převede tenzor kvaternionů (w, x, y, z) na Eulerovy úhly (roll, pitch, yaw).
-
-    Args:
-        q (torch.Tensor): Tenzor kvaternionů s tvarem [..., 4].
-
-    Returns:
-        torch.Tensor: Tenzor Eulerových úhlů s tvarem [..., 3].
     """
     w, x, y, z = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
 
@@ -32,10 +26,9 @@ def quat_to_euler_rpy(q: torch.Tensor) -> torch.Tensor:
 
     # Pitch (y-axis rotace)
     sinp = 2 * (w * y - z * x)
-    # Ošetření proti gimbal lock (asin(1) nebo asin(-1))
     pitch = torch.where(
         torch.abs(sinp) >= 1,
-        torch.copysign(torch.pi / 2, sinp), # 90 stupňů
+        torch.copysign(torch.full_like(sinp, torch.pi / 2), sinp),  # ✅ opraveno
         torch.asin(sinp)
     )
 
@@ -44,7 +37,6 @@ def quat_to_euler_rpy(q: torch.Tensor) -> torch.Tensor:
     cosy_cosp = 1 - 2 * (y * y + z * z)
     yaw = torch.atan2(siny_cosp, cosy_cosp)
 
-    # Vrátí RPY ve sloupci
     return torch.stack([roll, pitch, yaw], dim=-1)
 class CommandFollowXYReward(HumanoidBaseReward):
     """Reward function for following command direction xy."""
@@ -56,8 +48,11 @@ class CommandFollowXYReward(HumanoidBaseReward):
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         """Compute the command follow reward."""
         # Get robot velocity
-        cmd = states.sencors["command0"]
-        robot_vel_x,robot_vel_y,_ = robot_local_velocity_tensor(states, self.robot_name).unbind(dim=1)
+        cmd = states.sensors["command0"]
+
+        robot_vel = robot_local_velocity_tensor(states, self.robot_name).unbind(dim=1)
+        robot_vel_x = robot_vel[0]
+        robot_vel_y = robot_vel[1]
         err_x = cmd[:,0] - robot_vel_x
         err_y = cmd[:,1] - robot_vel_y
         err_vel_xy = err_x**2 + err_y**2
@@ -73,7 +68,9 @@ class CommandFollowYawReward(HumanoidBaseReward):
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         """Compute the command follow reward."""
         # Get robot yaw rate
-        cmd = states.sencors["command0"]
+        cmd = states.sensors["command0"]
+
+
         q = robot_rotation_tensor(states, self.robot_name)  # (B,4)
         w, x, y, z = q.unbind(-1)  # rozbalíme komponenty quaternionu
 
@@ -81,48 +78,40 @@ class CommandFollowYawReward(HumanoidBaseReward):
         yaw = torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y*y + z*z))  # (B,)
 
         err_yaw = torch.abs(cmd[:,2] - yaw)
-        R_yaw = torch.exp(-30.0 * err_yaw)
+        R_yaw = torch.exp(-300.0 * err_yaw)
         return R_yaw
 class SingleFootContactReward(HumanoidBaseReward):
-    """Reward function for single foot contact."""
+    """Reward for having single-foot contact during walking."""
 
-    def __init__(self, robot_name="g1_with_hands"):
-        """Initialize the single foot contact reward."""
+    def __init__(self, robot_name="g1_with_hands", dt: float = 0.02):
         super().__init__(robot_name)
+        self.dt = dt
         self.time_both_foot_on_ground = None
 
-
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
-        """Compute the single foot contact reward."""
-        cmd = states.sencors["command0"]
+        CONTACT_HEIGHT = 0.1
+        cmd = states.sensors["command0"]
+        is_standing = torch.norm(cmd, dim=1) < 0.01  # zero command = stand
 
-        left_foot_idx = states.robots[self.robot_name].body_names.index("left_ankle_roll_link")
-        right_foot_idx = states.robots[self.robot_name].body_names.index("right_ankle_roll_link")
-        left_foot_contact = states.robots[self.robot_name].body_states[:, left_foot_idx, 2]<0.1
-        right_foot_contact = states.robots[self.robot_name].body_states[:, right_foot_idx, 2]<0.1
-        is_standing = torch.norm(cmd, dim=1) < 0.01 # Tvar: [num_envs,]
+        left_idx = states.robots[self.robot_name].body_names.index("left_ankle_roll_link")
+        right_idx = states.robots[self.robot_name].body_names.index("right_ankle_roll_link")
 
-        is_single_contact = (left_foot_contact & ~right_foot_contact) | (~left_foot_contact & right_foot_contact)
-        is_double_contact = left_foot_contact & right_foot_contact
+        left_contact = states.robots[self.robot_name].body_state[:, left_idx, 2] < CONTACT_HEIGHT
+        right_contact = states.robots[self.robot_name].body_state[:, right_idx, 2] < CONTACT_HEIGHT
+        is_single_contact = (left_contact ^ right_contact)
+        is_double_contact = left_contact & right_contact
+
         if self.time_both_foot_on_ground is None:
-            self.time_both_foot_on_ground = torch.zeros(self.num_envs, device=self.device)
-        # Logika pro "grace period"
-        # Resetuj časovač, pokud je jen jedna noha na zemi
-        self.time_both_foot_on_ground = torch.where(is_single_contact, 0.0, self.time_both_foot_on_ground + 1.0)
-        # Resetuj časovač, pokud nestojí (aby se nepočítal při stání)
-        self.time_both_foot_on_ground = torch.where(is_standing, 0.0, self.time_both_foot_on_ground)
+            self.time_both_foot_on_ground = torch.zeros_like(is_double_contact, dtype=torch.float32)
 
-        # Podmínka pro odměnu (zjednodušená)
-        # Odměna = 1 pokud je single contact NEBO pokud je double contact jen na < 3 kroky
-        reward_condition = is_single_contact | (is_double_contact & (self.time_both_foot_on_ground < 3.0))
-
-        # Finální odměna
-        # 1.0 pokud stojí, jinak 1.0/0.0 podle 'reward_condition'
-        reward = torch.where(
-            is_standing,
-            1.0,
-            reward_condition.float()
+        # 0.2 s grace → 0.2 / dt = počet kroků
+        grace_steps = int(0.2 / self.dt)
+        self.time_both_foot_on_ground = torch.where(
+            is_single_contact, 0.0, self.time_both_foot_on_ground + 1.0
         )
+
+        reward_condition = is_single_contact | (is_double_contact & (self.time_both_foot_on_ground < grace_steps))
+        reward = torch.where(is_standing, 1.0, reward_condition.float())
         return reward
 class BaseHeightReward(HumanoidBaseReward):
     """Base class for height rewards."""
@@ -139,139 +128,243 @@ class BaseHeightReward(HumanoidBaseReward):
         R_height = torch.exp(-20.0 * err_height)
         return R_height
 class FeetAirTimeReward(HumanoidBaseReward):
-    """Reward function for feet airtime."""
+    """Reward for adequate airtime and rhythmic stepping."""
 
-    def __init__(self, robot_name="g1_with_hands"):
-        """Initialize the feet airtime reward."""
+    def __init__(self, robot_name="g1_with_hands", dt: float = 0.02):
         super().__init__(robot_name)
-        self.foot_airtime = torch.zeros(self.num_envs, 2, device=self.device)
-        self.prev_contact = torch.zeros(self.num_envs, 2, dtype=torch.bool, device=self.device)# Tenzor pro sledování stavu kontaktu z *předchozího* kroku
-
+        self.dt = dt
+        self.foot_airtime = None
+        self.prev_contact = None
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
-        """Compute the feet airtime reward."""
+        CONTACT_HEIGHT = 0.1
+        WANT_AIRTIME = 1  # seconds
+        cmd = states.sensors["command0"]
+        is_standing = torch.norm(cmd, dim=1) < 0.01
 
-        if self.command[:] == torch.tensor([0.0,0.0,0.0]):
-            #return zeros tensor for all envs becoause standing
-            self.foot_airtime = torch.zeros(2, device="cpu")
-            return torch.ones(states.num_envs, device=states.device)
-        left_foot_idx = states.robots[self.robot_name].body_names.index("left_ankle_roll_link")
-        right_foot_idx = states.robots[self.robot_name].body_names.index("right_ankle_roll_link")
-        left_foot_contact = states.robots[self.robot_name].body_states[:, left_foot_idx, 2]<0.1
-        right_foot_contact = states.robots[self.robot_name].body_states[:, right_foot_idx, 2]<0.1
-        current_contact = torch.stack([left_foot_contact, right_foot_contact], dim=1)
+        num_envs = states.robots[self.robot_name].body_state.size(0)
+        if self.foot_airtime is None:
+            self.foot_airtime = torch.zeros(num_envs, 2, dtype=torch.float32)
+        if self.prev_contact is None:
+            self.prev_contact = torch.zeros(num_envs, 2, dtype=torch.bool)
+
+        left_idx = states.robots[self.robot_name].body_names.index("left_ankle_roll_link")
+        right_idx = states.robots[self.robot_name].body_names.index("right_ankle_roll_link")
+        left_contact = states.robots[self.robot_name].body_state[:, left_idx, 2] < CONTACT_HEIGHT
+        right_contact = states.robots[self.robot_name].body_state[:, right_idx, 2] < CONTACT_HEIGHT
+        current_contact = torch.stack([left_contact, right_contact], dim=1)
+
         just_touched_down = current_contact & (~self.prev_contact)
 
-        self.foot_airtime = torch.where(current_contact, 0.0, self.foot_airtime + 1.0)
-        reward_values = self.foot_airtime - 4.0
-        foot_rewards = torch.where(
-            just_touched_down,
-            reward_values,
-            0.0  # Nulová odměna, pokud nedošlo k dopadu
-        )
-        total_step_reward = torch.sum(foot_rewards, dim=1)
+        # airtime += dt while in air
+        self.foot_airtime = torch.where(current_contact, 0.0, self.foot_airtime + self.dt)
+
+        # reward = (t_air - 0.4) for feet that just touched down
+        reward_values = (self.foot_airtime - WANT_AIRTIME)
+        foot_rewards = torch.where(just_touched_down, reward_values, 0.0)
+        total_reward = torch.sum(foot_rewards, dim=1)
+
+        # 1 for standing command (constant)
+        reward = torch.where(is_standing, torch.ones_like(total_reward), total_reward)
 
         self.prev_contact = current_contact
-        return total_step_reward
+        return reward
 class FeetOrientationReward(HumanoidBaseReward):
-    """Reward function for feet orientation."""
+    """Reward for keeping feet level and aligned."""
 
     def __init__(self, robot_name="g1_with_hands"):
-        """Initialize the feet orientation reward."""
         super().__init__(robot_name)
         self.ROTATION_THRESHOLD = 0.1
-        self.REWARD_SCALING_FACTOR = 3.0
+        self.SCALE = 3.0  # odpovídá paperu: e^(−Σ|r_feet−ref|)
+
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
-        """
-        Vypočítá odměnu za orientaci chodidel pro všechna prostředí.
+        cmd = states.sensors["command0"]
+        command_yaw = cmd[:, 2]
 
-        Args:
-            states (list[EnvState]): Aktuální stav simulace.
-            command (torch.Tensor): Aktuální příkaz [c_x, c_y, c_yaw]
-                                      pro každé prostředí (shape: [num_envs, 3]).
-        """
+        left_idx = states.robots[self.robot_name].body_names.index("left_ankle_roll_link")
+        right_idx = states.robots[self.robot_name].body_names.index("right_ankle_roll_link")
+        left_q = states.robots[self.robot_name].body_state[:, left_idx, 3:7]
+        right_q = states.robots[self.robot_name].body_state[:, right_idx, 3:7]
 
-        # --- 1. Získání kvaternionů chodidel ---
-        # Tvar: [num_envs, 4]
-        left_foot_idx = states.robots[self.robot_name].body_names.index("left_ankle_roll_link")
-        right_foot_idx = states.robots[self.robot_name].body_names.index("right_ankle_roll_link")
-        left_foot_quat = states.robots[self.robot_name].body_state[:, left_foot_idx, 3:7]
-        right_foot_quat = states.robots[self.robot_name].body_state[:, right_foot_idx, 3:7]
+        left_rpy = quat_to_euler_rpy(left_q)
+        right_rpy = quat_to_euler_rpy(right_q)
+        abs_left = torch.abs(left_rpy)
+        abs_right = torch.abs(right_rpy)
 
-        # --- 2. Převod na Eulerovy úhly (RPY) ---
-        # Tvar: [num_envs, 3]
-        left_rpy = quat_to_euler_rpy(left_foot_quat)
-        right_rpy = quat_to_euler_rpy(right_foot_quat)
-
-        # Cílová orientace je [0, 0, 0], takže chyba je absolutní hodnota úhlů
-        abs_left_rpy = torch.abs(left_rpy)
-        abs_right_rpy = torch.abs(right_rpy)
-
-        # --- 3. Výpočet chyb ---
-
-        # Chyba RPY (Roll + Pitch + Yaw) pro obě nohy
-        # Použije se, když se robot NEOTÁČÍ
-        # Tvar: [num_envs,]
-        total_error_rpy = torch.sum(abs_left_rpy, dim=1) + torch.sum(abs_right_rpy, dim=1)
-
-        # Chyba RP (Roll + Pitch) pro obě nohy
-        # Použije se, když se robot OTÁČÍ
-        # Tvar: [num_envs,]
-        total_error_rp = torch.sum(abs_left_rpy[:, :2], dim=1) + torch.sum(abs_right_rpy[:, :2], dim=1)
-
-        # --- 4. Výběr chyby na základě příkazu ---
-        # Příkaz k otáčení, Tvar: [num_envs,]
-        command_yaw = self.command[:, 2]
-
-        # Maska, Tvar: [num_envs,]
+        total_err_rpy = torch.sum(abs_left, dim=1) + torch.sum(abs_right, dim=1)
+        total_err_rp = torch.sum(abs_left[:, :2], dim=1) + torch.sum(abs_right[:, :2], dim=1)
         is_rotating = torch.abs(command_yaw) > self.ROTATION_THRESHOLD
 
-        # Vektorizovaný výběr chyby
-        # Tvar: [num_envs,]
-        total_error = torch.where(
-            is_rotating,
-            total_error_rp,   # Penalizuj pouze RP, pokud se otáčíme
-            total_error_rpy   # Penalizuj RPY, pokud se neotáčíme
-        )
-
-        # --- 5. Výpočet finální odměny ---
-        # e^(-k * chyba)
-        reward = torch.exp(-self.REWARD_SCALING_FACTOR * total_error)
-
+        total_err = torch.where(is_rotating, total_err_rp, total_err_rpy)
+        reward = torch.exp(-self.SCALE * total_err)
         return reward
 class FeetPositionReward(BaseLocomotionReward):
-    """Reward function for feet position."""
+    """Reward for keeping feet near neutral position during standing."""
 
     def __init__(self, robot_name="g1_with_hands"):
-        """Initialize the feet position reward."""
         super().__init__(robot_name)
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
-        """Compute the feet position reward."""
-        command = self.command
-        R_feet_pos = torch.ones(self.num_envs, device=self.device)
-        left_foot_idx = states.robots[self.robot_name].body_names.index("left_ankle_roll_link")
-        right_foot_idx = states.robots[self.robot_name].body_names.index("right_ankle_roll_link")
-        left_foot_pos = states.robots[self.robot_name].body_state[:, left_foot_idx, :3]
-        right_foot_pos = states.robots[self.robot_name].body_state[:, right_foot_idx, :3]
-        is_standing = torch.norm(command, dim=1) < 0.01
-        treshold_haigh = 0.1
-        err_feet_pos_heigh = torch.abs(left_foot_pos[:, 2]) + torch.abs(right_foot_pos[:, 2])
-        err_feet_pos_heigh_normalise = torch.clamp(err_feet_pos_heigh - treshold_haigh, min=0.0)
-        err_left_feet = torch.norm(command[:,:2]-left_foot_pos[:,:2])
-        err_right_feet = torch.norm(command[:,:2]-right_foot_pos[:,:2])
-        treshold = 0.5
-        err_left_normalise = torch.clamp(err_left_feet - treshold, min=0.0)
-        err_right_normalise = torch.clamp(err_right_feet - treshold, min=0.0)
-        err_feet_pos_xyz = err_left_normalise + err_right_normalise + err_feet_pos_heigh_normalise
-        R_feet_pos_xy = torch.exp(-3.0 * err_feet_pos_xyz)
-        reward = torch.where(
-            is_standing,
-            torch.ones_like(R_feet_pos_xy),
-            R_feet_pos_xy
-        )
+        cmd = states.sensors["command0"]
+        is_standing = torch.norm(cmd, dim=1) < 0.01
+
+        left_idx = states.robots[self.robot_name].body_names.index("left_ankle_roll_link")
+        right_idx = states.robots[self.robot_name].body_names.index("right_ankle_roll_link")
+        left_pos = states.robots[self.robot_name].body_state[:, left_idx, :3]
+        right_pos = states.robots[self.robot_name].body_state[:, right_idx, :3]
+
+        feet_dist = torch.norm(left_pos[:, :2] - right_pos[:, :2], dim=1)
+        R_feet = torch.exp(-3.0 * feet_dist)
+
+        # Reward active only when standing
+        reward = torch.where(is_standing, R_feet, torch.ones_like(R_feet))
         return reward
 
+
+
+class ArmPoseReward(HumanoidBaseReward):
+    """Reward for keeping arm joints near a nominal reference configuration."""
+
+    def __init__(self, robot_name="g1_with_hands"):
+        super().__init__(robot_name)
+        # Reference arm joint angles [rad]; můžeš doladit podle svého modelu
+        self.ref_angles = {
+            "left_shoulder_pitch_joint": 0.0,
+            "left_shoulder_roll_joint": 0.0,
+            "left_shoulder_yaw_joint": 0.0,
+            "left_elbow_joint": 1.0471,
+            "left_wrist_roll_joint": 0.0,
+            "left_wrist_pitch_joint": 0.0,
+            "left_wrist_yaw_joint": 0.0,
+            "right_shoulder_pitch_joint": 0.0,
+            "right_shoulder_roll_joint": 0.0,
+            "right_shoulder_yaw_joint": 0.0,
+            "right_elbow_joint": 1.0471,
+            "right_wrist_roll_joint": 0.0,
+            "right_wrist_pitch_joint": 0.0,
+            "right_wrist_yaw_joint": 0.0,
+        }
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        robot = states.robots[self.robot_name]
+        joint_names = robot.joint_names
+        joint_pos = robot.joint_pos
+        q_dict = {name: joint_pos[:, idx] for idx, name in enumerate(joint_names)}
+        # dict: joint_name -> tensor (B,)
+        errors = []
+        for jname, ref in self.ref_angles.items():
+            if jname in q_dict:
+                err = torch.abs(q_dict[jname] - ref)
+                errors.append(err)
+        if len(errors) == 0:
+            return torch.ones(states.num_envs, device=states.device)
+        err_total = torch.stack(errors, dim=1).sum(dim=1)
+        return torch.exp(-3.0 * err_total)
+
+class BaseAccelerationReward(HumanoidBaseReward):
+    """Reward for minimizing base linear acceleration."""
+
+    def __init__(self, robot_name="g1_with_hands"):
+        super().__init__(robot_name)
+        self.prev_base_vel = None
+
+    def __call__(self, states: list[EnvState], robot_name: str = None,dt: float = 0.02) -> torch.FloatTensor:
+        if self.prev_base_vel is None:
+            self.prev_base_vel = robot_velocity_tensor(states, self.robot_name)
+
+
+        base_vel = robot_velocity_tensor(states,self.robot_name)
+        base_acc = (base_vel - self.prev_base_vel)/dt
+
+
+        accel_sum = torch.sum(torch.abs(base_acc), dim=1)
+        reward = torch.exp(-0.01 * accel_sum)
+        self.prev_base_vel = base_vel.clone()
+        return reward
+
+
+class TorqueReward(HumanoidBaseReward):
+    """Reward for minimizing actuator torque usage.
+    ---->not work in sapien3<------
+    """
+
+    def __init__(self, robot_name="g1_with_hands", torque_limit: float = 100.0):
+        super().__init__(robot_name)
+        self.torque_limit = torque_limit
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        tau = actuator_forces_tensor(states, self.robot_name)  # (B, N)
+        mean_torque_ratio = torch.mean(torch.abs(tau), dim=1)
+        reward = torch.exp(-0.02 * mean_torque_ratio)
+        return reward
+class ActionDifferenceReward(HumanoidBaseReward):
+    """Reward for smoothness in consecutive actions."""
+
+    def __init__(self, robot_name="g1_with_hands"):
+        super().__init__(robot_name)
+        self.prev_action = None
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        curr_action = states.robots[self.robot_name].joint_pos
+        #TODO
+        if self.prev_action is None:
+            self.prev_action = curr_action.clone()
+        diff = torch.abs(curr_action - self.prev_action).sum(dim=1)
+        reward = torch.exp(-0.02 * diff)
+        self.prev_action = curr_action.clone()
+        return reward
+class RollPitchOrientationReward(HumanoidBaseReward):
+    """
+    Reward penalizing torso roll & pitch deviations.
+    Implements Table I: e^{-30 * qd(q_rp, c_rp)} where c_rp = identity (roll=0,pitch=0).
+    """
+
+    def __init__(self, robot_name="g1_with_hands"):
+        super().__init__(robot_name)
+
+    def __call__(self, states: EnvState, robot_name: str = None) -> torch.FloatTensor:
+        # torso orientation quaternion (w,x,y,z)
+        q = robot_rotation_tensor(states, self.robot_name)  # (B,4)
+
+        # Extract roll & pitch only, zero yaw
+        # Convert to rpy
+        rpy = quat_to_euler_rpy(q)  # (B,3)
+
+        # Zero yaw → only roll, pitch matter
+        rpy_rp = torch.stack([rpy[:, 0], rpy[:, 1], torch.zeros_like(rpy[:, 2])], dim=1)
+
+        # Convert rp-only back to quaternion
+        roll = rpy_rp[:, 0]
+        pitch = rpy_rp[:, 1]
+
+        cy = torch.ones_like(roll)          # yaw = 0 => cos(yaw/2)=1
+        sy = torch.zeros_like(roll)
+
+        cr = torch.cos(roll * 0.5)
+        sr = torch.sin(roll * 0.5)
+        cp = torch.cos(pitch * 0.5)
+        sp = torch.sin(pitch * 0.5)
+
+        # quaternion from (roll,pitch,0)
+        # standard ZYX convention
+        qr = torch.stack([
+            cy * cp * cr + sy * sp * sr,
+            cy * cp * sr - sy * sp * cr,
+            cy * sp * cr + sy * cp * sr,
+            sy * cp * cr - cy * sp * sr,
+        ], dim=1)  # (B,4)
+
+        # reference orientation: identity quaternion (roll=0,pitch=0,yaw=0)
+        q_ref = torch.tensor([1.0, 0.0, 0.0, 0.0], device=q.device, dtype=q.dtype).expand_as(q)
+
+        # quaternion distance (qd)
+        # qd(q1, q2) = 1 - |dot(q1,q2)|
+        dot = torch.sum(qr * q_ref, dim=1)
+        qd = 1.0 - torch.abs(dot)
+
+        # reward
+        reward = torch.exp(-30.0 * qd)
+        return reward
 @configclass
 class WalkNewCfg(HumanoidTaskCfg):
     """Walking task for humanoid robots."""
@@ -296,13 +389,18 @@ class WalkNewCfg(HumanoidTaskCfg):
     traj_filepath = "roboverse_data/trajs/humanoidbench/stand/v2/initial_state_v2.json"
 
     checker = _WalkChecker()
-    reward_functions = [CommandFollowXYReward()
-                        # CommandFollowYawReward(),
-                        # SingleFootContactReward(),
-                        # BaseHeightReward(),
-                        # FeetAirTimeReward(),
-                        # FeetOrientationReward(),
-                        # FeetPositionReward()
+    reward_functions = [CommandFollowXYReward(),
+                        CommandFollowYawReward(),
+                        SingleFootContactReward(),
+                        BaseHeightReward(),
+                        FeetAirTimeReward(),
+                        FeetOrientationReward(),
+                        FeetPositionReward(),
+                        ArmPoseReward(),
+                        BaseAccelerationReward(),
+                        TorqueReward(),
+                        ActionDifferenceReward(),
+                        RollPitchOrientationReward()
                         ]
     reward_weights = [W_VEL_XY,
                       W_YAW_ORIENT,
@@ -310,10 +408,15 @@ class WalkNewCfg(HumanoidTaskCfg):
                       W_BASE_HEIGHT,
                       W_FEET_AIRTIME,
                       W_FEET_ORIENT,
-                      W_FEET_POS
+                      W_FEET_POS,
+                      W_ARM,
+                      W_BASE_ACCEL,
+                      W_TORQUE,
+                      W_ACTION_DIFF,
+                      W_RP_ORIENT
                       ]
 
     def extra_spec(self):
-        print("dddddddd")
+
         """This task does not require any extra observations."""
         return {}

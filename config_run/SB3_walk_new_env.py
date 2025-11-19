@@ -29,25 +29,33 @@ class StableBaseline3VecEnv(VecEnv):
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(len(joint_limits)+3+17,),  # joints + XYZ gyro + extra + command to go
+            shape=(len(joint_limits)+3+17+3,),  # joints + XYZ gyro + extra + command to go
             dtype=np.float32,
         )
         self.env = env
         self.render_mode = None
-        self.command = None
         self.timesteps = torch.zeros(env.num_envs, dtype=torch.float32, device=("cuda" if env.scenario.sim == 'isaaclab' or env.scenario.sim == 'genesis' else "cpu"))
+        self.current_commands = torch.zeros((env.num_envs, 3), dtype=torch.float32, device=self.timesteps.device)
 
+        self.command_duration = 200     # kolik kroků command držíme
+        self.command_timer = torch.zeros(env.num_envs, dtype=torch.int32, device=self.timesteps.device)
+
+        # režim: "fixed" = pevný command, "random" = různé směry pro každé env
+        self.command_mode = "fixed"
+
+        # fixed command pokud je zvolen fixed mode
+        self.fixed_command = torch.tensor([2.0, 0.0, 0.0], dtype=torch.float32, device=self.timesteps.device)
         super().__init__(env.num_envs, self.observation_space, self.action_space)
 
     def _combine_obs(self, obs: np.ndarray) -> np.ndarray:
         """Spojí joint states, gyro data a command pro všechna envs."""
         states = self.env.env.handler.get_states()
         gyrodata = states.sensors["gyro0"]  # shape (num_envs, 3)
-        gyrodata = gyrodata.reshape(self.num_envs, 3)
+        gyrodata = gyrodata.reshape(self.num_envs, 3).cpu().numpy()
         command_data = states.sensors["command0"]  # shape (num_envs, 3)
-        command_data = command_data.reshape(self.num_envs, 3)
+        command_data = command_data.reshape(self.num_envs, 3).cpu().numpy()
         obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
-        return np.concatenate([obs, gyrodata], axis=1).astype(np.float32)
+        return np.concatenate([obs, gyrodata,command_data], axis=1).astype(np.float32)
     def add_extra_to_obs(self, obs: np.ndarray) -> np.ndarray:
         """extend obs with extra data."""
         states = self.env.env.handler.get_states()
@@ -62,13 +70,39 @@ class StableBaseline3VecEnv(VecEnv):
         return np.concatenate([obs, other_pos], axis=1).astype(np.float32)
     def reset(self):
         """Reset the environment."""
+        self.command_timer.zero_()
+        self.current_commands = self.generate_commands()
+        self.set_command(self.current_commands)
+
         obs, _ = self.env.reset()
         obs = obs.cpu().numpy()
         obs = self._combine_obs(obs)
         obs = self.add_extra_to_obs(obs)
         self.timesteps.zero_()
         return obs
+    def set_command(self,command):
+        self.env.env.handler.sensors[1].set_command(command)
+    def generate_commands(self):
+        """Generuje commandy podle zvoleného režimu.
+        - "fixed": všechny envs dostanou stejný command
+        - "random": každé env má svůj náhodný command
+        """
 
+        if self.command_mode == "fixed":
+            cmd = self.fixed_command.unsqueeze(0).repeat(self.num_envs, 1)
+            return cmd
+
+        elif self.command_mode == "random":
+            # Náhodná rychlost v rozsahu [-0.5, 2.0] pro x
+            cx = torch.rand(self.num_envs, device=self.timesteps.device) * 2.5 - 0.5
+
+            # Náhodné boční pohyby (-0.5, 0.5)
+            cy = torch.rand(self.num_envs, device=self.timesteps.device) - 0.5
+
+            # Náhodný yaw
+            cyaw = (torch.rand(self.num_envs, device=self.timesteps.device) - 0.5) * 1.0
+
+            return torch.stack([cx, cy, cyaw], dim=1)
     def step_async(self, actions: np.ndarray) -> None:
         """Asynchronously step the environment."""
         self.action_dicts = [
@@ -84,10 +118,20 @@ class StableBaseline3VecEnv(VecEnv):
 
     def step_wait(self):
         """Wait for the step to complete."""
+        # --- UPDATE COMMANDS KAŽDÝCH N KROKŮ ---
+        self.command_timer += 1
+
+        update_mask = self.command_timer >= self.command_duration
+        if torch.any(update_mask):
+            # envs které dosáhly délky trvání → nový command
+            new_cmds = self.generate_commands()
+            self.current_commands[update_mask] = new_cmds[update_mask]
+            self.command_timer[update_mask] = 0
+
+        # nastav komandy do simulace (pro všechna env najednou)
+        self.set_command(self.current_commands)
 
         obs, rewards, unsuccess, timeout, _ = self.env.step(self.action_dicts)
-        time_factor = (self.timesteps + 1 )/self.env.scenario.episode_length
-        rewards = 0.5 * rewards + 0.5 * rewards * time_factor
         obs = obs.cpu().numpy()
         obs = self._combine_obs(obs)
         obs = self.add_extra_to_obs(obs)

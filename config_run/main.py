@@ -76,10 +76,10 @@ def get_cameras_from_config(cameras: dict):
 
 def main():
     if len(sys.argv) < 2:
-        config_name = "g1_door_open_train"
+        #config_name = "g1_door_open_train"
         #config_name = "g1_door_open_eval"
         #config_name = "g1_reach_IK"
-        #config_name = "g1_walk_new_train"
+        config_name = "g1_walk_new_train"
         #config_name = "g1_reach_pos_ori_train"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
@@ -131,10 +131,22 @@ def main():
 
 
     env = StableBaseline3VecEnv(metasim_env)
+    #-----------------------------------------------
+    if config.get("net_arch_pivf", False):
+        policy_kwargs = dict({"net_arch":{"pi": config.get("net_arch_pi", [128, 128, 128]),
+                                         "vf": config.get("net_arch_vf", [128, 128, 128])}})
+    else:
+        policy_kwargs = dict({"net_arch": config.get("net_arch", [128, 128, 128])})
+    #-----------------------------------------------
+    def lr_schedule(initial_value: float, final_value: float):
+        """set linear or constant learning rate schedule"""
+        def func(progress_remaining: float) -> float:
+            if config.get("learning_schedule", "constant") == "linear":
+                return final_value + (initial_value - final_value) * progress_remaining
+            else:
+                return initial_value
+        return func
 
-    policy_kwargs = dict(
-        net_arch=config.get("net_arch", [128, 128, 128])
-    )
     if config.get("train_or_eval") == "IK":
         from SB3_reach_pos_ori_env import ik_solver
         os.makedirs(os.path.dirname(config.get("video_save_path")), exist_ok=True)
@@ -175,7 +187,8 @@ def main():
             "MlpPolicy",
             env,
             verbose=1,
-            learning_rate=config.get("learning_rate", 3e-4),
+            learning_rate=lr_schedule(float(config.get("learning_rate", 3e-4)), 1e-5),
+           # learning_rate=config.get("learning_rate", 3e-4),
             n_steps=config.get("n_steps", 128),
             batch_size=config.get("batch_size", 256),
             n_epochs=config.get("n_epochs", 4),
@@ -187,7 +200,7 @@ def main():
             max_grad_norm=config.get("max_grad_norm", 0.5),
             tensorboard_log=config.get("tensorboard_log", "./ppo_tensorboard/"),
             policy_kwargs=policy_kwargs,
-            device="cuda" if torch.cuda.is_available() else "cpu",
+            device="cpu"#cuda" if torch.cuda.is_available() else "cpu",
         )
         model.learn(total_timesteps=config.get("total_timesteps", 1_000_000),
                     callback=[

@@ -67,7 +67,7 @@ class DistanceFromInitPos(HumanoidBaseReward):
                 diff += torch.abs(joint_pos - state)
         results = humanoid_reward_util.tolerance_tensor(
             diff,
-            bounds=(0.0, 5.0),
+            bounds=(0.0, 1.0),
             margin=5.0,
             value_at_margin=0.0,
             sigmoid="linear",

@@ -108,6 +108,7 @@ class MetaSimVecEnv(VectorEnv):
 
             reward_fn_ret = reward_fn(states, self.scenario.robots[0].name)
             tot_reward += weight * reward_fn_ret
+        print(tot_reward)
         return tot_reward
 
     def _get_default_states(self, seed: int | None = None):

@@ -593,12 +593,6 @@ class _ReachCheckerPosOri(BaseChecker):
             print(f"Env(s) {success_indices.cpu().numpy()} were successful!")
 
             # Vypiš pozici a orientaci ruky pro tyto envy
-            print("Right hand positions:", right_hand_pos[success_indices].cpu().numpy())
-            print("Right hand orientations (quaternion):", right_hand_ori[success_indices].cpu().numpy())
-            print("Cube positions:", cube1_state[success_indices].cpu().numpy())
-            print("Cube orientations (quaternion):", cube1_orient[success_indices].cpu().numpy())
-            print("Dot products:", dot_product[success_indices].cpu().numpy())
-            print("Distances:", distance[success_indices].cpu().numpy())
         return terminated
     def reset(self, handler: BaseSimHandler, env_ids: list[int] | None = None):
         num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
@@ -618,7 +612,7 @@ class _ReachCheckerPosOri(BaseChecker):
 
             states.append({
                 "robots": {
-                    "g1_with_hands_simple": {
+                    handler.robot.name: {
                         "pos": robot_pos,
                         "rot": torch.tensor([1.0,0.0,0.0,0.0]),
                         "dof_pos": handler.robot.default_joint_positions,
@@ -665,6 +659,7 @@ class _ReachCheckerPos(BaseChecker):
         num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
         if env_ids is None:
             env_ids = list(range(num_envs))
+
         states = []
         for i in range(num_envs):
             x = random.uniform(-0.2, 0.2)

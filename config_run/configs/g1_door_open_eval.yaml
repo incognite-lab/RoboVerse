@@ -43,9 +43,10 @@ train_or_eval: eval
 #Eveluation settings
 #------------------------------------------
 #load_model_path: ./my_env/output/ppo_models/run_2025-10-16_13-59-07/model_80003072
-load_model_path: ./config_run/output/ppo_model_cluster/run_2025-11-06_11_door/model_600054000
+load_model_path: ./config_run/output/ppo_model_cluster/run_2025-11-12_19_door/model_310027900
 video_save_path: ./config_run/output/eval_videos/door_open_eval.mp4
-eval_episodes: 300
+eval_episodes: 100
+
 
 
 # PPO training settings

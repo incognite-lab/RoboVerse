@@ -135,7 +135,7 @@
     </visual>
     <collision>
       <origin xyz="0 0 0.0" rpy="0 0 0"/>
-      <geometry><box size="0.10 0.02 0.02"/></geometry>
+      <geometry><box size="0.02 0.1 0.02"/></geometry>
     </collision>
     <inertial>
       <origin xyz="0 0 0.0" rpy="0 0 0"/>
@@ -152,7 +152,7 @@
     </visual>
     <collision>
       <origin xyz="0 0 0.0" rpy="0 0 0"/>
-      <geometry><box size="0.02 0.20 0.02"/></geometry>
+      <geometry><box size="0.2 0.020 0.02"/></geometry>
     </collision>
     <inertial>
       <origin xyz="0 0 0.0" rpy="0 0 0"/>

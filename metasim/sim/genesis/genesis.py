@@ -7,7 +7,7 @@ from genesis.engine.entities.rigid_entity import RigidEntity, RigidJoint
 from genesis.vis.camera import Camera
 from loguru import logger as log
 
-from metasim.cfg.sensors import PinholeCameraCfg, GyroSensorCfg
+from metasim.cfg.sensors import PinholeCameraCfg, GyroSensorCfg, CommandCfg
 from metasim.cfg.objects import ArticulationObjCfg, PrimitiveCubeCfg, PrimitiveSphereCfg, RigidObjCfg, _FileBasedMixin
 from metasim.cfg.scenario import ScenarioCfg
 from metasim.queries.base import BaseQueryType
@@ -209,6 +209,10 @@ class GenesisHandler(BaseSimHandler):
                 gyro_data = sensor.get_data(robot_states,envs_ids=env_ids)  # shape (num_envs, 3)
                 gyro_tensor = torch.tensor(gyro_data, dtype=torch.float32).unsqueeze(0)
                 sensors[sensor.name] = gyro_tensor
+            elif isinstance(sensor, CommandCfg):
+                command_data = sensor.get_command()
+                #command_tensor = torch.tensor(command_data, dtype=torch.float32).unsqueeze(1)
+                sensors[sensor.name] = command_data
             else:
                 log.warning(f"Unknown sensor type: {sensor.cfg_type}, skipping...")
         return TensorState(objects=object_states, robots=robot_states, cameras=camera_states, sensors=sensors)

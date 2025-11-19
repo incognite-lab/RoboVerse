@@ -1,11 +1,11 @@
 #genesis config stand
 
 # Environment settings
-sim: sapien3
+sim: genesis
 robots: [g1_with_hands]
 task: walk_new
 decimation: 5
-num_envs: 1
+num_envs: 2
 
 headless: false
 add_table: true
@@ -60,18 +60,19 @@ model_save_freq: 10_000_000
 eval_model_path:
 
 # PPO parameters
-net_arch: [128, 256, 128]
-
-learning_rate: 0.0003
-n_steps: 128
-batch_size: 256
-n_epochs: 4
+net_arch_pivf: true
+net_arch_pi: [256,256,128]
+net_arch_vf: [256,256,128]
+learning_schedule: linear
+learning_rate: 3e-4
+n_steps: 2048
+batch_size: 512
+n_epochs: 10
 gamma: 0.99
-gae_lambda: 0.95
+gae_lambda: 0.97
 clip_range: 0.2
-ent_coef: 0.01
+ent_coef: 0.001
 vf_coef: 0.5
 max_grad_norm: 0.5
-ent_coef: 0.01
 
 tensorboard_log: ./config_run/output/tensorboard

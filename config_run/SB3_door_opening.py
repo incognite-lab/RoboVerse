@@ -80,44 +80,39 @@ class StableBaseline3VecEnv(VecEnv):
 
     def step_wait(self):
         """Wait for the step to complete."""
-        obs, rewards, unsuccess, timeout, _ = self.env.step(self.action_dicts)
+        obs, rewards, success, timeout, _ = self.env.step(self.action_dicts)
         obs = obs.cpu().numpy()
         obs = self.add_extra_to_obs(obs)
         #obs = self._combine_obs(obs)
 
         # --- Done flag ---
-        dones = timeout.to(unsuccess.device) | unsuccess
+        dones = timeout.to(success.device) | success
 
         # --- Update time counters ---
-        self.timesteps += (~unsuccess).float()
+        self.timesteps += (~success).float()
 
         # --- Připrav info dicty ---
-        infos = [{} for _ in range(self.num_envs)]
+        extra = [{} for _ in range(self.num_envs)]
 
-        # --- Masky ---
-        unsuccess_mask = unsuccess.cpu().numpy().astype(bool)
-        timeout_mask = timeout.cpu().numpy().astype(bool)
+        if dones.any():
+            for i in range(self.num_envs):
+                if dones[i]:
+                    # naplníme info dict (callback pak ví, že epizoda skončila)
+                    extra[i]["episode"] = {
+                        "r": float(rewards[i].cpu().item()),    # reward této epizody
+                        "l": int(self.timesteps[i].item()),     # délka epizody
+                    }
+                    extra[i]["is_success"] = bool(success[i].item())
 
-        # --- Reset neúspěšných envů ---
-        if unsuccess_mask.any():
-            rewards[unsuccess_mask] = -1.0
-            self.timesteps[unsuccess_mask] = 0.0
-            unsuccess_ids = np.nonzero(unsuccess_mask)[0].tolist()
-            self.env.reset(env_ids=unsuccess_ids)
-            for i in unsuccess_ids:
-                infos[i]["is_success"] = False
-                infos[i]["TimeLimit.truncated"] = False
+        if dones.any():
+            self.env.reset(env_ids=dones.nonzero().squeeze(-1).tolist())
+            self.timesteps[dones.cpu()] = 0
+        if success.any():
+            self.timesteps[success.cpu()] = 0
+            rewards[success] = 10.0
+            self.env.reset(env_ids=success.nonzero(as_tuple=False).squeeze(-1).tolist())
 
-        # --- Reset úspěšných envů (timeout = úspěch) ---
-        if timeout_mask.any():
-            self.timesteps[timeout_mask] = 0.0
-            timeout_ids = np.nonzero(timeout_mask)[0].tolist()
-            self.env.reset(env_ids=timeout_ids)
-            for i in timeout_ids:
-                infos[i]["is_success"] = True
-                infos[i]["TimeLimit.truncated"] = True
-
-        return obs, rewards.cpu().numpy(), dones.cpu().numpy(), infos
+        return obs, rewards.cpu().numpy(), dones.cpu().numpy(), extra
     def render(self):
         """Render the environment."""
         return self.env.render()

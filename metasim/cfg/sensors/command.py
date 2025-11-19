@@ -8,13 +8,12 @@ import torch
 class BaseCommand:
     """Configuration for Command."""
     name: str = "command0"
-    cmd: np.ndarray = np.zeros(3)
-    actual_cmd: np.ndarray = np.zeros((1,3))
+    cmd: torch.Tensor = np.zeros(3)
+    actual_cmd: torch.Tensor = np.zeros((1,3))
 @configclass
 class CommandCfg(BaseCommand):
     """Simple commander wrapper."""
-    def get_command(self) -> np.ndarray:
+    def get_command(self) -> torch.Tensor:
         return self.actual_cmd
-    def set_command(self,env_id, cmd: np.ndarray) -> None:
-        self.actual_cmd[env_id] = cmd
-        return
+    def set_command(self, cmds: torch.Tensor) -> None:
+        self.actual_cmd = cmds
