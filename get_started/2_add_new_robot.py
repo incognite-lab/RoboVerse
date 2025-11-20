@@ -35,7 +35,7 @@ class Args:
     """Arguments for the static scene."""
 
     ## Handlers
-    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "genesis"
+    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "isaaclab"
 
     ## Others
     num_envs: int = 1
@@ -51,7 +51,7 @@ args = tyro.cli(Args)
 robot = BaseRobotCfg(
     name="new_robot_h1",
     num_joints=26,
-    usd_path="get_started/example_assets/h1/usd/h1.usd",
+    #usd_path="get_started/example_assets/h1/usd/h1.usd",
     mjcf_path="get_started/example_assets/h1/mjcf/h1.xml",
     urdf_path="get_started/example_assets/h1/urdf/h1_wrist.urdf",
     enabled_gravity=True,

@@ -1067,7 +1067,7 @@
     <parent link="torso_link"/>
     <child link="right_shoulder_pitch_link"/>
     <axis xyz="0 1 0"/>
-    <limit lower="-3.0892" upper="2.6704" effort="25" velocity="37"/>
+    <limit lower="-3.0892" upper="2.6704" effort="50" velocity="37"/>
   </joint>
   <link name="right_shoulder_roll_link">
     <inertial>
@@ -1096,7 +1096,7 @@
     <parent link="right_shoulder_pitch_link"/>
     <child link="right_shoulder_roll_link"/>
     <axis xyz="1 0 0"/>
-    <limit lower="-2.2515" upper="1.5882" effort="25" velocity="37"/>
+    <limit lower="-2.2515" upper="1.5882" effort="100" velocity="37"/>
   </joint>
   <link name="right_shoulder_yaw_link">
     <inertial>
@@ -1125,7 +1125,7 @@
     <parent link="right_shoulder_roll_link"/>
     <child link="right_shoulder_yaw_link"/>
     <axis xyz="0 0 1"/>
-    <limit lower="-2.618" upper="2.618" effort="25" velocity="37"/>
+    <limit lower="-2.618" upper="2.618" effort="100" velocity="37"/>
   </joint>
   <link name="right_elbow_link">
     <inertial>
@@ -1154,14 +1154,14 @@
     <parent link="right_shoulder_yaw_link"/>
     <child link="right_elbow_link"/>
     <axis xyz="0 1 0"/>
-    <limit lower="-1.0472" upper="2.0944" effort="25" velocity="37"/>
+    <limit lower="-1.0472" upper="2.0944" effort="100" velocity="37"/>
   </joint>
   <joint name="right_wrist_roll_joint" type="revolute">
     <origin xyz="0.100 -0.00188791 -0.010" rpy="0 0 0"/>
     <axis xyz="1 0 0"/>
     <parent link="right_elbow_link"/>
     <child link="right_wrist_roll_link"/>
-    <limit effort="25" velocity="37" lower="-1.972222054" upper="1.972222054"/>
+    <limit effort="100" velocity="37" lower="-1.972222054" upper="1.972222054"/>
   </joint>
   <link name="right_wrist_roll_link">
     <inertial>
@@ -1190,7 +1190,7 @@
     <axis xyz="0 1 0"/>
     <parent link="right_wrist_roll_link"/>
     <child link="right_wrist_pitch_link"/>
-    <limit effort="5" velocity="22" lower="-1.614429558" upper="1.614429558"/>
+    <limit effort="100" velocity="22" lower="-1.614429558" upper="1.614429558"/>
   </joint>
   <link name="right_wrist_pitch_link">
     <inertial>
@@ -1219,7 +1219,7 @@
     <axis xyz="0 0 1"/>
     <parent link="right_wrist_pitch_link"/>
     <child link="right_wrist_yaw_link"/>
-    <limit effort="5" velocity="22" lower="-1.614429558" upper="1.614429558"/>
+    <limit effort="100" velocity="22" lower="-1.614429558" upper="1.614429558"/>
   </joint>
   <link name="right_wrist_yaw_link">
     <inertial>

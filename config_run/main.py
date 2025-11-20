@@ -79,8 +79,10 @@ def main():
         #config_name = "g1_door_open_train"
         #config_name = "g1_door_open_eval"
         #config_name = "g1_reach_IK"
-        config_name = "g1_walk_new_train"
+        #config_name = "g1_walk_new_train"
         #config_name = "g1_reach_pos_ori_train"
+        #config_name = "g1_stand_train"
+        config_name = "g1_walk_new_eval"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
     elif len(sys.argv) == 2:

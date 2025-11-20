@@ -36,7 +36,7 @@ train_or_eval: eval
 #load_model_path: ./my_env/output/ppo_models/run_2025-10-16_13-59-07/model_80003072
 #load_model_path: ./config_run/output/ppo_model_cluster/ppo_models/run_2025-10-16_14-06-35/model_100000000
 #load_model_path: ./config_run/output/ppo_model/run_2025-11-03_19_reachposori/model_90000000
-load_model_path: ./config_run/output/ppo_model_cluster/run_2025-11-10_19_reachposori/model_480043200
+load_model_path: ./config_run/output/ppo_model_cluster/run_2025-11-19_19_reachposori/model_90028800
 #load_model_path: ./config_run/output/ppo_model_cluster/tranining_1_11/run_2025-10-24_11_reachposori/model_370033300
 video_save_path: ./config_run/output/eval_videos/reah_pos_ori_eval_10-11.mp4
 eval_episodes: 1000
