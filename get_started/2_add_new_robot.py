@@ -51,7 +51,7 @@ args = tyro.cli(Args)
 robot = BaseRobotCfg(
     name="new_robot_h1",
     num_joints=26,
-    #usd_path="get_started/example_assets/h1/usd/h1.usd",
+    usd_path="get_started/example_assets/h1/usd/h1_wrist.usd",
     mjcf_path="get_started/example_assets/h1/mjcf/h1.xml",
     urdf_path="get_started/example_assets/h1/urdf/h1_wrist.urdf",
     enabled_gravity=True,
@@ -156,20 +156,20 @@ init_states = [
             "cube": {
                 "pos": torch.tensor([0.3, -0.2, 0.05]),
                 "rot": torch.tensor([1.0, 0.0, 0.0, 0.0]),
-            },
-            "sphere": {
-                "pos": torch.tensor([0.4, -0.6, 0.05]),
-                "rot": torch.tensor([1.0, 0.0, 0.0, 0.0]),
-            },
-            "bbq_sauce": {
-                "pos": torch.tensor([0.7, -0.3, 0.14]),
-                "rot": torch.tensor([1.0, 0.0, 0.0, 0.0]),
-            },
-            "box_base": {
-                "pos": torch.tensor([0.5, 0.2, 0.1]),
-                "rot": torch.tensor([0.0, 0.7071, 0.0, 0.7071]),
-                "dof_pos": {"box_joint": 0.0},
-            },
+        #     },
+        #     "sphere": {
+        #         "pos": torch.tensor([0.4, -0.6, 0.05]),
+        #         "rot": torch.tensor([1.0, 0.0, 0.0, 0.0]),
+        #     },
+        #     "bbq_sauce": {
+        #         "pos": torch.tensor([0.7, -0.3, 0.14]),
+        #         "rot": torch.tensor([1.0, 0.0, 0.0, 0.0]),
+        #     },
+        #     "box_base": {
+        #         "pos": torch.tensor([0.5, 0.2, 0.1]),
+        #         "rot": torch.tensor([0.0, 0.7071, 0.0, 0.7071]),
+        #         "dof_pos": {"box_joint": 0.0},
+             },
         },
         "robots": {
             "new_robot_h1": {
@@ -210,7 +210,7 @@ obs_saver.add(obs)
 
 step = 0
 robot = scenario.robots[0]
-for _ in range(100):
+for _ in range(10000):
     log.debug(f"Step {step}")
     actions = [
         {

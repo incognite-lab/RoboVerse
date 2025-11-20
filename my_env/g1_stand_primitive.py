@@ -35,8 +35,8 @@ class Args:
     """Arguments for the static scene."""
 
     ## Handlers
-    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "pybullet"
-    robot: str = "g1_no_hands"
+    sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "isaaclab"
+    robot: str = "g1_with_hands"
     ## Others
     num_envs: int = 1
     headless: bool = False
@@ -57,7 +57,7 @@ scenario = ScenarioCfg(
     num_envs=args.num_envs,
 
 )
-
+scenario.robots[0].fix_base_link = True
 # add cameras
 scenario.cameras = [PinholeCameraCfg(width=1024, height=1024, pos=(1.5, -1.5, 1.5), look_at=(0.0, 0.0, 0.0))]
 
@@ -119,7 +119,7 @@ init_states = [
             },
         },
         "robots": {
-            "g1_no_hands":{
+            "g1_with_hands":{
                 "pos": torch.tensor([0.0, 0.0, 1.0]),
                 "rot": torch.tensor([1.0, 0.0, 0.0, 0.0]),
                 "dof_pos": scenario.robots[0].default_joint_positions

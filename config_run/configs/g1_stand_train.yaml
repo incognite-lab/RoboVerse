@@ -5,8 +5,8 @@ sim: isaaclab
 robots: [g1_with_hands]
 task: stand
 decimation: 5
-num_envs: 5000
-headless: true
+num_envs: 1
+headless: false
 add_table: true
 #sensors configuration
 sensors:

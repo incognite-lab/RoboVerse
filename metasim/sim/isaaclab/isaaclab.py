@@ -404,17 +404,18 @@ class IsaaclabHandler(BaseSimHandler):
             body_reindex = self.get_body_reindex(obj.name)
             root_state = obj_inst.data.root_state_w
             root_state[:, 0:3] -= self.env.scene.env_origins
-            body_state = obj_inst.data.body_state_w[:, body_reindex]
+            body_state = obj_inst.data.body_state_w[:,:]
             body_state[:, :, 0:3] -= self.env.scene.env_origins[:, None, :]
             state = RobotState(
                 root_state=root_state,
                 body_names=self.get_body_names(obj.name),
                 body_state=body_state,
-                joint_pos=obj_inst.data.joint_pos[:, joint_reindex],
-                joint_vel=obj_inst.data.joint_vel[:, joint_reindex],
-                joint_pos_target=obj_inst.data.joint_pos_target[:, joint_reindex],
-                joint_vel_target=obj_inst.data.joint_vel_target[:, joint_reindex],
-                joint_effort_target=obj_inst.data.joint_effort_target[:, joint_reindex],
+                joint_pos=obj_inst.data.joint_pos[:, :],
+                joint_vel=obj_inst.data.joint_vel[:, :],
+                joint_names=self.get_joint_names(obj.name),
+                joint_pos_target=obj_inst.data.joint_pos_target[:, :],
+                joint_vel_target=obj_inst.data.joint_vel_target[:, :],
+                joint_effort_target=obj_inst.data.joint_effort_target[:, :],
             )
             robot_states[obj.name] = state
 
@@ -491,7 +492,7 @@ class IsaaclabHandler(BaseSimHandler):
     def _simulate(self):
         pass
 
-    def get_joint_names(self, obj_name: str, sort: bool = True) -> list[str]:
+    def get_joint_names(self, obj_name: str, sort: bool = False) -> list[str]:
         if isinstance(self.object_dict[obj_name], ArticulationObjCfg):
             joint_names = deepcopy(self.env.scene.articulations[obj_name].joint_names)
             if sort:
@@ -500,7 +501,7 @@ class IsaaclabHandler(BaseSimHandler):
         else:
             return []
 
-    def get_body_names(self, obj_name: str, sort: bool = True) -> list[str]:
+    def get_body_names(self, obj_name: str, sort: bool = False) -> list[str]:
         if isinstance(self.object_dict[obj_name], ArticulationObjCfg):
             body_names = deepcopy(self.env.scene.articulations[obj_name].body_names)
             if sort:
