@@ -112,7 +112,7 @@ class OrientationReward(HumanoidBaseReward):
 
         # --- get quaternions ---
         right_hand_ori = right_palm_orientation(states, self.robot_name, ee_name)  # [B, 4]
-        cube1_ori     = states.objects["cube_1"].body_state[:, 0, 3:7]             # [B, 4]
+        cube1_ori     = states.objects["cube_1"].root_state[:, 3:7]             # [B, 4]
 
         # --- convert to Euler ---
         hand_eul = self.quat_to_euler(right_hand_ori)  # [B,3]
@@ -172,14 +172,32 @@ class ReachposoriCfg(HumanoidTaskCfg):
     success_bar = 0.9
     episode_length = 200
     objects = [
-        ArticulationObjCfg(
+        # ArticulationObjCfg(
+        #     name="cube_1",
+        #     mjcf_path="roboverse_data/assets/humanoidbench/cube/cube_2/mjcf/cube_2.xml",
+        #     urdf_path="roboverse_data/assets/humanoidbench/cube/cube_2/cube_2.urdf",
+        #     usd_path="urdf2usd_convert/g1/usd/cube_2.usd",
+        #     default_position= [0.3, 0.2, 0.9],
+        #     fix_base_link=True,
+
+        # ),
+        RigidObjCfg(
             name="cube_1",
             mjcf_path="roboverse_data/assets/humanoidbench/cube/cube_2/mjcf/cube_2.xml",
             urdf_path="roboverse_data/assets/humanoidbench/cube/cube_2/cube_2.urdf",
+            usd_path="urdf2usd_convert/g1/usd/cube_2.usd",
             default_position= [0.3, 0.2, 0.9],
-            fix_base_link=True,
+            physics=PhysicStateType.XFORM,
 
         ),
+        RigidObjCfg(
+            name="table",
+            urdf_path="roboverse_data/assets/humanoidbench/table/urdf/table.urdf",
+            usd_path="urdf2usd_convert/g1/usd/table.usd",
+            default_orientation= [0.0, 0.0, 0.0, 1.0],
+            default_position= [0.0, 0.0, 5.0],
+            physics=PhysicStateType.GEOM,
+        )
         # RigidObjCfg(
         #     name="cube_2",
         #     mjcf_path="roboverse_data/assets/humanoidbench/cube/cube_2/mjcf/cube_2.xml",
@@ -191,13 +209,14 @@ class ReachposoriCfg(HumanoidTaskCfg):
         #     physics=PhysicStateType.GEOM,
         #     fix_base_link=True,
         # ),
-        ArticulationObjCfg(
-            name="table",
-            urdf_path="roboverse_data/assets/humanoidbench/table/urdf/table.urdf",
-            mjcf_path="roboverse_data/assets/humanoidbench/table/mjcf/table.mjcf",
-            default_position= [0.0, 0.0, -0.2],
-            fix_base_link=True,
-        ),
+        # ArticulationObjCfg(
+        #     name="table",
+        #     urdf_path="roboverse_data/assets/humanoidbench/table/urdf/table.urdf",
+        #     mjcf_path="roboverse_data/assets/humanoidbench/table/mjcf/table.mjcf",
+        #     usd_path="urdf2usd_convert/g1/usd/table.usd",
+        #     default_position= [0.0, 0.0, -0.2],
+        #     fix_base_link=True,
+        # ),
 
     ]
     traj_filepath = "roboverse_data/trajs/humanoidbench/cube/v2/g1/initial_state_v2.json"

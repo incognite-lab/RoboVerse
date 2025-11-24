@@ -1,9 +1,4 @@
 <robot name="cube_2">
-  <link name="base_link"/>
-  <joint name="cube_2_fixed_joint" type="fixed">
-    <parent link="base_link"/>
-    <child link="cube_2_link"/>
-  </joint>
   <link name="cube_2_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>

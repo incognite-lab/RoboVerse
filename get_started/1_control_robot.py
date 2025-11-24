@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Literal
 
-try:
-    import isaacgym  # noqa: F401
-except ImportError:
-    pass
+# try:
+#     import isaacgym  # noqa: F401
+# except ImportError:
+#     pass
 
 import os
 
@@ -34,7 +34,7 @@ from metasim.utils.setup_util import get_sim_env_class
 class Args:
     """Arguments for the static scene."""
 
-    robot: str = "franka"
+    robot: str = "g1_with_hands"
 
     ## Handlers
     sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco"] = "isaaclab"

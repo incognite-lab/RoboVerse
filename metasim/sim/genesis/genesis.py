@@ -3,9 +3,12 @@ from __future__ import annotations
 import genesis as gs
 import numpy as np
 import torch
+import random
+
 from genesis.engine.entities.rigid_entity import RigidEntity, RigidJoint
 from genesis.vis.camera import Camera
 from loguru import logger as log
+
 
 from metasim.cfg.sensors import PinholeCameraCfg, GyroSensorCfg, CommandCfg
 from metasim.cfg.objects import ArticulationObjCfg, PrimitiveCubeCfg, PrimitiveSphereCfg, RigidObjCfg, _FileBasedMixin
@@ -338,9 +341,7 @@ class GenesisHandler(BaseSimHandler):
                     dofs_idx_local=dof_idx_local,
                 )
 
-    def _simulate(self):
-        for _ in range(self.scenario.decimation):
-            self.scene_inst.step()
+
 
     def refresh_render(self):
         """Refresh the render."""
@@ -396,6 +397,10 @@ class GenesisHandler(BaseSimHandler):
             return joint_names
         else:
             return []
+    def _simulate(self):
+
+        for _ in range(self.scenario.decimation):
+            self.scene_inst.step()
 
     @property
     def num_envs(self) -> int:

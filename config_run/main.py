@@ -79,10 +79,11 @@ def main():
         #config_name = "g1_door_open_train"
         #config_name = "g1_door_open_eval"
         #config_name = "g1_reach_IK"
-        #config_name = "g1_walk_new_train"
+        config_name = "g1_walk_new_train"
         #config_name = "g1_reach_pos_ori_train"
-        config_name = "g1_stand_train"
+        #config_name = "g1_stand_train"
         #config_name = "g1_walk_new_eval"
+        #config_name = "g1_door_IK"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
     elif len(sys.argv) == 2:
@@ -102,6 +103,11 @@ def main():
         headless=config.get("headless", False),
         sensors = get_sensors_from_config(config.get("sensors", {})),
         cameras= get_cameras_from_config(config.get("cameras", {})),
+        force = config.get("force", False),
+        force_x_min = config.get("force_x_min", 0.0),
+        force_x_max = config.get("force_x_max", 0.0),
+        force_y_min = config.get("force_y_min", 0.0),
+        force_y_max = config.get("force_y_max", 0.0),
 
         )
     scenario.robots[0].fix_base_link = config.get("fix_base_link", False)

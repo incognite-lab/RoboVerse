@@ -12,7 +12,7 @@ from metasim.cfg.sensors.gyro import GyroSensorCfg
 class G1WithHandsSimpleCfg(BaseRobotCfg):
     name: str = "g1_with_hands_simple"
     num_joints: int = 41,
-    usd_path: str = "roboverse_data/robots/g1/usd/g1_29dof_rev_1_0.usd"
+    usd_path: str = "urdf2usd_convert/g1/usd/g1_mygym_for_reach.usd"
     xml_path: str = "roboverse_data/robots/g1/mjcf/g1_mygym.xml"
     #mjcf_path: str = "roboverse_data/robots/g1/mjcf/g1_mygym.xml"
     mjcf_path: str = "roboverse_data/robots/g1/urdf/g1_29dof_with_hand_rev_1_0.xml"
@@ -200,11 +200,11 @@ class G1WithHandsSimpleCfg(BaseRobotCfg):
         # Right hand fingers
         "right_hand_thumb_0_joint": 0.012,
         "right_hand_thumb_1_joint": 0.013,
-        "right_hand_thumb_2_joint": 0.014,
+        "right_hand_thumb_2_joint": -0.014,
         "right_hand_middle_0_joint": 0.015,
         "right_hand_middle_1_joint": 0.016,
         "right_hand_index_0_joint": 0.017,
-        "right_hand_index_1_joint": 0.017,
+        "right_hand_index_1_joint": 0.018,
     }
 
     control_type: dict[str, Literal["position", "effort"]] = {

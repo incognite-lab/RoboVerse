@@ -414,7 +414,7 @@ class _WalkChecker(BaseChecker):
         from metasim.utils.humanoid_robot_util import robot_position_tensor
 
         states = handler.get_states()
-        terminated = robot_position_tensor(states, handler.robot.name)[:, 2] < 0.2
+        terminated = robot_position_tensor(states, handler.robot.name)[:, 2] < 0.4
         return terminated
 
 
@@ -608,7 +608,7 @@ class _ReachCheckerPosOri(BaseChecker):
                 z_cube = 0.2
             else:
                 robot_pos = torch.tensor([-0.5,0.0,0.8])
-                z_cube = 0.8 #0.73
+                z_cube = 0.7 #0.73
 
             states.append({
                 "robots": {
@@ -624,7 +624,7 @@ class _ReachCheckerPosOri(BaseChecker):
                         "rot": torch.tensor([1, 0, 0, 0]),
                     },
                     "table": {
-                        "pos": torch.tensor([0.6, 0.0, -0.1]),
+                        "pos": torch.tensor([0.3, 0.0, -0.1]),
                         "rot": torch.tensor([0, 0, 0, 1]),
                     },
                 },

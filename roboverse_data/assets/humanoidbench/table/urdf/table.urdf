@@ -1,9 +1,5 @@
 <robot name="table">
-  <link name="dummy_base"/>
-  <joint name="root_joint" type="fixed">
-    <parent link="dummy_base"/>
-    <child link="base_link"/>
-  </joint>
+
   <link name="base_link">
     <inertial>
       <mass value="10.0" />

@@ -36,7 +36,7 @@ class Args:
 
     ## Handlers
     sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco", "mjx"] = "isaaclab"
-    robot: str = "g1_with_hands"
+    robot: str = "g1_with_hands_simple"
     ## Others
     num_envs: int = 1
     headless: bool = False
@@ -119,7 +119,7 @@ init_states = [
             },
         },
         "robots": {
-            "g1_with_hands":{
+            "g1_with_hands_simple":{
                 "pos": torch.tensor([0.0, 0.0, 1.0]),
                 "rot": torch.tensor([1.0, 0.0, 0.0, 0.0]),
                 "dof_pos": scenario.robots[0].default_joint_positions

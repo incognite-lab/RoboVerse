@@ -28,7 +28,7 @@ def convert_urdf_to_usd(urdf_path, output_dir):
 
     try:
         subprocess.run(
-            [sys.executable, "scripts/urdf2usd.py", urdf_path, output_path, "--merge-joints"], check=True
+            [sys.executable, "scripts/urdf2usd.py", urdf_path, output_path, "--fix-base", "--merge-joints"], check=True
         )
         print(f"Successfully converted {urdf_path}")
         return True

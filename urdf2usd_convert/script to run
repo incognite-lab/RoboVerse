@@ -1,0 +1,1 @@
+python scripts/batch_urdf2usd.py urdf2usd_convert/g1/urdf_to_convert urdf2usd_convert/g1/usd

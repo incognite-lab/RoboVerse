@@ -285,7 +285,7 @@ class BaseAccelerationReward(HumanoidBaseReward):
 
 class TorqueReward(HumanoidBaseReward):
     """Reward for minimizing actuator torque usage.
-    ---->not work in sapien3<------
+    ---->zerous in sapien3<------
     """
 
     def __init__(self, robot_name="g1_with_hands", torque_limit: float = 100.0):
@@ -368,7 +368,7 @@ class RollPitchOrientationReward(HumanoidBaseReward):
 @configclass
 class WalkNewCfg(HumanoidTaskCfg):
     """Walking task for humanoid robots."""
-    W_VEL_XY = 0.15
+    W_VEL_XY = 0.24
     W_YAW_ORIENT = 0.1
     W_RP_ORIENT = 0.2
     W_CONTACT = 0.1
@@ -377,7 +377,7 @@ class WalkNewCfg(HumanoidTaskCfg):
     W_FEET_ORIENT = 0.05
     W_FEET_POS = 0.05
     W_ARM = 0.03
-    W_BASE_ACCEL = 0.1
+    W_BASE_ACCEL = 0.01
     W_ACTION_DIFF = 0.02
     W_TORQUE = 0.02
     commmand = torch.tensor([1.0,0.0,0.0])

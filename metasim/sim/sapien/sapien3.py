@@ -227,6 +227,7 @@ class Sapien3Handler(BaseSimHandler):
                 except Exception as e:
                     log.warning(f"Error loading {file_path}: {e}")
                     curr_id_list = self.loader.load_multiple(file_path)
+
                     # TODO:
                     # Don't understand why some urdf are treated as multiple entities
                     # Needs to figure out a better way to load!
@@ -426,6 +427,11 @@ class Sapien3Handler(BaseSimHandler):
                     joint_pos=torch.tensor(obj_inst.get_qpos()).unsqueeze(0),
                     joint_vel=torch.tensor(obj_inst.get_qvel()).unsqueeze(0),
                 )
+            elif isinstance(obj, RigidObjCfg) and obj.fix_base_link:
+                pos = torch.tensor(pose.p)
+                rot = torch.tensor(pose.q)
+                root_state = torch.cat([pos, rot], dim=-1).unsqueeze(0)
+                state = ObjectState(root_state=root_state)
             else:
                 assert isinstance(obj_inst, sapien_core.Entity)
                 pos = torch.tensor(pose.p)

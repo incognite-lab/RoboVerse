@@ -124,6 +124,7 @@ class DoorCfg(HumanoidTaskCfg):
         ArticulationObjCfg(
             name="door",
             urdf_path="roboverse_data/assets/humanoidbench/door/door.urdf",
+            usd_path = "urdf2usd_convert/g1/usd/door.usd",
             default_position= [0.0, 0.0, 0.0],
             fix_base_link=True,
             colapse_fixed_joints=False

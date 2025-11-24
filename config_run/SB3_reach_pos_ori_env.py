@@ -46,8 +46,9 @@ class StableBaseline3VecEnv(VecEnv):
         super().__init__(env.num_envs, self.observation_space, self.action_space)
     def _odd_cube_obs(self, obs: np.ndarray) -> np.ndarray:
         """Spojí joint states a gyro data pro všechna envs."""
-        cube_pos = self.env.env.handler.get_states().objects["cube_1"].body_state[:,0,:3].cpu().numpy()
-        cube_ori = self.env.env.handler.get_states().objects["cube_1"].body_state[:,0,3:7].cpu().numpy()
+        states = self.env.env.handler.get_states()
+        cube_pos = self.env.env.handler.get_states().objects["cube_1"].root_state[:,:3].cpu().numpy()
+        cube_ori = self.env.env.handler.get_states().objects["cube_1"].root_state[:,3:7].cpu().numpy()
         ee_index = self.env.env.handler.get_states().robots[self.env.scenario.robots[0].name].body_names.index("endeffector")
         ee_pos = self.env.env.handler.get_states().robots[self.env.scenario.robots[0].name].body_state[:,ee_index,:3].cpu().numpy()
         ee_ori = self.env.env.handler.get_states().robots[self.env.scenario.robots[0].name].body_state[:,ee_index,3:7].cpu().numpy()
@@ -204,8 +205,9 @@ def ik_solver(robot_cfg: str, target_object_name: str, env: StableBaseline3VecEn
     eeefektor_pos = states.robots[robot_cfg.name].body_state[0,eeefektor_idx,:3]
     print(f"Endeffektor position: {eeefektor_pos}")
     if target_object_name == "cube_1":
-        target_pos = states.objects[target_object_name].body_state[0,0,:3]
-        target_orient = states.objects[target_object_name].body_state[0,0,3:7]
+        target_pos = states.objects[target_object_name].root_state[0,:3]
+        target_orient = states.objects[target_object_name].root_state[0,3:7]
+        print(f"Target position: {target_pos}")
     elif target_object_name == "door":
         door_handle_idx = states.objects["door"].body_names.index("door_handle")
         target_pos = states.objects["door"].body_state[0,door_handle_idx,:3]
@@ -240,7 +242,7 @@ def ik_solver(robot_cfg: str, target_object_name: str, env: StableBaseline3VecEn
     pelvis_idx = body_names.index("pelvis")
     pelvis_pos = body_states[0,pelvis_idx, :3]      # x, y, z
     pelvis_quat = body_states[0,pelvis_idx, 3:7]
-
+    print("Pelvis pos:", pelvis_pos)
 
     #print(ee_quat)
     #print(right_hand_wrist_roll)
@@ -273,7 +275,7 @@ def ik_solver(robot_cfg: str, target_object_name: str, env: StableBaseline3VecEn
     # Create a dict with all joints set to zero
     full_joint_dict = {name: 0.0 for name in joint_names}
     forword_poses = chain.forward_kinematics(joint_angles)
-    #print("IKPY Endeffektor pos:", forword_poses[:3,3])
+    print("IKPY Endeffektor pos:", forword_poses[:3,3])
     # Update with your specific joint positions
     full_joint_dict.update(angles)
     # Apply joint positions to the robot in the environment

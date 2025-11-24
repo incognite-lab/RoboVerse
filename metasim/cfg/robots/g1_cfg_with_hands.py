@@ -12,7 +12,7 @@ from metasim.cfg.sensors.gyro import GyroSensorCfg
 class G1WithHandsCfg(BaseRobotCfg):
     name: str = "g1_with_hands"
     num_joints: int = 41,
-    usd_path: str = "urdf2usd_convert/g1/g1_mygym.usd"
+    usd_path: str = "urdf2usd_convert/g1/usd/g1_mygym.usd"
     xml_path: str = "roboverse_data/robots/g1/mjcf/g1_mygym.xml"
     #mjcf_path: str = "roboverse_data/robots/g1/mjcf/g1_mygym.xml"
     mjcf_path: str = "roboverse_data/robots/g1/urdf/g1_29dof_with_hand_rev_1_0.xml"

@@ -400,22 +400,24 @@ class IsaaclabHandler(BaseSimHandler):
         for obj in self.robots:
             ## TODO: dof_pos_target, dof_vel_target, dof_torque
             obj_inst = self.env.scene.articulations[obj.name]
+
             joint_reindex = self.get_joint_reindex(obj.name)
             body_reindex = self.get_body_reindex(obj.name)
             root_state = obj_inst.data.root_state_w
             root_state[:, 0:3] -= self.env.scene.env_origins
-            body_state = obj_inst.data.body_state_w[:,:]
+            body_state = obj_inst.data.body_state_w[:]
             body_state[:, :, 0:3] -= self.env.scene.env_origins[:, None, :]
+            joint_pos = obj_inst.data.joint_pos
             state = RobotState(
                 root_state=root_state,
                 body_names=self.get_body_names(obj.name),
                 body_state=body_state,
-                joint_pos=obj_inst.data.joint_pos[:, :],
-                joint_vel=obj_inst.data.joint_vel[:, :],
+                joint_pos=obj_inst.data.joint_pos[:, joint_reindex],
+                joint_vel=obj_inst.data.joint_vel[:, joint_reindex],
                 joint_names=self.get_joint_names(obj.name),
-                joint_pos_target=obj_inst.data.joint_pos_target[:, :],
-                joint_vel_target=obj_inst.data.joint_vel_target[:, :],
-                joint_effort_target=obj_inst.data.joint_effort_target[:, :],
+                joint_pos_target=obj_inst.data.joint_pos_target[:, joint_reindex],
+                joint_vel_target=obj_inst.data.joint_vel_target[:, joint_reindex],
+                joint_effort_target=obj_inst.data.joint_effort_target[:, joint_reindex],
             )
             robot_states[obj.name] = state
 

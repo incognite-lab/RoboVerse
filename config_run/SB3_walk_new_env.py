@@ -42,7 +42,13 @@ class StableBaseline3VecEnv(VecEnv):
 
         # režim: "fixed" = pevný command, "random" = různé směry pro každé env
         self.command_mode = "fixed"
-
+        # external forces
+        self.external_force_enabled = env.scenario.force
+        self.force_x_min = env.scenario.force_x_min
+        self.force_x_max = env.scenario.force_x_max
+        self.force_y_min = env.scenario.force_y_min
+        self.force_y_max = env.scenario.force_y_max
+        self.cached_forces = np.zeros((env.num_envs, 2), dtype=np.float32)  # cache pro síly
         # fixed command pokud je zvolen fixed mode
         self.fixed_command = torch.tensor([2.0, 0.0, 0.0], dtype=torch.float32, device=self.timesteps.device)
         super().__init__(env.num_envs, self.observation_space, self.action_space)
@@ -68,13 +74,14 @@ class StableBaseline3VecEnv(VecEnv):
         other_pos = np.concatenate([right_ankle_posori,left_ankle_posori,torso_pos],axis=1)
         obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
         return np.concatenate([obs, other_pos], axis=1).astype(np.float32)
-    def reset(self):
+    def reset(self,env_ids: list[int] | None = None):
         """Reset the environment."""
         self.command_timer.zero_()
         self.current_commands = self.generate_commands()
         self.set_command(self.current_commands)
+        self.generate_external_forces()
 
-        obs, _ = self.env.reset()
+        obs, _ = self.env.reset(env_ids=env_ids)
         obs = obs.cpu().numpy()
         obs = self._combine_obs(obs)
         obs = self.add_extra_to_obs(obs)
@@ -82,6 +89,37 @@ class StableBaseline3VecEnv(VecEnv):
         return obs
     def set_command(self,command):
         self.env.env.handler.sensors[1].set_command(command)
+
+
+    def generate_external_forces(self):
+        """Generuje a uloží síly pro všechny envs – volá se pouze při resetu."""
+        if not self.external_force_enabled:
+            self.cached_forces[:] = 0.0
+            return
+
+        fx = np.random.uniform(self.force_x_min, self.force_x_max, size=self.num_envs)
+        fy = np.random.uniform(self.force_y_min, self.force_y_max, size=self.num_envs)
+
+        self.cached_forces = np.stack([fx, fy], axis=1)
+    def apply_external_forces(self):
+        """Apply cached external forces (same until next reset)."""
+        if not self.external_force_enabled:
+            return
+
+        states = self.env.env.handler.get_states()
+        torso_idx = states.robots[self.env.scenario.robots[0].name].body_names.index("torso_link")
+        robot_instance = self.env.env.handler.robot_inst.solver
+
+        for env_id in range(self.env.num_envs):
+            fx, fy = self.cached_forces[env_id]
+
+            robot_instance.apply_links_external_force(
+                force=np.array([[fx, fy, 0.0]]),
+                links_idx=np.array([torso_idx]),
+                envs_idx=np.array([env_id]),
+            )
+
+
     def generate_commands(self):
         """Generuje commandy podle zvoleného režimu.
         - "fixed": všechny envs dostanou stejný command
@@ -130,6 +168,10 @@ class StableBaseline3VecEnv(VecEnv):
 
         # nastav komandy do simulace (pro všechna env najednou)
         self.set_command(self.current_commands)
+        #----------------------------------------------------------------
+        #-------------apply external forces to torso--------------
+        #----------------------------------------------------------------
+        self.apply_external_forces()
 
         obs, rewards, unsuccess, timeout, _ = self.env.step(self.action_dicts)
         obs = obs.cpu().numpy()
@@ -154,7 +196,7 @@ class StableBaseline3VecEnv(VecEnv):
             rewards[unsuccess_mask] = -1.0
             self.timesteps[unsuccess_mask] = 0.0
             unsuccess_ids = np.nonzero(unsuccess_mask)[0].tolist()
-            self.env.reset(env_ids=unsuccess_ids)
+            self.reset(env_ids=unsuccess_ids)
             for i in unsuccess_ids:
                 infos[i]["is_success"] = False
                 infos[i]["TimeLimit.truncated"] = False
@@ -163,7 +205,7 @@ class StableBaseline3VecEnv(VecEnv):
         if timeout_mask.any():
             self.timesteps[timeout_mask] = 0.0
             timeout_ids = np.nonzero(timeout_mask)[0].tolist()
-            self.env.reset(env_ids=timeout_ids)
+            self.reset(env_ids=timeout_ids)
             for i in timeout_ids:
                 infos[i]["is_success"] = True
                 infos[i]["TimeLimit.truncated"] = True

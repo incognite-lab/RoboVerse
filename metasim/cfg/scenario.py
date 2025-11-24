@@ -42,6 +42,13 @@ class ScenarioCfg:
     sim_params: SimParamCfg = SimParamCfg()
     control: ControlCfg = ControlCfg()
 
+    ## External forces
+    force: bool = False
+    force_x_min: float = 0.0
+    force_x_max: float = 0.0
+    force_y_min: float = 0.0
+    force_y_max: float = 0.0
+
     ## Handlers
     sim: Literal["isaaclab", "isaacgym", "sapien2", "sapien3", "genesis", "pybullet", "mujoco"] = "isaaclab"
     renderer: Literal["isaaclab", "isaacgym", "sapien2", "sapien3", "genesis", "pybullet", "mujoco"] | None = None

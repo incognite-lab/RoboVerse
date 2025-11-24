@@ -5,7 +5,7 @@ sim: genesis
 robots: [g1_with_hands]
 task: walk_new
 decimation: 5
-num_envs: 2
+num_envs: 4
 
 headless: false
 add_table: true
@@ -22,7 +22,14 @@ sensors:
     type: CommandCfg
     params:
       name: command0
+#external forces
 
+
+force: true
+force_x_min: -500.0
+force_x_max: 500.0
+force_y_min: -50.0
+force_y_max: 50.0
 #camera configuration
 #---------------------------------------
 #(Pro evaluaci je potřeba odkomentovat)

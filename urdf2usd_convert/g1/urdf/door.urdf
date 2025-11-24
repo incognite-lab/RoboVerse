@@ -1,0 +1,177 @@
+<?xml version="1.0"?>
+<robot name="wall_with_single_door">
+  <!-- ROTATED ROOT: celý model se posadí pod tento link a otočí o 90° kolem Z -->
+  <link name="rot_root">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.0"/>
+      <inertia ixx="0.0001" ixy="0.0" ixz="0.0" iyy="0.0001" iyz="0.0" izz="0.0001"/>
+    </inertial>
+  </link>
+
+  <!-- pevné připojení wall_base pod rot_root s rotací 90 deg kolem Z -->
+  <joint name="rot_root_to_wall_base" type="fixed">
+    <parent link="rot_root"/>
+    <child  link="wall_base"/>
+    <origin xyz="0 0 0" rpy="0 0 1.57079632679"/>
+  </joint>
+
+  <!-- BASE -->
+  <link name="wall_base">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="1.0" />
+      <inertia ixx="0.001" ixy="0.0" ixz="0.0" iyy="0.001" iyz="0.0" izz="0.001" />
+    </inertial>
+  </link>
+
+  <!-- LEFT PANEL (now longer to meet narrower door) -->
+  <link name="wall_left">
+    <visual>
+      <!-- door is now centered at x=0 with width 0.6, so left panel extends from -2.5 to -0.3 -->
+      <origin xyz="-1.4 0 1.5" />
+      <geometry>
+        <box size="2.2 0.05 3.0" />
+      </geometry>
+      <material name="grey"><color rgba="0.7 0.7 0.7 1.0"/></material>
+    </visual>
+    <collision>
+      <origin xyz="-1.4 0 1.5" />
+      <geometry>
+        <box size="2.2 0.05 3.0" />
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="wall_left_fixed" type="fixed">
+    <parent link="wall_base"/>
+    <child  link="wall_left"/>
+  </joint>
+
+  <!-- RIGHT PANEL -->
+  <link name="wall_right">
+    <visual>
+      <!-- door extends to +0.3, wall continues to +2.5, so length 2.2 -->
+      <origin xyz="1.4 0 1.5" />
+      <geometry>
+        <box size="2.2 0.05 3.0" />
+      </geometry>
+      <material name="grey"><color rgba="0.7 0.7 0.7 1.0"/></material>
+    </visual>
+    <collision>
+      <origin xyz="1.4 0 1.5" />
+      <geometry>
+        <box size="2.2 0.05 3.0" />
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="wall_right_fixed" type="fixed">
+    <parent link="wall_base"/>
+    <child  link="wall_right"/>
+  </joint>
+
+  <!-- LINTEL -->
+  <link name="wall_lintel">
+    <visual>
+      <origin xyz="0 0 2.55" />
+      <geometry>
+        <box size="5.0 0.05 0.9" />
+      </geometry>
+      <material name="grey"><color rgba="0.7 0.7 0.7 1.0"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 2.55" />
+      <geometry>
+        <box size="5.0 0.05 0.9" />
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="wall_lintel_fixed" type="fixed">
+    <parent link="wall_base"/>
+    <child  link="wall_lintel"/>
+  </joint>
+
+  <!-- DOOR (width reduced from 1.0 to 0.6) -->
+  <link name="door">
+    <visual>
+      <!-- visual now relative to door frame (z=0) because frame moved up in joint -->
+      <origin xyz="0.3 0 1.05" />
+      <geometry>
+        <box size="0.57 0.05 1.9" />
+      </geometry>
+      <material name="wood"><color rgba="0.65 0.45 0.2 1.0"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0.3 0 1.05" />
+      <geometry>
+        <box size="0.57 0.05 1.9" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0.3 0 1.05" />
+      <mass value="1.0" />
+      <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1" />
+    </inertial>
+  </link>
+
+  <joint name="door_hinge" type="revolute">
+    <parent link="wall_base" />
+    <child  link="door" />
+    <!-- raise the door frame by 1.05 m so visuals and collision align in world -->
+    <origin xyz="-0.3 0 0.0" />
+    <axis xyz="0 0 1" />
+    <limit effort="1.0" velocity="5.0" lower="-1.5708" upper="1.5708" />
+    <dynamics damping="0.5" friction="0.0" />
+  </joint>
+
+  <!-- DOOR HANDLE -->
+  <link name="door_handle">
+    <visual>
+      <origin xyz="0 0 0.0" rpy="0 0 0"/>
+      <geometry><box size="0.02 0.1 0.02"/></geometry>
+      <material name="metal"><color rgba="0.3 0.3 0.3 1.0"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.0" rpy="0 0 0"/>
+      <geometry><box size="0.02 0.1 0.02"/></geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0.0" rpy="0 0 0"/>
+      <mass value="0.12"/>
+      <inertia ixx="0.0005" ixy="0.0" ixz="0.0" iyy="0.0005" iyz="0.0" izz="0.0005"/>
+    </inertial>
+  </link>
+
+  <link name="door_handle_stem">
+    <visual>
+      <origin xyz="0 0 0.0" rpy="0 0 0"/>
+      <geometry><box size="0.2 0.020 0.02"/></geometry>
+      <material name="metal"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.0" rpy="0 0 0"/>
+      <geometry><box size="0.2 0.020 0.02"/></geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0.0" rpy="0 0 0"/>
+      <mass value="0.08"/>
+      <inertia ixx="0.0002" ixy="0.0" ixz="0.0" iyy="0.0002" iyz="0.0" izz="0.0002"/>
+    </inertial>
+  </link>
+
+  <!-- attach handle frame at local position relative to 'door' -->
+  <joint name="door_handle_fixed" type="fixed">
+    <parent link="door"/>
+    <child  link="door_handle"/>
+    <origin xyz="0.46 0.21 1.0" rpy="0 0 -1.57079632679"/>
+  </joint>
+
+  <!-- stem fixed relative to handle base -->
+  <joint name="door_handle_parts_fixed" type="fixed">
+    <parent link="door_handle"/>
+    <child  link="door_handle_stem"/>
+    <origin xyz="0.09 0.05 0.0" rpy="0 0 0"/>
+  </joint>
+</robot>

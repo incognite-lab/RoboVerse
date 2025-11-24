@@ -275,6 +275,7 @@ class BaseSimHandler(ABC):
             self._joint_reindex_cache[obj_name] = [origin_joint_names.index(jn) for jn in sorted_joint_names]
             self._joint_reindex_cache_inverse[obj_name] = [sorted_joint_names.index(jn) for jn in origin_joint_names]
 
+
         return self._joint_reindex_cache_inverse[obj_name] if inverse else self._joint_reindex_cache[obj_name]
 
     def get_body_names(self, obj_name: str, sort: bool = True) -> list[str]:
