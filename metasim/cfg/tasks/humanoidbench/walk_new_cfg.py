@@ -160,7 +160,7 @@ class FeetAirTimeReward(HumanoidBaseReward):
         self.foot_airtime = torch.where(current_contact, 0.0, self.foot_airtime + self.dt)
 
         # reward = (t_air - 0.4) for feet that just touched down
-        reward_values = (self.foot_airtime - WANT_AIRTIME)
+        reward_values = torch.abs(self.foot_airtime - WANT_AIRTIME)
         foot_rewards = torch.where(just_touched_down, reward_values, 0.0)
         total_reward = torch.sum(foot_rewards, dim=1)
 

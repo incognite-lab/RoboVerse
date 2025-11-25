@@ -275,10 +275,17 @@ class GenesisHandler(BaseSimHandler):
                     #print("DEBUG: no joints for", obj.name)
                     continue
                 else:
-                    dof_pos = np.array([
-                        [states_flat[env_id][obj.name]["dof_pos"][jn] for jn in joint_names]
-                        for env_id in env_ids
-                    ])
+                    dof_pos = np.array(
+                        [
+                            [
+                                states_flat[env_id][obj.name]["dof_pos"][joint.name]
+                                for joint in obj_inst.joints
+                                if joint.name != "root_joint"
+                            ]
+                            for env_id in env_ids
+                        ],
+                        dtype=np.float32,
+                    )
                     if dof_pos.dtype != np.float32:
                         dof_pos = dof_pos.astype(np.float32)
                     base_pos = obj_inst.get_pos(envs_idx=env_ids)   # [N,3]

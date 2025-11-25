@@ -2,7 +2,7 @@
 
 # Environment settings
 #-------------------------------------------
-sim: sapien3
+sim: genesis
 robots: [g1_with_hands_simple]
 task: reachposori
 decimation: 5

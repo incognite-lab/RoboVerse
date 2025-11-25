@@ -1178,12 +1178,12 @@
         <color rgba="0.7 0.7 0.7 1"/>
       </material>
     </visual>
-    <collision>
+    <!-- <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
         <mesh filename="meshes/right_wrist_roll_link.STL"/>
       </geometry>
-    </collision>
+    </collision> -->
   </link>
   <joint name="right_wrist_pitch_joint" type="revolute">
     <origin xyz="0.038 0 0" rpy="0 0 0"/>

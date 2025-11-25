@@ -60,13 +60,15 @@ class G1WithHandsSimpleCfg(BaseRobotCfg):
         # "left_wrist_roll_joint": BaseActuatorCfg(stiffness=40, damping=10),
         # "left_wrist_pitch_joint": BaseActuatorCfg(stiffness=40, damping=10),
         # "left_wrist_yaw_joint": BaseActuatorCfg(stiffness=40, damping=10),
-        "right_shoulder_pitch_joint": BaseActuatorCfg(stiffness=40, damping=10),
-        "right_shoulder_roll_joint": BaseActuatorCfg(stiffness=40, damping=10),
         "right_shoulder_yaw_joint": BaseActuatorCfg(stiffness=40, damping=10),
+        "right_shoulder_roll_joint": BaseActuatorCfg(stiffness=40, damping=10),
+        "right_shoulder_pitch_joint": BaseActuatorCfg(stiffness=40, damping=10),
+
         "right_elbow_joint": BaseActuatorCfg(stiffness=40, damping=10),
+
+        "right_wrist_yaw_joint": BaseActuatorCfg(stiffness=40, damping=10),
         "right_wrist_roll_joint": BaseActuatorCfg(stiffness=40, damping=10),
         "right_wrist_pitch_joint": BaseActuatorCfg(stiffness=40, damping=10),
-        "right_wrist_yaw_joint": BaseActuatorCfg(stiffness=40, damping=10),
         # Left hand fingers
         # "left_hand_thumb_0_joint": BaseActuatorCfg(stiffness=5, damping=0.5),
         # "left_hand_thumb_1_joint": BaseActuatorCfg(stiffness=5, damping=0.5),
@@ -109,13 +111,16 @@ class G1WithHandsSimpleCfg(BaseRobotCfg):
         # "left_wrist_roll_joint": (-1.972222054, 1.972222054),
         # "left_wrist_pitch_joint": (-1.614429558, 1.614429558),
         # "left_wrist_yaw_joint": (-1.614429558, 1.614429558),
-        "right_shoulder_pitch_joint": (-3.0892, 2.6704),
-        "right_shoulder_roll_joint": (-2.2515, 1.5882),
         "right_shoulder_yaw_joint": (-2.618, 2.618),
+        "right_shoulder_roll_joint": (-2.2515, 1.5882),
+        "right_shoulder_pitch_joint": (-3.0892, 2.6704),
+
+
         "right_elbow_joint": (-1.0472, 2.0944),
+
+        "right_wrist_yaw_joint": (-1.614429558, 1.614429558),
         "right_wrist_roll_joint": (-1.972222054, 1.972222054),
         "right_wrist_pitch_joint": (-1.614429558, 1.614429558),
-        "right_wrist_yaw_joint": (-1.614429558, 1.614429558),
         # Left hand fingers
         # "left_hand_thumb_0_joint": (-1.04719755, 1.04719755),
         # "left_hand_thumb_1_joint": (-0.72431163, 1.04719755),
@@ -154,9 +159,11 @@ class G1WithHandsSimpleCfg(BaseRobotCfg):
         "left_shoulder_roll_joint": 25,
         "left_shoulder_yaw_joint": 25,
         "left_elbow_joint": 25,
+
+        "left_wrist_yaw_joint": 20,
         "left_wrist_roll_joint": 20,
         "left_wrist_pitch_joint": 20,
-        "left_wrist_yaw_joint": 20,
+
         "right_shoulder_pitch_joint": 25,
         "right_shoulder_roll_joint": 25,
         "right_shoulder_yaw_joint": 25,
@@ -184,17 +191,19 @@ class G1WithHandsSimpleCfg(BaseRobotCfg):
 
     default_joint_positions: dict[str, float] = {  # = target angles [rad] when action = 0.0
 
-        "waist_yaw_joint": 0.01,
-        "waist_roll_joint": 0.02,
-        "waist_pitch_joint": 0.03,
+        "waist_yaw_joint": 0.0,
+        "waist_roll_joint": 0.0,
+        "waist_pitch_joint": 0.0,
 
-        "right_shoulder_pitch_joint": 0.04,
-        "right_shoulder_roll_joint": 0.05,
-        "right_shoulder_yaw_joint": 0.06,
-        "right_elbow_joint": 0.07,
-        "right_wrist_roll_joint": 0.08,
-        "right_wrist_pitch_joint": 0.09,
-        "right_wrist_yaw_joint": 0.011,
+        "right_shoulder_yaw_joint": 0.0,
+        "right_shoulder_roll_joint": 0.0,
+        "right_shoulder_pitch_joint": 0.0,
+
+        "right_elbow_joint": 0.0,
+
+        "right_wrist_yaw_joint": 0.0,
+        "right_wrist_roll_joint": 0.0,
+        "right_wrist_pitch_joint": 0.0,
         # Left hand fingers
 
         # Right hand fingers

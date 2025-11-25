@@ -101,6 +101,7 @@ class StableBaseline3VecEnv(VecEnv):
         fy = np.random.uniform(self.force_y_min, self.force_y_max, size=self.num_envs)
 
         self.cached_forces = np.stack([fx, fy], axis=1)
+        print("Generated external forces (fx, fy):", self.cached_forces)
     def apply_external_forces(self):
         """Apply cached external forces (same until next reset)."""
         if not self.external_force_enabled:

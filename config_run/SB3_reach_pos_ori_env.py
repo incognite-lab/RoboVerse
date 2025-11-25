@@ -61,13 +61,13 @@ class StableBaseline3VecEnv(VecEnv):
         """Reset the environment."""
         obs, _ = self.env.reset()
         obs = obs.cpu().numpy()
-        #obs = self._combine_obs(obs)
         obs = self._odd_cube_obs(obs)
         self.timesteps.zero_()
         return obs
 
     def step_async(self, actions: np.ndarray) -> None:
         """Asynchronously step the environment."""
+        # a
         self.action_dicts = [
             {
                 self.env.scenario.robots[0].name: {
