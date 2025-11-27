@@ -15,6 +15,191 @@ from scipy.spatial.transform import Rotation as R
 
 from .base_cfg import HumanoidBaseReward, HumanoidTaskCfg, StableReward
 from metasim.utils.humanoid_robot_util import right_palm_position,right_palm_orientation
+class BalancedOrientPosReward(HumanoidBaseReward):
+    """
+    Reward = 0.5 * orientation_reward + 0.5 * distance_reward
+    Vždy se hodnotí obě složky. Bez gate, bez vypínání distance rewardu.
+    Stabilní, hladká kombinace.
+    """
+
+    def __init__(self, robot_name="g1_with_hands_simple"):
+        super().__init__(robot_name)
+
+        self.prev_distance = None
+        self.prev_angle_error = None
+
+        self.max_reward = 1.0
+
+    def quat_diff_angle(self, q1, q2):
+        """Quaternion angular difference in radians."""
+        q1 = q1 / (torch.norm(q1, dim=1, keepdim=True) + 1e-8)
+        q2 = q2 / (torch.norm(q2, dim=1, keepdim=True) + 1e-8)
+
+        dot = torch.sum(q1 * q2, dim=1)
+        dot = torch.clamp(dot, -1.0, 1.0)
+
+        return 2 * torch.acos(torch.abs(dot))
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        ee = "endeffector"
+
+        # pozice a orientace
+        hand_pos = right_palm_position(states, self.robot_name, ee)
+        hand_ori = right_palm_orientation(states, self.robot_name, ee)
+
+        cube_pos = states.objects["cube_1"].root_state[:, :3]
+        cube_ori = states.objects["cube_1"].root_state[:, 3:7]
+
+        # ---------------------------------------------------------
+        # ORIENTATION REWARD
+        # ---------------------------------------------------------
+        angle_error = self.quat_diff_angle(hand_ori, cube_ori)
+
+        orient_reward = humanoid_reward_util.tolerance(
+            angle_error,
+            bounds=(0.0, 0.05),   # perfektní orientace
+            margin=0.7,           # kritický úhel kde reward klesá k 0
+            sigmoid="gaussian",
+        )
+
+        # Bonus za zlepšení orientace
+        if self.prev_angle_error is None:
+            orient_improve_bonus = torch.zeros_like(angle_error)
+        else:
+            delta = torch.clamp(self.prev_angle_error - angle_error, min=0.0)
+            orient_improve_bonus = 0.3 * delta
+
+        self.prev_angle_error = angle_error.clone()
+
+        orientation_total = orient_reward + orient_improve_bonus
+
+        # ---------------------------------------------------------
+        # DISTANCE REWARD
+        # ---------------------------------------------------------
+        distance = torch.norm(hand_pos - cube_pos, dim=1)
+
+        dist_reward = humanoid_reward_util.tolerance(
+            distance,
+            bounds=(0.0, 0.03),   # velmi blízko objektu = max
+            margin=0.35,
+            sigmoid="gaussian",
+        )
+
+        # bonus za přiblížení
+        if self.prev_distance is None:
+            approach_bonus = torch.zeros_like(distance)
+        else:
+            d_improve = torch.clamp(self.prev_distance - distance, min=0.0)
+            approach_bonus = 0.5 * d_improve
+
+        self.prev_distance = distance.clone()
+
+        distance_total = dist_reward + approach_bonus
+
+        # ---------------------------------------------------------
+        # 50:50 kombinace
+        # ---------------------------------------------------------
+        total = 0.5 * orientation_total + 0.5 * distance_total
+
+        return torch.clamp(total, 0.0, self.max_reward)
+
+class OrientThenReachReward(HumanoidBaseReward):
+    """
+    First reward robot ONLY for correct hand orientation.
+    Once orientation is good enough, distance reward activates.
+    """
+    def __init__(self, robot_name="g1_with_hands_simple"):
+        super().__init__(robot_name)
+        self.prev_distance = None
+        self.prev_angle_error = None
+
+        # thresholds
+        self.orientation_threshold = 0.25  # ~15 degrees (in radians)
+        self.max_reward = 1.0              # safety clamp
+
+    def quat_diff_angle(self, q1, q2):
+        """Quaternion angular difference in radians."""
+        # ensure normalized
+        q1 = q1 / (torch.norm(q1, dim=1, keepdim=True) + 1e-8)
+        q2 = q2 / (torch.norm(q2, dim=1, keepdim=True) + 1e-8)
+
+        # quaternion inner product → angle
+        dot = torch.sum(q1 * q2, dim=1)
+        dot = torch.clamp(dot, -1.0, 1.0)
+
+        return 2 * torch.acos(torch.abs(dot))
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        ee = "endeffector"
+
+        # --- Get positions and orientations ---
+        hand_pos = right_palm_position(states, self.robot_name, ee)
+        hand_ori = right_palm_orientation(states, self.robot_name, ee)
+
+        cube_pos = states.objects["cube_1"].root_state[:, :3]
+        cube_ori = states.objects["cube_1"].root_state[:, 3:7]
+
+        # ==========================================================
+        #   1) ORIENTATION REWARD
+        # ==========================================================
+        angle_error = self.quat_diff_angle(hand_ori, cube_ori)
+
+        # orientation reward is 1 when perfect, 0 when >0.6 rad
+        orient_reward = humanoid_reward_util.tolerance(
+            angle_error,
+            bounds=(0.0, 0.05),
+            margin=0.6,
+            sigmoid="gaussian"
+        )
+
+        # directional bonus (move toward correct orientation)
+        if self.prev_angle_error is None:
+            direction_bonus = torch.zeros_like(angle_error)
+        else:
+            improvement = torch.clamp(self.prev_angle_error - angle_error, min=0.0)
+            direction_bonus = improvement * 0.5
+
+        self.prev_angle_error = angle_error.clone()
+
+        # total orientation component
+        orientation_total = orient_reward + direction_bonus
+
+        # ==========================================================
+        #   Important logic:
+        #   If orientation is bad → RETURN ONLY ORIENTATION REWARD
+        # ==========================================================
+        orientation_good = angle_error < self.orientation_threshold
+
+        if not torch.any(orientation_good):
+            # none of the envs has good orientation, distance reward disabled
+            return torch.clamp(orientation_total, 0.0, self.max_reward)
+
+        # ==========================================================
+        #   2) DISTANCE REWARD (activated only after orientation OK)
+        # ==========================================================
+        distance = torch.norm(hand_pos - cube_pos, dim=1)
+
+        dist_reward = humanoid_reward_util.tolerance(
+            distance,
+            bounds=(0.0, 0.03),
+            margin=0.3,
+            sigmoid="gaussian"
+        )
+
+        # approach bonus
+        if self.prev_distance is None:
+            approach_bonus = torch.zeros_like(distance)
+        else:
+            d_improve = torch.clamp(self.prev_distance - distance, min=0.0)
+            approach_bonus = d_improve * 1.0
+
+        self.prev_distance = distance.clone()
+
+        # combine only for envs that passed orientation gate
+        total_reward = 0.5 * orientation_total + 0.5*(dist_reward + approach_bonus) * orientation_good.float()
+
+
+        return torch.clamp(total_reward, 0.0, self.max_reward)
 class ReachReward(HumanoidBaseReward):
     """Reward function for reaching a target position."""
     success_bar = 0.9
@@ -222,8 +407,8 @@ class ReachposoriCfg(HumanoidTaskCfg):
     traj_filepath = "roboverse_data/trajs/humanoidbench/cube/v2/g1/initial_state_v2.json"
     #traj_filepath = "my_env/initial_state_g1_v2.json"
     checker = _ReachCheckerPosOri()
-    reward_weights = [0.5, 0.5]
-    reward_functions = [ReachReward(), OrientationReward()]
+    reward_weights = [1.0]
+    reward_functions = [BalancedOrientPosReward()]
 
     def extra_spec(self):
         """This task does not require any extra observations."""

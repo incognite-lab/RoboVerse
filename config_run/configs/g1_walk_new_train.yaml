@@ -26,8 +26,8 @@ sensors:
 
 
 force: true
-force_x_min: -500.0
-force_x_max: 500.0
+force_x_min: -50.0
+force_x_max: 50.0
 force_y_min: -50.0
 force_y_max: 50.0
 #camera configuration

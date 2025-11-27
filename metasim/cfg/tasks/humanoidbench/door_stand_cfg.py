@@ -129,7 +129,7 @@ class DoorstandCfg(HumanoidTaskCfg):
     traj_filepath = "roboverse_data/trajs/humanoidbench/door/initial_state_v2.json"
     checker = _DoorChecker()
     reward_weights = [1.0]
-    reward_functions = [DoorReward(robot_name="g1_with_hands_simple")]
+    reward_functions = [DoorReward(robot_name="g1_with_hands")]
 
     def extra_spec(self):
         """This task does not require any extra observations."""

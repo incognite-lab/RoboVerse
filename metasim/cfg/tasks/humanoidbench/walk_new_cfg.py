@@ -53,6 +53,8 @@ class CommandFollowXYReward(HumanoidBaseReward):
         robot_vel = robot_local_velocity_tensor(states, self.robot_name).unbind(dim=1)
         robot_vel_x = robot_vel[0]
         robot_vel_y = robot_vel[1]
+        err_x = torch.clamp(cmd[:, 0] - robot_vel_x, min=0.0)
+        err_y = torch.clamp(cmd[:, 1] - robot_vel_y, min=0.0)
         err_x = cmd[:,0] - robot_vel_x
         err_y = cmd[:,1] - robot_vel_y
         err_vel_xy = err_x**2 + err_y**2
@@ -77,7 +79,7 @@ class CommandFollowYawReward(HumanoidBaseReward):
         # vypočítáme yaw
         yaw = torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y*y + z*z))  # (B,)
 
-        err_yaw = torch.abs(cmd[:,2] - yaw)
+        err_yaw = torch.clamp(cmd[:,2] - yaw, min=0.0)
         R_yaw = torch.exp(-300.0 * err_yaw)
         return R_yaw
 class SingleFootContactReward(HumanoidBaseReward):

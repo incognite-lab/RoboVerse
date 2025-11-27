@@ -12,7 +12,7 @@ from metasim.cfg.sensors import PinholeCameraCfg, GyroSensorCfg, CommandCfg
 from metasim.constants import PhysicStateType, SimType
 from metasim.wrapper.gym_vec_env import MetaSimVecEnv
 from stable_baselines3 import PPO
-from callbacks import TensorboardMetricsCallback, SaveModelCallback,RewardPlotCallback
+from callbacks import TensorboardMetricsCallback, SaveModelCallback,RewardPlotCallback,EvalCallback
 import numpy as np
 
 
@@ -80,10 +80,10 @@ def main():
         #config_name = "g1_door_open_eval"
         #config_name = "g1_reach_IK"
         #config_name = "g1_walk_new_train"
-        config_name = "g1_reach_pos_ori_train"
+        #config_name = "g1_reach_pos_ori_train"
         #config_name = "g1_reach_pos_ori_eval"
         #config_name = "g1_stand_train"
-        #config_name = "g1_walk_new_eval"
+        config_name = "g1_walk_new_eval"
         #config_name = "g1_door_IK"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
@@ -134,6 +134,10 @@ def main():
         from SB3_walk_new_env import StableBaseline3VecEnv
         scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
         scenario.robots[0].fix_base_link = False
+    elif config.get("task") == "door_stand":
+        from SB3_door_stand_env import StableBaseline3VecEnv
+        scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
+
 
 
     metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
@@ -192,6 +196,10 @@ def main():
 
     elif config.get("train_or_eval") == "train":
         # PPO configuration
+        #_Eval env
+
+        eval_env = StableBaseline3VecEnv(metasim_env)
+
         model = PPO(
             "MlpPolicy",
             env,
@@ -214,7 +222,15 @@ def main():
         model.learn(total_timesteps=config.get("total_timesteps", 1_000_000),
                     callback=[
                     SaveModelCallback(save_path=config.get("model_save_path"), save_freq=config.get("model_save_freq", 1_000_000),task_name=config.get("task")),
-                    TensorboardMetricsCallback(log_dir=config.get("tensorboard_log", "./ppo_tensorboard/"))
+                    TensorboardMetricsCallback(log_dir=config.get("tensorboard_log", "./ppo_tensorboard/")),
+                    EvalCallback(
+                    eval_env=eval_env,
+                    eval_freq=config.get("eval_freq", 10_000_000),
+                    n_eval_episodes=config.get("n_eval_episodes", 5),
+                    log_dir=config.get("eval_log_dir", "./eval_logs"),
+                    save_best=True,
+                    best_model_dir=config.get("best_model_dir", "./best_models")
+                        )
                     ],
                     progress_bar=True,)
 

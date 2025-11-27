@@ -79,7 +79,7 @@ class StableBaseline3VecEnv(VecEnv):
         self.command_timer.zero_()
         self.current_commands = self.generate_commands()
         self.set_command(self.current_commands)
-        self.generate_external_forces()
+        self.generate_external_forces(env_ids=env_ids)
 
         obs, _ = self.env.reset(env_ids=env_ids)
         obs = obs.cpu().numpy()
@@ -91,16 +91,19 @@ class StableBaseline3VecEnv(VecEnv):
         self.env.env.handler.sensors[1].set_command(command)
 
 
-    def generate_external_forces(self):
+    def generate_external_forces(self, env_ids = None):
         """Generuje a uloží síly pro všechny envs – volá se pouze při resetu."""
         if not self.external_force_enabled:
             self.cached_forces[:] = 0.0
             return
+        if env_ids is None:
+            env_ids = range(self.num_envs)
 
-        fx = np.random.uniform(self.force_x_min, self.force_x_max, size=self.num_envs)
-        fy = np.random.uniform(self.force_y_min, self.force_y_max, size=self.num_envs)
+        for env_id in env_ids:
+            fx = np.random.uniform(self.force_x_min, self.force_x_max)
+            fy = np.random.uniform(self.force_y_min, self.force_y_max)
+            self.cached_forces[env_id] = [fx, fy]
 
-        self.cached_forces = np.stack([fx, fy], axis=1)
         print("Generated external forces (fx, fy):", self.cached_forces)
     def apply_external_forces(self):
         """Apply cached external forces (same until next reset)."""
@@ -132,16 +135,23 @@ class StableBaseline3VecEnv(VecEnv):
             return cmd
 
         elif self.command_mode == "random":
-            # Náhodná rychlost v rozsahu [-0.5, 2.0] pro x
-            cx = torch.rand(self.num_envs, device=self.timesteps.device) * 2.5 - 0.5
 
-            # Náhodné boční pohyby (-0.5, 0.5)
-            cy = torch.rand(self.num_envs, device=self.timesteps.device) - 0.5
 
-            # Náhodný yaw
-            cyaw = (torch.rand(self.num_envs, device=self.timesteps.device) - 0.5) * 1.0
+            # ---- seznam povolených movement commandů ----
+            command_list = torch.tensor([
+                [ 2.0,  0.0,  0.0],   # vpřed
+                [-1.0,  0.0,  0.0],   # vzad
+                [ 0.0,  1.0,  0.0],   # doleva (strafe left)
+                [ 0.0, -1.0,  0.0],   # doprava (strafe right)
+                [ 0.0,  0.0,  1.0],   # otočení vpravo
+                [ 0.0,  0.0, -1.0],   # otočení vlevo
+            ], dtype=torch.float32, device=self.timesteps.device)
 
-            return torch.stack([cx, cy, cyaw], dim=1)
+            # vyber náhodně pro každý env index z rozsahu [0, len(command_list)-1]
+            idx = torch.randint(0, command_list.shape[0], (self.num_envs,), device=self.timesteps.device)
+            print("Generated new commands:", command_list[idx])
+            return command_list[idx]
+
     def step_async(self, actions: np.ndarray) -> None:
         """Asynchronously step the environment."""
         self.action_dicts = [
