@@ -6,8 +6,8 @@ sim: genesis
 robots: [g1_with_hands_simple]
 task: reachposori
 decimation: 5
-num_envs: 16
-headless: false
+num_envs: 4000
+headless: true
 add_table: true
 fix_base_link: true
 
@@ -29,7 +29,7 @@ fix_base_link: true
 
 # Train or Eval settings
 #-------------------------------------------
-train_or_eval: load_and_train
+train_or_eval: train #load_and_train
 
 #Eveluation settings
 #------------------------------------------
@@ -41,7 +41,11 @@ total_timesteps: 200_000_000
 model_save_path: ./config_run/output/ppo_model
 model_save_freq: 10_000_000
 tensorboard_log: ./config_run/output/tensorboard
-
+#eval during training settings
+#-------------------------------------------
+eval_freq: 10000000
+n_eval_episodes: 3
+eval_max_steps: 200
 
 # PPO parameters
 #-------------------------------------------

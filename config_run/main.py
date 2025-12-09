@@ -80,10 +80,10 @@ def main():
         #config_name = "g1_door_open_eval"
         #config_name = "g1_reach_IK"
         #config_name = "g1_walk_new_train"
-        #config_name = "g1_reach_pos_ori_train"
+        config_name = "g1_reach_pos_ori_train"
         #config_name = "g1_reach_pos_ori_eval"
         #config_name = "g1_stand_train"
-        config_name = "g1_walk_new_eval"
+        #config_name = "g1_walk_new_eval"
         #config_name = "g1_door_IK"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
@@ -229,7 +229,8 @@ def main():
                     n_eval_episodes=config.get("n_eval_episodes", 5),
                     log_dir=config.get("eval_log_dir", "./eval_logs"),
                     save_best=True,
-                    best_model_dir=config.get("best_model_dir", "./best_models")
+                    best_model_dir=config.get("best_model_dir", "./best_models"),
+                    eval_max_steps=config.get("eval_max_steps", 1000)
                         )
                     ],
                     progress_bar=True,)

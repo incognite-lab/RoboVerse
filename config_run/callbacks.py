@@ -277,6 +277,7 @@ class EvalCallback(BaseCallback):
         deterministic: bool = True,
         save_best: bool = True,
         best_model_dir: str = "./best_models",
+        eval_max_steps: int = 1000,
     ):
         super().__init__()
         self.eval_env = eval_env
@@ -287,6 +288,7 @@ class EvalCallback(BaseCallback):
         self.best_model_dir = best_model_dir
         self.writer = SummaryWriter(log_dir)
         self.best_mean_reward = -np.inf
+        self.eval_max_steps = eval_max_steps
         os.makedirs(self.best_model_dir, exist_ok=True)
 
     def _init_callback(self) -> None:
@@ -304,13 +306,15 @@ class EvalCallback(BaseCallback):
             total_reward = 0.0
             ep_len = 0
             success = 0
+            step = 0
+            while not done.any() and step < self.eval_max_steps:
 
-            while not done.any():
                 action, _ = self.model.predict(obs, deterministic=self.deterministic)
                 obs, rewards, dones, infos = self.eval_env.step(action)
                 total_reward += np.mean(rewards)
                 ep_len += 1
                 done = dones
+                step += 1
 
                 if any("is_success" in info for info in infos):
                     success = int(any(info.get("is_success", False) for info in infos))

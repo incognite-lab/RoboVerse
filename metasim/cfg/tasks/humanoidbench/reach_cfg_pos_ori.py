@@ -372,7 +372,7 @@ class ReachposoriCfg(HumanoidTaskCfg):
             urdf_path="roboverse_data/assets/humanoidbench/cube/cube_2/cube_2.urdf",
             usd_path="urdf2usd_convert/g1/usd/cube_2.usd",
             default_position= [0.3, 0.2, 0.9],
-            physics=PhysicStateType.XFORM,
+            physics=PhysicStateType.GEOM,
 
         ),
         RigidObjCfg(

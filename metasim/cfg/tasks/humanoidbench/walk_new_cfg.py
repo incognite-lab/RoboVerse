@@ -55,8 +55,8 @@ class CommandFollowXYReward(HumanoidBaseReward):
         robot_vel_y = robot_vel[1]
         err_x = torch.clamp(cmd[:, 0] - robot_vel_x, min=0.0)
         err_y = torch.clamp(cmd[:, 1] - robot_vel_y, min=0.0)
-        err_x = cmd[:,0] - robot_vel_x
-        err_y = cmd[:,1] - robot_vel_y
+        # err_x = cmd[:,0] - robot_vel_x
+        # err_y = cmd[:,1] - robot_vel_y
         err_vel_xy = err_x**2 + err_y**2
         R_vel_xy = torch.exp(-5.0 * err_vel_xy)
         return R_vel_xy
