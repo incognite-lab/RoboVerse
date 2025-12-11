@@ -29,11 +29,14 @@ fix_base_link: true
 
 # Train or Eval settings
 #-------------------------------------------
-train_or_eval: train #load_and_train
+load_model_path: ./config_run/output/ppo_model_cluster/run_2025-12-09_19_reachposori/model_90000000
+train_or_eval: load_and_train
 
 #Eveluation settings
 #------------------------------------------
-
+eval_freq: 10000000
+n_eval_episodes: 1
+eval_max_steps: 300
 
 # PPO training settings
 #-------------------------------------------

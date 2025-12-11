@@ -582,7 +582,7 @@ class _ReachCheckerPosOri(BaseChecker):
         distance = torch.norm(right_hand_pos - cube1_state, dim=1)
         #print("distance", distance.cpu().numpy())
 
-        terminated = ((distance < 0.03) & (dot_product > 0.9)) | (cube1_state[:,2] < 0.1)
+        terminated = ((distance < 0.04) & (dot_product > 0.9)) | (cube1_state[:,2] < 0.1)
         if terminated.any():
 
             print("some env was successful in reach checker pos ori")

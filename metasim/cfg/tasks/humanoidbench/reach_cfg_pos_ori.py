@@ -80,11 +80,16 @@ class BalancedOrientPosReward(HumanoidBaseReward):
 
         dist_reward = humanoid_reward_util.tolerance(
             distance,
-            bounds=(0.0, 0.03),   # velmi blízko objektu = max
-            margin=0.35,
+            bounds=(0.0, 0.01),   # velmi blízko objektu = max
+            margin=0.5,
             sigmoid="gaussian",
         )
-
+        goal_reward = humanoid_reward_util.tolerance(
+            distance,
+            bounds=(0.0, 0.02),   # cílové okno
+            margin=0.05,
+            sigmoid="gaussian",
+        )
         # bonus za přiblížení
         if self.prev_distance is None:
             approach_bonus = torch.zeros_like(distance)
@@ -99,7 +104,7 @@ class BalancedOrientPosReward(HumanoidBaseReward):
         # ---------------------------------------------------------
         # 50:50 kombinace
         # ---------------------------------------------------------
-        total = 0.5 * orientation_total + 0.5 * distance_total
+        total = 0.33 * orientation_total + 0.33 * distance_total + 0.34 * goal_reward
 
         return torch.clamp(total, 0.0, self.max_reward)
 

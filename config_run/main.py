@@ -140,10 +140,7 @@ def main():
 
 
 
-    metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
 
-
-    env = StableBaseline3VecEnv(metasim_env)
     #-----------------------------------------------
     if config.get("net_arch_pivf", False):
         policy_kwargs = dict({"net_arch":{"pi": config.get("net_arch_pi", [128, 128, 128]),
@@ -161,6 +158,8 @@ def main():
         return func
 
     if config.get("train_or_eval") == "IK":
+        metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
+        env = StableBaseline3VecEnv(metasim_env)
         from SB3_reach_pos_ori_env import ik_solver
         os.makedirs(os.path.dirname(config.get("video_save_path")), exist_ok=True)
         observation = ObsSaver(video_path=config.get("video_save_path"))
@@ -197,7 +196,8 @@ def main():
     elif config.get("train_or_eval") == "train":
         # PPO configuration
         #_Eval env
-
+        metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
+        env = StableBaseline3VecEnv(metasim_env)
         eval_env = StableBaseline3VecEnv(metasim_env)
 
         model = PPO(
@@ -242,9 +242,11 @@ def main():
         env.close()
         quit()
     elif config.get("train_or_eval") == "eval":
-
-        # sys.modules['numpy._core'] = np.core
-        # sys.modules['numpy._core.numeric'] = np.core.numeric
+        metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
+        env = StableBaseline3VecEnv(metasim_env)
+        #TODO fix numpy module issue when loading model only for cluster training
+        sys.modules['numpy._core'] = np.core
+        sys.modules['numpy._core.numeric'] = np.core.numeric
 
         # load the model
         log.info(f"Loading model from {config.get('load_model_path')}")
@@ -274,14 +276,33 @@ def main():
 
 
     elif config.get("train_or_eval") == "load_and_train":
+        metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
+        env = StableBaseline3VecEnv(metasim_env)
+        eval_env = StableBaseline3VecEnv(metasim_env)
         # load the model
+        #TODO fix numpy module issue when loading model only for cluster training
+
+        sys.modules['numpy._core'] = np.core
+        sys.modules['numpy._core.numeric'] = np.core.numeric
+
+
+
         log.info(f"Loading model from {config.get('load_model_path')}")
         model = PPO.load(config.get("load_model_path"), env=env, device="cuda" if torch.cuda.is_available() else "cpu")
         model.set_env(env)
         model.learn(total_timesteps=config.get("total_timesteps", 1_000_000),
                     callback=[
                     SaveModelCallback(save_path=config.get("model_save_path"), save_freq=config.get("model_save_freq", 1_000_000),task_name=config.get("task")),
-                    TensorboardMetricsCallback(log_dir=config.get("tensorboard_log", "./ppo_tensorboard/"))
+                    TensorboardMetricsCallback(log_dir=config.get("tensorboard_log", "./ppo_tensorboard/")),
+                    EvalCallback(
+                    eval_env=eval_env,
+                    eval_freq=config.get("eval_freq", 10_000_000),
+                    n_eval_episodes=config.get("n_eval_episodes", 5),
+                    log_dir=config.get("eval_log_dir", "./eval_logs"),
+                    save_best=True,
+                    best_model_dir=config.get("best_model_dir", "./best_models"),
+                    eval_max_steps=config.get("eval_max_steps", 1000)
+                        )
                     ],
                     progress_bar=True,)
 
@@ -291,7 +312,36 @@ def main():
         log.info("Model saved. Ending the training and closing the environment.")
         env.close()
         quit()
+    elif config.get("train_or_eval") == "train_rsl":
+        from rsl_rl.algorithms.ppo import PPO as RSLPPO
+        from rsl_rl.runners import OnPolicyRunner
+        from RSL_walk_new_env import RSLRLMetaSimEnv
+        # wrapper pro RSL-RL prostředí
+        metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
+        env = RSLRLMetaSimEnv(metasim_env)
 
+        # nastavení hyperparametrů PPO
+        algo_cfg = {
+            "lr": float(config.get("learning_rate", 3e-4)),
+            "gamma": config.get("gamma", 0.99),
+            "gae_lambda": config.get("gae_lambda", 0.95),
+            "clip_range": config.get("clip_range", 0.2),
+            "ent_coef": config.get("ent_coef", 0.0),
+            "vf_coef": config.get("vf_coef", 0.5),
+            "max_grad_norm": config.get("max_grad_norm", 0.5),
+            "device": "cuda" if torch.cuda.is_available() else "cpu",
+        }
 
+        algo = RSLPPO(env.obs_space, env.action_space, **algo_cfg)
+
+        # runner config – kolik kroků a počet envs
+        runner_cfg = {
+            "num_envs": env.num_envs,
+            "num_steps_per_iter": config.get("n_steps", 128),
+            "total_iters": config.get("total_iterations", 5000),
+        }
+
+        runner = OnPolicyRunner(env, algo, runner_cfg)
+        runner.learn()
 if __name__ == "__main__":
     main()
