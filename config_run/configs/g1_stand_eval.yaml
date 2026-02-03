@@ -1,12 +1,12 @@
 #genesis config stand
 
 # Environment settings
-sim: genesis
+sim: sapien3
 robots: [g1_with_hands]
 task: stand
 decimation: 5
 num_envs: 1
-headless: false
+headless: true
 add_table: true
 #sensors configuration
 sensors:
@@ -45,8 +45,10 @@ train_or_eval: eval
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2025-10-27_21_stand/model_260052000
 load_model_path: ./config_run/output/ppo_model_cluster/run_2025-10-31_17_stand/model_330000000
 video_save_path: ./config_run/output/eval_videos/stand_eval_2.mp4
-eval_episodes: 600
+load_model_path_file: ./config_run/output/ppo_model_cluster/run_2025-10-31_17_stand
 
+eval_episodes: 1
+eval_max_steps: 300
 
 # PPO training settings
 total_timesteps: 90_000_000

@@ -2,13 +2,14 @@
 
 # Environment settings
 #-------------------------------------------
-sim: sapien3 #genesis
+sim: genesis
 robots: [g1_with_hands]
 task: door_stand
 decimation: 5
-num_envs: 1
+num_envs: 4
 headless: false
 add_table: true
+env_spacing: 4.0
 
 sensors:
   sensor1:
@@ -38,6 +39,7 @@ sensors:
 # Train or Eval settings
 #-------------------------------------------
 train_or_eval: train
+force: false
 
 #Eveluation settings
 #------------------------------------------

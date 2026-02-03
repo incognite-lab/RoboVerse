@@ -42,6 +42,7 @@ class ObjectState:
     """Joint positions. Shape is (num_envs, num_joints). This is only available for articulation objects."""
     joint_vel: torch.Tensor | None = None
     """Joint velocities. Shape is (num_envs, num_joints). This is only available for articulation objects."""
+    joint_names: list[str] | None = None
 
 
 @dataclass
@@ -65,6 +66,8 @@ class RobotState:
     joint_effort_target: torch.Tensor
     """Joint effort targets. Shape is (num_envs, num_joints)."""
     joint_names: list[str] | None = None
+
+    contact: dict | None = None
 
 
 @dataclass

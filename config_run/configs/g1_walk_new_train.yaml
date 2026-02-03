@@ -5,7 +5,7 @@ sim: genesis
 robots: [g1_with_hands]
 task: walk_new
 decimation: 5
-num_envs: 5000
+num_envs: 1
 
 headless: true
 add_table: true

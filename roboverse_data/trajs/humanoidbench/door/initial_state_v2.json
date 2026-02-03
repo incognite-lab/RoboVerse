@@ -73,7 +73,8 @@
                         0.0
                     ],
                     "dof_pos":{
-                        "door_hinge": 0.0
+                        "door_hinge": 0.0,
+                        "door_handle_joint": 0.0
                     }
 
                 }
@@ -215,7 +216,8 @@
                         0.0
                     ],
                     "dof_pos":{
-                        "door_hinge": 0.0
+                        "door_hinge": 0.0,
+                        "door_handle_joint": 0.0
                     }
 
                 }

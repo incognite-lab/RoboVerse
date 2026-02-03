@@ -80,11 +80,14 @@ def main():
         #config_name = "g1_door_open_eval"
         #config_name = "g1_reach_IK"
         #config_name = "g1_walk_new_train"
-        config_name = "g1_reach_pos_ori_train"
+        #config_name = "g1_reach_pos_ori_train"
         #config_name = "g1_reach_pos_ori_eval"
+        #config_name = "g1_stand_eval"
         #config_name = "g1_stand_train"
         #config_name = "g1_walk_new_eval"
         #config_name = "g1_door_IK"
+        config_name = "g1_door_open_stand_train"
+        #config_name = "g1_door_stand_IK"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
     elif len(sys.argv) == 2:
@@ -111,6 +114,7 @@ def main():
         force_y_max = config.get("force_y_max", 0.0),
 
         )
+    scenario.env_spacing = config.get("env_spacing", 2.0)
     scenario.robots[0].fix_base_link = config.get("fix_base_link", False)
     scenario.task.decimation = config.get("decimation", 1)
 
@@ -203,21 +207,21 @@ def main():
         model = PPO(
             "MlpPolicy",
             env,
-            verbose=1,
-            learning_rate=lr_schedule(float(config.get("learning_rate", 3e-4)), 1e-5),
-           # learning_rate=config.get("learning_rate", 3e-4),
-            n_steps=config.get("n_steps", 128),
-            batch_size=config.get("batch_size", 256),
-            n_epochs=config.get("n_epochs", 4),
-            gamma=config.get("gamma", 0.99),
-            gae_lambda=config.get("gae_lambda", 0.95),
-            clip_range=config.get("clip_range", 0.2),
-            ent_coef=config.get("ent_coef", 0.0),
-            vf_coef=config.get("vf_coef", 0.5),
-            max_grad_norm=config.get("max_grad_norm", 0.5),
-            tensorboard_log=config.get("tensorboard_log", "./ppo_tensorboard/"),
-            policy_kwargs=policy_kwargs,
-            device="cpu"#cuda" if torch.cuda.is_available() else "cpu",
+        #     verbose=1,
+        #     learning_rate=lr_schedule(float(config.get("learning_rate", 3e-4)), 1e-5),
+        #    # learning_rate=config.get("learning_rate", 3e-4),
+        #     n_steps=config.get("n_steps", 128),
+        #     batch_size=config.get("batch_size", 256),
+        #     n_epochs=config.get("n_epochs", 4),
+        #     gamma=config.get("gamma", 0.99),
+        #     gae_lambda=config.get("gae_lambda", 0.95),
+        #     clip_range=config.get("clip_range", 0.2),
+        #     ent_coef=config.get("ent_coef", 0.0),
+        #     vf_coef=config.get("vf_coef", 0.5),
+        #     max_grad_norm=config.get("max_grad_norm", 0.5),
+        #     tensorboard_log=config.get("tensorboard_log", "./ppo_tensorboard/"),
+        #     policy_kwargs=policy_kwargs,
+        #     device="cpu"#cuda" if torch.cuda.is_available() else "cpu",
         )
         model.learn(total_timesteps=config.get("total_timesteps", 1_000_000),
                     callback=[
@@ -242,6 +246,147 @@ def main():
         env.close()
         quit()
     elif config.get("train_or_eval") == "eval":
+        import re
+        import matplotlib.pyplot as plt
+
+        metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
+        env = StableBaseline3VecEnv(metasim_env)
+
+        # Oprava pro numpy
+        sys.modules['numpy._core'] = np.core
+        sys.modules['numpy._core.numeric'] = np.core.numeric
+
+        model_dir = config.get("load_model_path")
+        if not os.path.isdir(model_dir):
+            log.error(f"Provided load_model_path is not a directory: {model_dir}")
+            exit(1)
+
+        # 1. Získání a seřazení modelů podle počtu kroků
+        model_files = []
+        pattern = re.compile(r"model_(\d+)\.zip")
+
+        for filename in os.listdir(model_dir):
+            match = pattern.match(filename)
+            if match:
+                step_count = int(match.group(1))
+                model_files.append((step_count, filename))
+
+        # Seřadíme podle kroku (step_count)
+        model_files.sort(key=lambda x: x[0])
+
+        if not model_files:
+            log.warning("No 'model_{step}.zip' files found in directory.")
+            exit(0)
+
+        log.info(f"Found {len(model_files)} models. Starting evaluation...")
+
+        # Data pro grafy
+        eval_steps = []
+        avg_rewards = []
+        success_rates = []
+        avg_lengths = []  # <--- NOVÉ: Seznam pro průměrné délky epizod
+
+        # Počet epizod pro evaluaci jednoho modelu
+        n_eval_episodes = config.get("eval_episodes", 20)
+
+        # 2. Hlavní smyčka přes všechny modely
+        for step_count, filename in model_files:
+            full_path = os.path.join(model_dir, filename)
+            log.info(f"Evaluating model: {filename} (Step: {step_count})")
+
+            # Načtení modelu
+            try:
+                model = PPO.load(full_path, env=env, device="cuda" if torch.cuda.is_available() else "cpu")
+            except Exception as e:
+                log.error(f"Failed to load model {filename}: {e}")
+                continue
+
+            # Evaluace jednoho modelu
+            episode_rewards = []
+            episode_successes = []
+            episode_lengths = []  # <--- NOVÉ: Ukládání délek pro aktuální model
+
+            # Reset prostředí
+            obs = env.reset()
+
+            # Pomocné proměnné pro akumulaci v běžících epizodách
+            current_rewards = np.zeros(env.num_envs)
+            current_lengths = np.zeros(env.num_envs)  # <--- NOVÉ: Čítač kroků pro každé prostředí
+
+            # Běžíme dokud nemáme dostatek dokončených epizod
+            while len(episode_rewards) < n_eval_episodes:
+                actions, _ = model.predict(obs, deterministic=True)
+                obs, rewards, dones, infos = env.step(actions)
+
+                current_rewards += rewards
+                current_lengths += 1  # <--- NOVÉ: Zvýšení počtu kroků
+
+                # Zpracování dokončených epizod
+                for i in range(env.num_envs):
+                    if dones[i]:
+                        # Uložení celkové odměny
+                        episode_rewards.append(current_rewards[i])
+                        current_rewards[i] = 0
+
+                        # Uložení délky epizody
+                        episode_lengths.append(current_lengths[i]) # <--- NOVÉ
+                        current_lengths[i] = 0                     # <--- NOVÉ: Reset čítače
+
+                        # Zjištění success rate
+                        is_success = infos[i].get("is_success", False)
+                        episode_successes.append(1 if is_success else 0)
+
+            # Výpočet statistik pro tento model
+            mean_reward = np.mean(episode_rewards)
+            success_rate = np.mean(episode_successes)
+            mean_length = np.mean(episode_lengths) # <--- NOVÉ: Průměrná délka
+
+            log.info(f" -> Mean Reward: {mean_reward:.2f}, Success: {success_rate:.2%}, Avg Length: {mean_length:.1f}")
+
+            eval_steps.append(step_count)
+            avg_rewards.append(mean_reward)
+            success_rates.append(success_rate)
+            avg_lengths.append(mean_length) # <--- NOVÉ
+
+        env.close()
+
+        # 3. Vykreslení a uložení grafů
+
+        # Graf 1: Average Reward
+        plt.figure(figsize=(10, 5))
+        plt.plot(eval_steps, avg_rewards, marker='o', linestyle='-', color='b')
+        plt.title(f'Training Progress - Average Reward ({config.get("task")})')
+        plt.xlabel('Training Steps')
+        plt.ylabel('Average Reward')
+        plt.grid(True)
+        plt.savefig(os.path.join(model_dir, "eval_reward_plot.png"))
+        plt.close()
+
+        # Graf 2: Success Rate
+        plt.figure(figsize=(10, 5))
+        plt.plot(eval_steps, success_rates, marker='o', linestyle='-', color='g')
+        plt.title(f'Training Progress - Success Rate ({config.get("task")})')
+        plt.xlabel('Training Steps')
+        plt.ylabel('Success Rate')
+        plt.ylim(-0.05, 1.05)
+        plt.grid(True)
+        plt.savefig(os.path.join(model_dir, "eval_success_plot.png"))
+        plt.close()
+
+        # Graf 3: Average Episode Length (NOVÉ)
+        plt.figure(figsize=(10, 5))
+        plt.plot(eval_steps, avg_lengths, marker='o', linestyle='-', color='r') # Červená barva
+        plt.title(f'Training Progress - Average Episode Length ({config.get("task")})')
+        plt.xlabel('Training Steps')
+        plt.ylabel('Average Steps per Episode')
+        plt.grid(True)
+        plt.savefig(os.path.join(model_dir, "eval_length_plot.png"))
+        plt.close()
+
+        log.info(f"Evaluation complete. Plots saved to {model_dir}")
+        quit()
+
+    elif config.get("train_or_eval") == "video_eval":
         metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
         env = StableBaseline3VecEnv(metasim_env)
         #TODO fix numpy module issue when loading model only for cluster training
@@ -257,7 +402,7 @@ def main():
         slow = config.get("video_slowdown", 3)
         # inference
         obs = env.reset()
-        for step in range(config.get("eval_episodes", 1000)):
+        for step in range(config.get("eval_max_steps", 1000)):
             actions, _ = model.predict(obs, deterministic=True)
             obs, rewards, dones, infos = env.step(actions)
             states = metasim_env.env.handler.get_states()
@@ -316,23 +461,31 @@ def main():
         from rsl_rl.algorithms.ppo import PPO as RSLPPO
         from rsl_rl.runners import OnPolicyRunner
         from RSL_walk_new_env import RSLRLMetaSimEnv
+        from rsl_rl.modules import ActorCritic, ActorCriticCNN, ActorCriticRecurrent
+        from rsl_rl.storage import RolloutStorage
+
         # wrapper pro RSL-RL prostředí
         metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
         env = RSLRLMetaSimEnv(metasim_env)
 
-        # nastavení hyperparametrů PPO
-        algo_cfg = {
-            "lr": float(config.get("learning_rate", 3e-4)),
-            "gamma": config.get("gamma", 0.99),
-            "gae_lambda": config.get("gae_lambda", 0.95),
-            "clip_range": config.get("clip_range", 0.2),
-            "ent_coef": config.get("ent_coef", 0.0),
-            "vf_coef": config.get("vf_coef", 0.5),
-            "max_grad_norm": config.get("max_grad_norm", 0.5),
-            "device": "cuda" if torch.cuda.is_available() else "cpu",
-        }
-
-        algo = RSLPPO(env.obs_space, env.action_space, **algo_cfg)
+        storage = RolloutStorage(
+            training_type="rl",
+            num_envs=config.get("num_envs", 1),
+            num_transitions_per_env=config.get("n_steps", 128),
+            obs=env.obs_dict,
+            actions_shape=env.num_actions,
+            device="cuda" if torch.cuda.is_available() else "cpu",
+        )
+        policy = ActorCritic(
+            obs = env.obs_space,
+            obs_groups = {"policy": ["joint_pos", "gyro_obs", "command_obs"],
+                          "critic": ["joint_pos", "gyro_obs", "command_obs", "right_ankle_roll_link", "left_ankle_roll_link", "torso_link"]},
+            num_actions=env.num_actions,
+        )
+        algo = RSLPPO(
+            policy=policy,
+            storage=storage,
+        )
 
         # runner config – kolik kroků a počet envs
         runner_cfg = {

@@ -104,12 +104,11 @@ class StableBaseline3VecEnv(VecEnv):
             self.timesteps[dones.cpu()] = 0
         if success.any():
             self.timesteps[success.cpu()] = 0
-            rewards[success] = 10.0
+            rewards[success] = 100.0
             self.env.reset(env_ids=success.nonzero(as_tuple=False).squeeze(-1).tolist())
 
 
-
-
+        print("Step Rewards:", rewards)
         return obs, rewards.cpu().numpy(), dones.cpu().numpy(), extra
 
     def render(self):

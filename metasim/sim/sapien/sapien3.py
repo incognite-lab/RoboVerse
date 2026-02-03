@@ -280,7 +280,11 @@ class Sapien3Handler(BaseSimHandler):
             #     if agent.fix_base_link:
             #         capsule.lock_motion()
             #     agent.instance = capsule
+        #nastavení jmen objektů
 
+        for obj in self.object_ids:
+            self.object_ids[obj].set_name(obj)
+            print(self.object_ids[obj].name)
         # Add lights
         self.scene.set_ambient_light([0.5, 0.5, 0.5])
         self.scene.add_directional_light([0, 1, -1], [0.5, 0.5, 0.5], shadow=True)
@@ -332,7 +336,133 @@ class Sapien3Handler(BaseSimHandler):
         self.scene.update_render()
         for camera_name, camera_id in self.camera_ids.items():
             camera_id.take_picture()
+    """def get_contact(self, contacts: list[sapien.physx.PhysxContact], filter_obj_name: str | None = None) -> list[dict]:
 
+       # Zpracuje kontakty ze Sapien scény a převede je na čitelný formát shodný s Genesis.
+       # Pokud je zadán filter_obj_name, vrátí jen kontakty týkající se daného objektu.
+
+        readable_collisions = []
+
+        # Získání instance objektu pro filtrování (pokud chceme jen robotovy kolize)
+        filter_inst = None
+        if filter_obj_name and filter_obj_name in self.object_ids:
+            filter_inst = self.object_ids[filter_obj_name]
+
+        for contact in contacts:
+            # Sapien vrací dvojici actorů (bodies)
+            actor_a = contact.bodies[0]
+            actor_b = contact.bodies[1]
+
+            # Funkce pro získání jména objektu a linku
+            def resolve_name(actor):
+                # Statické objekty (často ground) nebo null
+                if actor is None or (hasattr(actor, "type") and actor.type == "static") or actor.entity.name == 'ground':
+                    return "World", "Ground"
+
+                # Pokud je to Articulation (Robot)
+                # V Sapien 3 má actor odkaz na svou artikulaci
+                articulation = actor.get_articulation()
+                if articulation is not None:
+                    return articulation.get_name(), actor.name
+
+                # Pokud je to Rigid Body (Kostka, Koule...)
+                return actor.name, "base_link"
+
+            obj_a, link_a = resolve_name(actor_a)
+            obj_b, link_b = resolve_name(actor_b)
+
+            # --- FILTROVÁNÍ ---
+            # Pokud filtrujeme podle jména (např. 'robot'), ignorujeme kolize, kde robot není
+            if filter_obj_name:
+                if obj_a != filter_obj_name and obj_b != filter_obj_name:
+                    continue
+
+            # Ignorování self-collision (robot sám se sebou)
+            if obj_a == obj_b:
+                continue
+
+            # V Sapienu (CPU) máme obvykle env_id=0, pokud nepoužíváme speciální batching
+            entry = {
+                "env_id": 0,
+                "body_a": obj_a,
+                "link_a": link_a,
+                "body_b": obj_b,
+                "link_b": link_b,
+                "formatted": f"{obj_a}::{link_a} <-> {obj_b}::{link_b}"
+            }
+            if entry not in readable_collisions:
+                readable_collisions.append(entry)
+
+        return readable_collisions"""
+    def get_contact(self, contacts: list[sapien.physx.PhysxContact], filter_obj_name: str | None = None) -> list[dict]:
+        """
+        Zpracuje kontakty ze Sapien scény a přidá informace o síle.
+        """
+        readable_collisions = []
+
+        # Získání časového kroku pro výpočet síly (F = Impuls / dt)
+        dt = self.scene.get_timestep()
+
+        for contact in contacts:
+            # Sapien vrací dvojici actorů (bodies)
+            actor_a = contact.bodies[0]
+            actor_b = contact.bodies[1]
+
+            # Funkce pro získání jména objektu a linku
+            def resolve_name(actor):
+                # Statické objekty (často ground) nebo null
+                if actor is None or (hasattr(actor, "type") and actor.type == "static") or actor.entity.name == 'ground':
+                    return "World", "Ground"
+
+                # Pokud je to Articulation (Robot)
+                articulation = actor.get_articulation()
+                if articulation is not None:
+                    return articulation.get_name(), actor.name
+
+                # Pokud je to Rigid Body (Kostka, Koule...)
+                return actor.name, "base_link"
+
+            obj_a, link_a = resolve_name(actor_a)
+            obj_b, link_b = resolve_name(actor_b)
+
+            # --- FILTROVÁNÍ ---
+            if filter_obj_name:
+                if obj_a != filter_obj_name and obj_b != filter_obj_name:
+                    continue
+
+            # Ignorování self-collision
+            if obj_a == obj_b:
+                continue
+
+            # --- VÝPOČET SÍLY ---
+            # Kontakt může mít více bodů (contact points). Musíme sečíst jejich impulsy.
+            total_impulse = np.zeros(3)
+            for point in contact.points:
+                total_impulse += point.impulse
+
+            # Převedení impulsu na sílu: F = impuls / dt
+            # total_impulse je vektor (x, y, z), získáme i jeho velikost (skalár)
+            force_vec = total_impulse / dt
+            force_magnitude = np.linalg.norm(force_vec)
+
+            entry = {
+                "env_id": 0,
+                "body_a": obj_a,
+                "link_a": link_a,
+                "body_b": obj_b,
+                "link_b": link_b,
+                "formatted": f"{obj_a}::{link_a} <-> {obj_b}::{link_b}",
+                "force": float(force_magnitude),      # Skalární velikost síly v Newtonech
+                "force_vec": force_vec.tolist()       # Vektor síly [fx, fy, fz]
+            }
+
+            # Poznámka: Pokud entry obsahuje list (force_vec), porovnání "if entry not in..."
+            # může selhat nebo být pomalé. Zde to necháváme pro zachování logiky,
+            # ale pro 'force_vec' používáme .tolist(), aby to bylo porovnatelné.
+            if entry not in readable_collisions:
+                readable_collisions.append(entry)
+
+        return readable_collisions
     def _apply_action(self, instance: sapien_core.physx.PhysxArticulation, pos_action=None, vel_action=None):
         qf = instance.compute_passive_force(gravity=True, coriolis_and_centrifugal=True)
         if pos_action is not None:
@@ -409,18 +539,23 @@ class Sapien3Handler(BaseSimHandler):
 
     def _get_states(self, env_ids=None) -> list[EnvState]:
         object_states = {}
+
+        # načteme všechny kontakty ve scéně
+        raw_scene_contacts = self.scene.get_contacts()
         for obj in self.objects:
             obj_inst = self.object_ids[obj.name]
             pose = obj_inst.get_pose()
             link_names, link_state = self._get_link_states(obj.name)
             if isinstance(obj, ArticulationObjCfg):
                 assert isinstance(obj_inst, sapien_core.physx.PhysxArticulation)
+                joints_names_arr = np.array(self.get_joint_names(obj.name))
                 pos = torch.tensor(pose.p)
                 rot = torch.tensor(pose.q)
                 vel = torch.tensor(obj_inst.get_root_linear_velocity())
                 ang_vel = torch.tensor(obj_inst.get_root_angular_velocity())
                 root_state = torch.cat([pos, rot, vel, ang_vel], dim=-1).unsqueeze(0)
                 state = ObjectState(
+                    joint_names = joints_names_arr,
                     root_state=root_state,
                     body_names=link_names,
                     body_state=link_state.unsqueeze(0),
@@ -446,6 +581,12 @@ class Sapien3Handler(BaseSimHandler):
         for robot in [self.robot]:
             robot_inst = self.object_ids[robot.name]
             assert isinstance(robot_inst, sapien_core.physx.PhysxArticulation)
+
+            readable_contacts = self.get_contact(raw_scene_contacts, filter_obj_name=robot.name)
+            # if readable_contacts:
+            #     print("detekována kolize:")
+            #     for contact in readable_contacts:
+            #         print(f" - {contact['formatted']}")
             pose = robot_inst.get_pose()
             pos = torch.tensor(pose.p)
             rot = torch.tensor(pose.q)
@@ -481,6 +622,7 @@ class Sapien3Handler(BaseSimHandler):
                 joint_pos_target=pos_target,
                 joint_vel_target=vel_target,
                 joint_effort_target=effort_target,
+                contact=readable_contacts,
             )
             robot_states[robot.name] = state
 
@@ -538,6 +680,10 @@ class Sapien3Handler(BaseSimHandler):
             # assert name in self.object_ids
             # Reset joint state
             obj_id = self.object_ids[name]
+            if val["pos"].device != torch.device("cpu"):
+                val["pos"] = val["pos"].cpu()
+            if val["rot"].device != torch.device("cpu"):
+                val["rot"] = val["rot"].cpu()
 
             if isinstance(self.object_dict[name], ArticulationObjCfg):
                 joint_names = self.object_joint_order[name]
@@ -545,7 +691,6 @@ class Sapien3Handler(BaseSimHandler):
                 for i, joint_name in enumerate(joint_names):
                     qpos_list.append(val["dof_pos"][joint_name])
                 obj_id.set_qpos(np.array(qpos_list))
-
             # Reset base position and orientation
             obj_id.set_pose(sapien_core.Pose(p=val["pos"], q=val["rot"]))
 

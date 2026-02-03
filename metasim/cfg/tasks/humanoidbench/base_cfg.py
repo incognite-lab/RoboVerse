@@ -112,6 +112,8 @@ class HumanoidBaseReward:
             "right_hand_index_0_joint": 0.0,
             "right_hand_index_1_joint": 0.0,
         }
+            self.actual_stage: torch.Tensor = None
+            self.completed_stages: torch.Tensor = None
         else:
             raise ValueError(f"Unknown robot {robot_name}")
 

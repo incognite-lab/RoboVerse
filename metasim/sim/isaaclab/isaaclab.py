@@ -15,7 +15,7 @@ from metasim.cfg.objects import (
     PrimitiveFrameCfg,
 )
 from metasim.cfg.scenario import ScenarioCfg
-from metasim.cfg.sensors import ContactForceSensorCfg, GyroSensorCfg
+from metasim.cfg.sensors import ContactForceSensorCfg, GyroSensorCfg, CommandCfg
 from metasim.queries.base import BaseQueryType
 from metasim.sim import BaseSimHandler, EnvWrapper, IdentityEnvWrapper
 from metasim.types import Action, EnvState, Extra, Obs, Reward, Success, TimeOut
@@ -457,6 +457,11 @@ class IsaaclabHandler(BaseSimHandler):
                 if gyro_data is None:
                     log.warning(f"Gyro data is None for sensor {sensor.name}, setting to zero")
                 sensor_states[sensor.name] = gyro_data
+            elif isinstance(sensor, CommandCfg):
+                command_data = sensor.get_command()
+                #command_tensor = torch.tensor(command_data, dtype=torch.float32).unsqueeze(1)
+                sensor_states[sensor.name] = command_data
+
             else:
                 raise ValueError(f"Unknown sensor type: {type(sensor)}")
 

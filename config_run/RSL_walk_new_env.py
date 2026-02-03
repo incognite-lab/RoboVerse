@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+from tensordict import TensorDict
 
 
 class RSLRLMetaSimEnv:
@@ -25,7 +26,36 @@ class RSLRLMetaSimEnv:
         for i, lim in enumerate(joint_limits.values()):
             self.action_space[i, 0] = lim[0]
             self.action_space[i, 1] = lim[1]
+        self.obs_space = TensorDict({
+            "joint_pos": torch.zeros(self.num_actions, 2, device=self.device),
+            "gyro_obs": torch.zeros(3, 2, device=self.device),
+            "command_obs": torch.zeros(3, 2, device=self.device),
+            "right_ankle_roll_link": torch.zeros(7, 2, device=self.device),
+            "left_ankle_roll_link": torch.zeros(7, 2, device=self.device),
+            "torso_link": torch.zeros(3, 2, device=self.device),
+            })
+        for i, lim in enumerate(joint_limits.values()):
+            self.obs_space["joint_pos"][i, 0] = lim[0]
+            self.obs_space["joint_pos"][i, 1] = lim[1]
+        self.obs_space["gyro_obs"][:, 0] = -float('inf')
+        self.obs_space["gyro_obs"][:, 1] = float('inf')
+        self.obs_space["command_obs"][:, 0] = -2.0
+        self.obs_space["command_obs"][:, 1] = 2.0
+        self.obs_space["right_ankle_roll_link"][:, 0] = -float('inf')
+        self.obs_space["right_ankle_roll_link"][:, 1] = float('inf')
+        self.obs_space["left_ankle_roll_link"][:, 0] = -float('inf')
+        self.obs_space["left_ankle_roll_link"][:, 1] = float('inf')
+        self.obs_space["torso_link"][:, 0] = -float('inf')
+        self.obs_space["torso_link"][:, 1] = float('inf')
 
+        self.obs_dict = TensorDict({
+            "joint_pos": torch.zeros(self.num_actions, device="cuda"),
+            "gyro_obs": torch.zeros(3, device="cuda"),
+            "command_obs": torch.zeros(3, device="cuda"),
+            "right_ankle_roll_link": torch.zeros(7, device="cuda"),
+            "left_ankle_roll_link": torch.zeros(7, device="cuda"),
+            "torso_link": torch.zeros(3, device="cuda"),
+        })
         # internal counters
         self.num_envs = env.num_envs
         self.timesteps = torch.zeros(self.num_envs, device=self.device)

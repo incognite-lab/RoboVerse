@@ -88,6 +88,15 @@ class BaseSimHandler(ABC):
         """
         self._state_cache_expire = True
         self._set_states(states, env_ids=env_ids)
+    def set_states_advanced(self, states: list[EnvState], env_ids: list[int] | None = None) -> None:
+        """Set the states of the environment with advanced options.
+
+        Args:
+            states (dict): A dictionary containing the states of the environment
+            env_ids (list[int]): List of environment ids to set the states. If None, set the states of all environments
+        """
+        self._state_cache_expire = True
+        self._set_states_advanced(states, env_ids=env_ids)
 
     def _set_states(self, states: list[EnvState], env_ids: list[int] | None = None) -> None:
         raise NotImplementedError

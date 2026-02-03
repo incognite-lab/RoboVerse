@@ -114,6 +114,7 @@ def GymEnvWrapper(cls: type[THandler]) -> type[EnvWrapper[THandler]]:
             reward = None
             tic = time.time()
             success = self.handler.checker.check(self.handler)
+
             toc = time.time()
             log.trace(f"Time taken to handler.checker.check(): {toc - tic:.4f}s")
             tic = time.time()

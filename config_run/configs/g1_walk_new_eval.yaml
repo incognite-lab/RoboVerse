@@ -5,7 +5,7 @@ sim: genesis
 robots: [g1_with_hands]
 task: walk_new
 decimation: 5
-num_envs: 4
+num_envs: 1
 
 headless: false
 add_table: true
@@ -38,18 +38,21 @@ cameras:
        width: 1024
        height: 1024
 
-force: true
-force_x_min: -10
-force_x_max: 50.0
-force_y_min: -1.0
-force_y_max: 1.0
+force: false
+force_x_min: -0.5
+force_x_max: 0.5
+force_y_min: -0.1
+force_y_max: 0.1
 
 # Training settings
-train_or_eval: eval
+train_or_eval: video_eval
 video_slowdown: 1
 
 #eveluation settings
 #load_model_path: ./my_env/output/ppo_models/run_2025-10-16_13-59-07/model_80003072
-load_model_path: ./config_run/output/ppo_model_cluster/run_2025-12-09_19_walk_new/model_60000000
-video_save_path: ./config_run/output/eval_videos/new_walk_eval.mp4
-eval_episodes: 1000
+load_model_path: ./config_run/output/ppo_model_cluster/run_2025-11-19_19_walk_new/model_90028800
+video_save_path: ./config_run/output/eval_videos/new_walk_eval_2.mp4
+load_model_path_file: ./config_run/output/ppo_model_cluster/run_2025-11-19_19_walk_new
+
+eval_episodes: 10
+eval_max_steps: 300

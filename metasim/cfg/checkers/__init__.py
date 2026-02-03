@@ -13,6 +13,7 @@ from .checkers import (
     _CrawlChecker,
     _CubeChecker,
     _DoorChecker,
+    _DoorManChecker,
     _HighbarChecker,
     _HurdleChecker,
     _JointPosPercentShiftChecker,

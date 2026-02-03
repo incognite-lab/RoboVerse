@@ -15,6 +15,75 @@ from scipy.spatial.transform import Rotation as R
 
 from .base_cfg import HumanoidBaseReward, HumanoidTaskCfg, StableReward
 from metasim.utils.humanoid_robot_util import right_palm_position,right_palm_orientation
+
+class ExponentialReachPosOriReward(HumanoidBaseReward):
+    """
+    Reward function using Exponential Kernels for both Position and Orientation.
+    Provides smoother gradients closer to the target compared to linear tolerances.
+
+    Reward = w_pos * exp(-dist^2) + w_rot * exp(-angle^2) - penalty
+    """
+
+    def __init__(self, robot_name="g1_with_hands_simple"):
+        super().__init__(robot_name)
+        # Nastavení citlivosti (sigma). Menší číslo = vyžaduje vyšší přesnost.
+        self.sigma_pos = 0.25  # 25cm odchylka ~ 60% rewardu, 0cm ~ 100%
+        self.sigma_rot = 0.5   # 0.5 rad (~28 deg) odchylka ~ 60% rewardu
+
+        # Váhy
+        self.w_pos = 1.0
+        self.w_rot = 0.5       # Pozice je zpočátku důležitější
+        self.w_energy = 0.001  # Malá penalizace za divoké pohyby
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        ee_name = "endeffector"
+
+        # 1. Získání dat
+        # Pozice a orientace ruky
+        hand_pos = right_palm_position(states, self.robot_name, ee_name)
+        hand_ori = right_palm_orientation(states, self.robot_name, ee_name)
+
+        # Pozice a orientace cíle (Cube)
+        target_pos = states.objects["cube_1"].root_state[:, :3]
+        target_ori = states.objects["cube_1"].root_state[:, 3:7]
+
+        # Rychlost kloubů pro penalizaci energie (náhrada za actions)
+        # Předpokládáme, že states.robots[...] vrací RobotState s joint_vel
+        joint_vel = states.robots[self.robot_name].joint_vel
+
+        # 2. Position Reward (Exponenciální)
+        dist = torch.norm(hand_pos - target_pos, dim=-1)
+        reward_pos = torch.exp(-(dist**2) / (2 * self.sigma_pos**2))
+
+        # 3. Orientation Reward (Exponenciální z Quaternion dot product)
+        # Normalizace pro jistotu
+        hand_ori = hand_ori / (torch.norm(hand_ori, dim=1, keepdim=True) + 1e-8)
+        target_ori = target_ori / (torch.norm(target_ori, dim=1, keepdim=True) + 1e-8)
+
+        # Skalární součin q1 * q2
+        dot_prod = torch.sum(hand_ori * target_ori, dim=1)
+        # Clamp pro numerickou stabilitu acos (-1, 1)
+        dot_prod = torch.clamp(torch.abs(dot_prod), min=0.0, max=1.0)
+
+        # Úhel rozdílu v radiánech (2 * acos(|q1.q2|))
+        angle_diff = 2 * torch.acos(dot_prod)
+
+        reward_rot = torch.exp(-(angle_diff**2) / (2 * self.sigma_rot**2))
+
+        # 4. Energy Penalty (Minimalizace trhaných pohybů)
+        # Suma čtverců rychlostí
+        energy_penalty = torch.sum(joint_vel**2, dim=-1)
+
+        # 5. Celkový součet
+        # Rotaci můžeme "zapnout" naplno až když je ruka blízko (např. < 20 cm),
+        # aby se robot nejdřív soustředil na přiblížení.
+        # Zde používáme 'soft' gating pomocí váhy, ale můžeme přidat i masku:
+        # rot_gate = (dist < 0.2).float()
+
+        total_reward = (self.w_pos * reward_pos) + (self.w_rot * reward_rot) - (self.w_energy * energy_penalty)
+
+        # Oříznutí záporných hodnot (pokud by penalizace byla moc velká) a max hodnoty
+        return torch.clamp(total_reward, 0.0, 5.0)
 class BalancedOrientPosReward(HumanoidBaseReward):
     """
     Reward = 0.5 * orientation_reward + 0.5 * distance_reward
@@ -104,7 +173,7 @@ class BalancedOrientPosReward(HumanoidBaseReward):
         # ---------------------------------------------------------
         # 50:50 kombinace
         # ---------------------------------------------------------
-        total = 0.33 * orientation_total + 0.33 * distance_total + 0.34 * goal_reward
+        total = 0.5 * orientation_total + 0.3 * distance_total + 0.2 * goal_reward
 
         return torch.clamp(total, 0.0, self.max_reward)
 

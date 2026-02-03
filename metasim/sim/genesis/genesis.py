@@ -80,6 +80,7 @@ class GenesisHandler(BaseSimHandler):
             material=gs.materials.Rigid(gravity_compensation=1 if not self.robot.enabled_gravity else 0),
         )
         self.object_inst_dict[self.robot.name] = self.robot_inst
+
         log.info(f"robot: {self.robot_inst}")
 
         ## Add objects
@@ -123,14 +124,169 @@ class GenesisHandler(BaseSimHandler):
         self.scene_inst.build(
             n_envs=self.scenario.num_envs, env_spacing=(self.scenario.env_spacing, self.scenario.env_spacing)
         )
+        self._previous_dof_pos_target: dict[str, torch.Tensor] = {}
+        self._previous_dof_vel_target: dict[str, torch.Tensor] = {}
+
+        self._build_link_map()
+    def _build_link_map(self):
+        """
+        Vytvoří slovník, který mapuje globální index linku (int) na dvojici (název_objektu, název_linku).
+        Toto je nutné, protože Genesis vrací kolize jen jako čísla.
+        """
+        self.global_link_map = {}
+
+        # Projdeme všechny objekty, které jsme si uložili
+        for obj_name, entity in self.object_inst_dict.items():
+            if isinstance(entity, RigidEntity):
+                for link in entity.links:
+                    # link.idx je globální index v solveru pro první environment (env 0)
+                    if hasattr(link, 'idx'):
+                        self.global_link_map[link.idx] = (obj_name, link.name)
+
+        # Zjistíme celkový počet rigidních těles v jednom prostředí pro výpočet offsetů u n_envs > 1
+        # (Pokud máte jen 1 env, není to kritické, ale pro batching je to nutné)
+        try:
+            # Tohle je heuristika, najdeme nejvyšší index a přičteme 1
+            max_idx = max(self.global_link_map.keys()) if self.global_link_map else 0
+            self.num_bodies_per_env = max_idx + 1
+        except Exception:
+            self.num_bodies_per_env = 1000 # Fallback
+
+    def get_contact(self, contact_data: dict) -> list[dict]:
+        """
+        Zpracuje surová data z get_contacts() a vrátí seznam slovníků s informacemi o kolizích.
+        Přidává informace o síle kontaktu.
+        """
+        if contact_data is None:
+            return []
+
+        readable_collisions = []
+
+        # Přesun dat na CPU
+        link_a = contact_data['link_a'].cpu().numpy()
+        link_b = contact_data['link_b'].cpu().numpy()
+        valid_mask = contact_data['valid_mask'].cpu().numpy()
+
+        # --- NOVÉ: Získání sil ---
+        # Genesis vrací tensor 'force' o rozměrech [n_envs, max_contacts, 3]
+        if 'force_b' in contact_data:
+            raw_forces = contact_data['force_b'].cpu().numpy()
+        else:
+            # Fallback pro případ, že solver síly nevrací (např. jen detekce kolizí)
+            raw_forces = np.zeros((*link_a.shape, 3))
+
+        # Získáme indexy, kde je kolize platná
+        env_indices, contact_indices = np.where(valid_mask)
+
+        # Iterujeme pouze přes aktivní kolize
+        for env_id, i in zip(env_indices, contact_indices):
+
+            # Získáme raw indexy
+            idx_a_raw = int(link_a[env_id, i])
+            idx_b_raw = int(link_b[env_id, i])
+
+            # Přepočet na základní index
+            base_idx_a = idx_a_raw % self.num_bodies_per_env
+            base_idx_b = idx_b_raw % self.num_bodies_per_env
+
+            def resolve_name(idx):
+                if idx == 0:
+                    return "World", "Ground"
+                return self.global_link_map.get(idx, (f"Unknown_{idx}", "unknown"))
+
+            obj_a, link_name_a = resolve_name(base_idx_a)
+            obj_b, link_name_b = resolve_name(base_idx_b)
+
+            # Ignorování self-collision
+            if obj_a == obj_b:
+                continue
+
+            # --- ZPRACOVÁNÍ SÍLY ---
+            # Získáme vektor síly pro tento konkrétní kontakt
+            force_vec = raw_forces[env_id, i] # shape (3,)
+            force_magnitude = np.linalg.norm(force_vec)
+
+            # Vytvoření slovníku
+            collision_entry = {
+                "env_id": int(env_id),
+                "body_a": obj_a,
+                "link_a": link_name_a,
+                "body_b": obj_b,
+                "link_b": link_name_b,
+                "formatted": f"{obj_a}::{link_name_a} <-> {obj_b}::{link_name_b}",
+                "force": float(force_magnitude),      # Skalární velikost
+                "force_vec": force_vec.tolist()       # Vektor [x, y, z]
+            }
+
+            readable_collisions.append(collision_entry)
+
+        return readable_collisions
+    # def get_contact(self, contact_data: dict) -> list[dict]:
+    #     """
+    #     Zpracuje surová data z get_contacts() a vrátí seznam slovníků s informacemi o kolizích.
+    #     Index 0 je explicitně mapován jako Podlaha (Ground).
+    #     """
+    #     if contact_data is None:
+    #         return []
+
+    #     readable_collisions = []
+
+    #     # Přesun dat na CPU (tato operace je nutná, ale děláme ji hromadně)
+    #     link_a = contact_data['link_a'].cpu().numpy()
+    #     link_b = contact_data['link_b'].cpu().numpy()
+    #     valid_mask = contact_data['valid_mask'].cpu().numpy()
+
+    #     # --- OPTIMALIZACE: Získáme souřadnice jen tam, kde je kolize skutečná ---
+    #     # np.where vrátí indexy (env_ids, contact_indices), kde je maska True
+    #     # Díky tomu neprocházíme prázdná místa v poli.
+    #     env_indices, contact_indices = np.where(valid_mask)
+
+    #     # Iterujeme pouze přes aktivní kolize
+    #     for env_id, i in zip(env_indices, contact_indices):
+
+    #         # Získáme raw indexy
+    #         idx_a_raw = int(link_a[env_id, i])
+    #         idx_b_raw = int(link_b[env_id, i])
+
+    #         # Přepočet na základní index (pro multi-env)
+    #         base_idx_a = idx_a_raw % self.num_bodies_per_env
+    #         base_idx_b = idx_b_raw % self.num_bodies_per_env
+
+    #         # Pomocná funkce pro získání jména (řeší index 0 jako podlahu)
+    #         def resolve_name(idx):
+    #             if idx == 0:
+    #                 return "World", "Ground"
+    #             return self.global_link_map.get(idx, (f"Unknown_{idx}", "unknown"))
+
+    #         obj_a, link_name_a = resolve_name(base_idx_a)
+    #         obj_b, link_name_b = resolve_name(base_idx_b)
+
+    #         # Ignorování "self-collision" (robot sám se sebou), pokud chcete
+    #         if obj_a == obj_b:
+    #             continue
+
+    #         # Vytvoření slovníku
+    #         collision_entry = {
+    #             "env_id": int(env_id),
+    #             "body_a": obj_a,
+    #             "link_a": link_name_a,
+    #             "body_b": obj_b,
+    #             "link_b": link_name_b,
+    #             "formatted": f"{obj_a}::{link_name_a} <-> {obj_b}::{link_name_b}"
+    #         }
+    #         readable_collisions.append(collision_entry)
+
+    #     return readable_collisions
 
     def _get_states(self, env_ids: list[int] | None = None) -> list[EnvState]:
+
+
         if env_ids is None:
             env_ids = list(range(self.num_envs))
-
         object_states = {}
         for obj in self.objects:
             obj_inst = self.object_inst_dict[obj.name]
+            joints_names_arr = np.array(self.get_joint_names(obj.name))
             if isinstance(obj, ArticulationObjCfg):
                 #joint_reindex = self.get_joint_reindex(obj.name)
                 state = ObjectState(
@@ -143,6 +299,7 @@ class GenesisHandler(BaseSimHandler):
                         ],
                         dim=-1,
                     ),
+                    joint_names=joints_names_arr,
                     body_names=self.get_body_names(obj.name),
                     body_state=self.get_body_states(obj.name, envs_idx=env_ids),
                     joint_pos=obj_inst.get_dofs_position(envs_idx=env_ids),#[:, joint_reindex],
@@ -160,6 +317,7 @@ class GenesisHandler(BaseSimHandler):
                         dim=-1,
                     ),
                 )
+            #print(obj_inst.control_dofs_force())
             object_states[obj.name] = state
 
         robot_states = {}
@@ -168,9 +326,12 @@ class GenesisHandler(BaseSimHandler):
             joints_names_arr = np.array(self.get_joint_names(obj.name))
             #joints_names_reindexed = joints_names_arr[joint_reindex].tolist()
             obj_inst = self.object_inst_dict[obj.name]
+            raw_contact = obj_inst.get_contacts()
+            readable_contacts = self.get_contact(raw_contact)
+            if self._previous_dof_pos_target is None or obj.name not in self._previous_dof_pos_target:
+                self._previous_dof_pos_target[obj.name] = torch.zeros_like(obj_inst.get_dofs_position(envs_idx=env_ids))
+            joint_reindex = self.get_joint_reindex(obj.name)
 
-            #joint_reindex = self.get_joint_reindex(obj.name)
-            #print(obj_inst.get_dofs_position(envs_idx=env_ids)[:,6:])
             state = RobotState(
                 root_state=torch.cat(
                     [
@@ -186,14 +347,16 @@ class GenesisHandler(BaseSimHandler):
                 body_state=self.get_body_states(obj.name, envs_idx=env_ids),
                 joint_pos=obj_inst.get_dofs_position(envs_idx=env_ids)[:, 6:],
                 joint_vel=obj_inst.get_dofs_velocity(envs_idx=env_ids)[:, 6:],
-                joint_pos_target=None,  # TODO
+                joint_pos_target=self._previous_dof_pos_target[obj.name],
                 joint_effort_target=self._get_effort_targets(),
-                joint_vel_target=None  # TODO
+                contact=readable_contacts,
+                joint_vel_target=None # TODO
 
 
 
-                if self._get_control_mode(obj.name) == "effort"
-                else None,
+
+                # if self._get_control_mode(obj.name) == "effort"
+                # else None,
             )
             robot_states[obj.name] = state
 
@@ -261,6 +424,7 @@ class GenesisHandler(BaseSimHandler):
             obj_inst.set_pos(pos, envs_idx=env_ids, relative=False)
             # --- Base link rotation ---
             quat_tensor = torch.stack([states_flat[eid][obj.name]["rot"] for eid in env_ids])  # [N,4]
+            #TODO toto se mi nelíbí
             quat = quat_tensor.cpu().numpy()
             # Normalize quaternions
             norms = np.linalg.norm(quat, axis=1, keepdims=True)
@@ -305,6 +469,127 @@ class GenesisHandler(BaseSimHandler):
                         raise RuntimeError(...)
                     obj_inst.set_qpos(qpos_to_set, envs_idx=env_ids)
 
+
+    def _set_states_advanced(self, states: list[EnvState], env_ids: list[int] | None = None) -> None:
+        """
+        Pokročilé nastavení stavu scény. Nastavuje pozice (pos, quat, joints)
+        I RYCHLOSTI (linear vel, angular vel, joint vel) pomocí přímého zápisu do DOFs.
+        """
+        if env_ids is None:
+            env_ids = list(range(self.num_envs))
+
+        # Replikace stavů pokud je jich méně než prostředí
+        if len(states) < self.num_envs:
+            states = states * (len(env_ids) // len(states))
+
+        states_flat = [state["objects"] | state["robots"] for state in states]
+
+        for obj in self.objects + [self.robot]:
+            obj_inst = self.object_inst_dict[obj.name]
+            obj_name = obj.name
+
+            # 1. Příprava dat z EnvState (vše jako numpy arrays [N, ...])
+            # -----------------------------------------------------------
+            # Root Position [N, 3]
+            pos = torch.stack([states_flat[eid][obj_name]["pos"] for eid in env_ids]).cpu().numpy()
+
+            # Root Rotation [N, 4]
+            quat_tensor = torch.stack([states_flat[eid][obj_name]["rot"] for eid in env_ids])
+            quat = quat_tensor.cpu().numpy()
+            # Normalizace quaternionů (kritické pro stabilitu simulace)
+            norms = np.linalg.norm(quat, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            quat = quat / norms
+
+            # Root Velocity (Linear) [N, 3] - defaultně nuly
+            vel = torch.stack([
+                states_flat[eid][obj_name].get("vel", torch.zeros(3)) for eid in env_ids
+            ]).cpu().numpy()
+
+            # Root Velocity (Angular) [N, 3] - defaultně nuly
+            ang = torch.stack([
+                states_flat[eid][obj_name].get("ang", torch.zeros(3)) for eid in env_ids
+            ]).cpu().numpy()
+
+            # Joint Positions & Velocities
+            joint_names = self.get_joint_names(obj_name, sort=False)
+
+            # Filtrujeme jointy, které nejsou 'root_joint' (Genesis internal)
+            # Pokud je objekt RigidObj bez kloubů, joint_names bude prázdné
+            valid_joints = [j for j in obj_inst.joints if j.name != "root_joint"]
+
+            if valid_joints:
+                # [N, n_joints]
+                dof_pos_arr = np.array([
+                    [states_flat[eid][obj_name]["dof_pos"].get(j.name, 0.0) for j in valid_joints]
+                    for eid in env_ids
+                ], dtype=np.float32)
+
+                # [N, n_joints]
+                dof_vel_arr = np.array([
+                    [states_flat[eid][obj_name].get("dof_vel", {}).get(j.name, 0.0) for j in valid_joints]
+                    for eid in env_ids
+                ], dtype=np.float32)
+            else:
+                dof_pos_arr = np.empty((len(env_ids), 0), dtype=np.float32)
+                dof_vel_arr = np.empty((len(env_ids), 0), dtype=np.float32)
+
+            # 2. Logika sestavení QPOS (Positions)
+            # ------------------------------------
+            # Genesis vyžaduje set_qpos s vektorem délky `n_qs`.
+            # Pro floating base (volný objekt) je n_qs = 7 (3 pos + 4 quat) + n_joints
+            # Pro fixed base (připevněný robot) je n_qs = n_joints
+
+            expected_qs = getattr(obj_inst, "n_qs", 0)
+            root_pos_state = np.concatenate([pos, quat], axis=1) # [N, 7]
+
+            qpos_to_set = None
+
+            # A) Fixed base (jen klouby)
+            if expected_qs == dof_pos_arr.shape[1]:
+                qpos_to_set = dof_pos_arr
+
+            # B) Floating base (root + klouby)
+            elif expected_qs == 7 + dof_pos_arr.shape[1]:
+                qpos_to_set = np.concatenate([root_pos_state, dof_pos_arr], axis=1)
+
+            # C) Pouze Floating base bez dalších kloubů (např. kostka)
+            elif expected_qs == 7:
+                qpos_to_set = root_pos_state
+
+            if qpos_to_set is not None:
+                # Používáme set_qpos, který je v rigid_entity.py
+                # Nastavujeme zero_velocity=False, protože rychlost nastavíme explicitně níže
+                obj_inst.set_qpos(qpos_to_set, envs_idx=env_ids, zero_velocity=False)
+
+            # 3. Logika sestavení DOFS VELOCITY (Velocities)
+            # ----------------------------------------------
+            # Genesis vyžaduje set_dofs_velocity s vektorem délky `n_dofs`.
+            # Pro floating base je n_dofs = 6 (3 lin + 3 ang) + n_joints
+            # Root DOFs jsou v Genesis typicky: [vel_x, vel_y, vel_z, ang_x, ang_y, ang_z]
+
+            expected_dofs = getattr(obj_inst, "n_dofs", 0)
+            root_vel_state = np.concatenate([vel, ang], axis=1) # [N, 6]
+
+            qvel_to_set = None
+
+            # A) Fixed base (jen klouby)
+            if expected_dofs == dof_vel_arr.shape[1]:
+                qvel_to_set = dof_vel_arr
+
+            # B) Floating base (root 6DOF + klouby)
+            elif expected_dofs == 6 + dof_vel_arr.shape[1]:
+                qvel_to_set = np.concatenate([root_vel_state, dof_vel_arr], axis=1)
+
+            # C) Pouze Floating base (např. kostka, 6DOF)
+            elif expected_dofs == 6:
+                qvel_to_set = root_vel_state
+
+            if qvel_to_set is not None:
+                # Používáme set_dofs_velocity
+                # POZOR: RigidEntity nemá set_vel/set_ang, toto je jediný způsob jak nastavit rychlost báze.
+                obj_inst.set_dofs_velocity(qvel_to_set, envs_idx=env_ids)
+
     def set_dof_targets(self, obj_name: str, actions: list[Action]) -> None:
         self._actions_cache = actions
 
@@ -337,6 +622,8 @@ class GenesisHandler(BaseSimHandler):
             ]
             dof_idx_local = []
             for j in self.robot_inst.joints:
+                if j.name == "door_hinge":
+                    print("bagr")
                 try:
                     if j.dofs_idx_local[0] is not None and j.name != self.robot_inst.base_joint.name:
                         dof_idx_local.append(j.dofs_idx_local[0])
@@ -347,7 +634,7 @@ class GenesisHandler(BaseSimHandler):
                     position=position,
                     dofs_idx_local=dof_idx_local,
                 )
-
+        self._previous_dof_pos_target[obj_name] = torch.tensor(position, dtype=torch.float32)
 
 
     def refresh_render(self):

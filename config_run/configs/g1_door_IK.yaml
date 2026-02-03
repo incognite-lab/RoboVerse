@@ -2,7 +2,7 @@
 
 # Environment settings
 #-------------------------------------------
-sim: isaaclab
+sim: genesis
 robots: [g1_with_hands_simple]
 task: door
 decimation: 5

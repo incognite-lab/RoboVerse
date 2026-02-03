@@ -12,6 +12,10 @@ from metasim.wrapper.gym_vec_env import MetaSimVecEnv
 from stable_baselines3.common.vec_env import VecEnv
 from gymnasium import spaces
 
+FORCE_TO_KEEP_DOOR_CLOSE = 10000.0 # Síla pro udržení dveří zavřených
+HANDLE_SPRING_FORCE = -0.5        # Síla vracející kliku nahoru
+ANGLE_TO_UNLOCK_HANDLE = 0.4        # Úhel kliky pro odemčení
+ANGLE_TO_CONSIDER_DOOR_CLOSED = 0.2 # Úhel pantu, kdy se dveře považují za zavřené
 
 
 class StableBaseline3VecEnv(VecEnv):
@@ -55,6 +59,99 @@ class StableBaseline3VecEnv(VecEnv):
         gyrodata = gyrodata.reshape(self.num_envs, 3)
         obs = obs.reshape(self.num_envs, -1)       # (num_envs, dof_count)
         return np.concatenate([obs, gyrodata], axis=1).astype(np.float32)
+    def door_mechanism(self):
+        # Načtení stavů
+        states = self.env.env.handler.get_states()
+        door_state = states.objects['door']
+
+        # Získání pozic a rychlostí (potřebujeme rychlost pro tlumení)
+        handle_angle = door_state.joint_pos[:, 1]
+        hinge_angle = door_state.joint_pos[:, 0]
+        hinge_vel = door_state.joint_vel[:, 0]
+
+        if self.env.scenario.sim == 'genesis':
+            # PARAMETRY
+
+            device = "cuda" if self.env.scenario.sim == 'isaaclab' or self.env.scenario.sim == 'genesis' else "cpu"
+            door_inst = self.env.env.handler.object_inst_dict['door']
+
+            # 1. Cache indexů (bez nefunkčního nastavování KD/KP)
+            if not hasattr(self, '_door_indices_cache'):
+                handle_dof_idx = None
+                hinge_dof_idx = None
+                for joint in door_inst.joints:
+                    if joint.name == 'door_handle_joint':
+                        handle_dof_idx = joint.dofs_idx_local[0]
+                    elif joint.name == 'door_hinge':
+                        hinge_dof_idx = joint.dofs_idx_local[0]
+                self._door_indices_cache = (handle_dof_idx, hinge_dof_idx)
+
+            handle_idx, hinge_idx = self._door_indices_cache
+
+            # 2. Logika sil
+
+            # A) KLIKA (pružina)
+            forces_handle = torch.full((self.num_envs, 1), HANDLE_SPRING_FORCE, device=device)
+
+            # B) PANT (Zámek / Poziční držení)
+            # Logika: Dveře držíme zavřené JEN TEHDY, pokud jsou už fyzicky u rámu
+            # (tolerance 0.05 rad) A klika není stisknutá.
+
+            # Jsou dveře fyzicky zavřené (blízko 0)?
+            is_door_near_frame = torch.abs(hinge_angle) < ANGLE_TO_CONSIDER_DOOR_CLOSED
+            # Je klika v horní poloze?
+            is_handle_locked = handle_angle < ANGLE_TO_UNLOCK_HANDLE
+
+            # Výsledná maska: Zamčeno
+            is_locked = is_handle_locked & is_door_near_frame
+
+            # Inicializace nulové síly (odemčeno = volný pohyb)
+            forces_hinge = torch.zeros((self.num_envs, 1), device=device)
+
+            # Pro zamčené prostředí aplikujeme "Poziční zámek"
+            if is_locked.any():
+
+                control_force = FORCE_TO_KEEP_DOOR_CLOSE
+                forces_hinge[is_locked] = control_force
+
+            # 3. Aplikace (Batching)
+            # Musíme poslat obě síly najednou
+            if handle_idx is not None and hinge_idx is not None:
+                combined_forces = torch.cat([forces_hinge, forces_handle], dim=1)
+                combined_indices = [hinge_idx, handle_idx]
+                door_inst.control_dofs_force(
+                    force=combined_forces,
+                    dofs_idx_local=combined_indices
+                )
+        # --- SAPIEN 3 ---
+        elif 'sapien' in self.env.scenario.sim:
+
+            door_inst = self.env.env.handler.object_ids['door']
+            handle_joint_idx = -1
+            hinge_joint_idx = -1
+            active_joints = door_inst.get_active_joints()
+            for i, joint in enumerate(active_joints):
+                if joint.name == 'door_handle_joint':
+                    handle_joint_idx = i
+                elif joint.name == 'door_hinge':
+                    hinge_joint_idx = i
+
+            if handle_joint_idx != -1 and hinge_joint_idx != -1:
+                qf = door_inst.qf
+                if isinstance(qf, torch.Tensor):
+                    qf[handle_joint_idx] += HANDLE_SPRING_FORCE
+                else:
+                    # Fallback pro CPU NumPy backend
+                    qf[handle_joint_idx] = HANDLE_SPRING_FORCE
+                if handle_angle[0] < ANGLE_TO_UNLOCK_HANDLE and torch.abs(hinge_angle[0]) < ANGLE_TO_CONSIDER_DOOR_CLOSED:
+                    # Přidáme sílu pro zavření dveří
+                    qf[hinge_joint_idx] = FORCE_TO_KEEP_DOOR_CLOSE
+                else:
+                    qf[hinge_joint_idx] = 0.0
+                # 4. Aplikujeme sílu zpět
+                door_inst.set_qf(qf)
+
+
 
     def reset(self):
         """Reset the environment."""
@@ -70,20 +167,21 @@ class StableBaseline3VecEnv(VecEnv):
         self.action_dicts = [
             {
                 self.env.scenario.robots[0].name: {
-                    "dof_pos_target": dict(zip(self.env.scenario.robots[0].joint_limits.keys(), action))
-                    #"dof_pos_target": self.env.scenario.robots[0].default_joint_positions
+                    #"dof_pos_target": dict(zip(self.env.scenario.robots[0].joint_limits.keys(), action))
+                    "dof_pos_target": self.env.scenario.robots[0].default_joint_positions
 
                 }
             }
             for action in actions
         ]
-
     def step_wait(self):
         """Wait for the step to complete."""
         obs, rewards, unsuccess, timeout, _ = self.env.step(self.action_dicts)
         obs = obs.cpu().numpy()
         obs = self.add_extra_to_obs(obs)
         #obs = self._combine_obs(obs)
+        self.door_mechanism() # function to simulate door mechanism
+
 
         # --- Done flag ---
         dones = timeout.to(unsuccess.device) | unsuccess
@@ -100,7 +198,6 @@ class StableBaseline3VecEnv(VecEnv):
 
         # --- Reset neúspěšných envů ---
         if unsuccess_mask.any():
-            rewards[unsuccess_mask] = -1.0
             self.timesteps[unsuccess_mask] = 0.0
             unsuccess_ids = np.nonzero(unsuccess_mask)[0].tolist()
             self.env.reset(env_ids=unsuccess_ids)

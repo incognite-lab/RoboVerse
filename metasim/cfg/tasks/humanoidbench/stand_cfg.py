@@ -58,7 +58,8 @@ class DistanceFromInitPos(HumanoidBaseReward):
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         diff = None
         for name, state in self.initial_pos.items():
-            state_idx = states.robots[self.robot_name].joint_names.index(name)
+            joint_names = states.robots[self.robot_name].joint_names
+            state_idx = list(joint_names).index(name)
             joint_pos = states.robots[self.robot_name].joint_pos[:,state_idx]
             state = torch.tensor(state, device=joint_pos.device)
             if diff is None:

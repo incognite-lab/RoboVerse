@@ -582,7 +582,7 @@ class _ReachCheckerPosOri(BaseChecker):
         distance = torch.norm(right_hand_pos - cube1_state, dim=1)
         #print("distance", distance.cpu().numpy())
 
-        terminated = ((distance < 0.04) & (dot_product > 0.9)) | (cube1_state[:,2] < 0.1)
+        terminated = ((distance < 0.05) & (dot_product > 0.9)) | (cube1_state[:,2] < 0.1)
         if terminated.any():
 
             print("some env was successful in reach checker pos ori")
@@ -738,7 +738,7 @@ class _DoorChecker(BaseChecker):
             states.append({
                 "robots": {
                     "g1_with_hands_simple": {
-                        "pos": torch.tensor([-0.6, 0.0, 0.8]),
+                        "pos": torch.tensor([-0.5, 0.0, 0.8]),
                         "rot": torch.tensor([1.0, 0.0, 0.0, 0.0]),
                         "dof_pos": handler.robot.default_joint_positions,
                     }
@@ -747,7 +747,10 @@ class _DoorChecker(BaseChecker):
                     "door": {
                         "pos": door_pos,
                         "rot": door_quat,
-                        "dof_pos":{'door_hinge': 0.0},
+                        "dof_pos":{'door_hinge': 0.0,
+                                   'door_handle_joint' :0.0
+
+                                   },
 
                     },
                 },
@@ -758,6 +761,99 @@ class _DoorChecker(BaseChecker):
 
 
 
+
+class _DoorManChecker(BaseChecker):
+    def reset_counters(self, handler: BaseSimHandler,env):
+        idx = handler.task.function_index_success_save_time #TODO součást debilního řešení potřeba předělat
+        handler.task.reward_functions[idx].reset_steps(env)
+
+    def check(self, handler: BaseSimHandler) -> torch.BoolTensor:
+        from metasim.utils.humanoid_robot_util import robot_position
+        from metasim.utils.humanoid_robot_util import right_palm_orientation
+        from metasim.utils.humanoid_robot_util import right_palm_position
+        from metasim.cfg.checkers.steges_doorman import (
+            stege0_chacker,
+            stege1_chacker,
+            stege2_chacker,
+            stege3_chacker,
+            stege4_chacker,
+            stege5_chacker,
+            save_snapshot_doorman,
+            load_snapshot_doorman,
+        )
+        num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
+        terminated = torch.zeros(num_envs, dtype=torch.bool, device=handler.device)
+        states = handler.get_states()
+
+        for env in range(num_envs):
+            stage = handler.task.reward_functions[0].actual_stage[env]
+            if stage == 0:
+                terminated[env],success = stege0_chacker(states,handler, env)
+                if success:
+                    save_snapshot_doorman(handler, env, 1)
+                    #handler.task.reward_functions[0]
+                    terminated[env] = False
+                    handler.task.reward_functions[0].actual_stage[env] = 1
+                    handler.task.reward_functions[0].completed_stages[env] = 1
+                if terminated[env]:
+                    self.reset_counters(handler, env)
+
+
+
+            elif stage == 1:
+                terminated[env],success = stege1_chacker(states,handler, env)
+                if success:
+                    save_snapshot_doorman(handler, env, 2)
+                    terminated[env] = False
+                    handler.task.reward_functions[0].actual_stage[env] = 2
+                    handler.task.reward_functions[0].completed_stages[env] = 1
+                if terminated[env]:
+                    self.reset_counters(handler, env)
+            elif stage == 2:
+                terminated[env],success = stege2_chacker(states,handler, env)
+                if success:
+                    save_snapshot_doorman(handler, env, 3)
+                    terminated[env] = False
+                    handler.task.reward_functions[0].actual_stage[env] = 3
+                    handler.task.reward_functions[0].completed_stages[env] = 1
+                if terminated[env]:
+                    self.reset_counters(handler, env)
+            elif stage == 3:
+                terminated[env],success = stege3_chacker(states,handler, env)
+                if success:
+                    save_snapshot_doorman(handler, env, 4)
+                    terminated[env] = False
+                    handler.task.reward_functions[0].actual_stage[env] = 4
+                    handler.task.reward_functions[0].completed_stages[env] = 1
+                if terminated[env]:
+                    self.reset_counters(handler, env)
+            elif stage == 4:
+                terminated[env],success  = stege4_chacker(states,handler, env)
+                if success:
+                    save_snapshot_doorman(handler, env, 5)
+                    terminated[env] = False
+                    handler.task.reward_functions[0].actual_stage[env] = 5
+                    handler.task.reward_functions[0].completed_stages[env] = 1
+                if terminated[env]:
+                    self.reset_counters(handler, env)
+            elif stage == 5:
+                terminated[env],success = stege5_chacker(states,handler, env)
+                if success:
+                    handler.task.reward_functions[0].actual_stage[env] = 6
+                    handler.task.reward_functions[0].completed_stages[env] = 1
+                    terminated[env] = False
+                    print(f"env {env} finished the door task")
+            elif stage == 6:
+                terminated[env] = True
+        return terminated
+
+    def reset(self, handler: BaseSimHandler, env_ids: list[int] | None = None):
+        """
+        RESET
+        """
+        from metasim.cfg.checkers.steges_doorman import reset_doorman
+        reset_doorman(handler, env_ids)
+        print("reset door checker")
 
 ## FIXME: This checker should be removed!
 @configclass
