@@ -4,6 +4,7 @@ import genesis as gs
 import numpy as np
 import torch
 import random
+gs.init(backend=gs.gpu,logging_level=gs._logging.WARNING)  # TODO: add option for cpu
 
 from genesis.engine.entities.rigid_entity import RigidEntity, RigidJoint
 from genesis.vis.camera import Camera
@@ -39,15 +40,17 @@ except Exception:
 
 class GenesisHandler(BaseSimHandler):
     def __init__(self, scenario: ScenarioCfg, optional_queries: dict[str, BaseQueryType] | None = None):
+
         super().__init__(scenario, optional_queries)
         self._actions_cache: list[Action] = []
         self.object_inst_dict: dict[str, RigidEntity] = {}
         self.camera_inst_dict: dict[str, Camera] = {}
+        self.cached_top_offsets: dict[str, torch.Tensor] = {}
+
 
     def launch(self) -> None:
         show_viewer = not self.headless
         print(show_viewer," show_viewer")
-        gs.init(backend=gs.gpu,logging_level=gs._logging.WARNING)  # TODO: add option for cpu
         # zde změna ve vypisování logů - genesis je moc hlučný (nevypisujíse info logy ani debug)
         self.scene_inst = gs.Scene(
             sim_options=gs.options.SimOptions(
@@ -75,7 +78,8 @@ class GenesisHandler(BaseSimHandler):
         self.robot_inst: RigidEntity = self.scene_inst.add_entity(
             gs.morphs.URDF(
                 file=self.robot.urdf_path,
-                merge_fixed_links=self.robot.collapse_fixed_joints
+                merge_fixed_links=self.robot.collapse_fixed_joints,
+                fixed=self.robot.fix_base_link,
             ),
             material=gs.materials.Rigid(gravity_compensation=1 if not self.robot.enabled_gravity else 0),
         )
@@ -105,7 +109,8 @@ class GenesisHandler(BaseSimHandler):
                 )
             elif isinstance(obj, ArticulationObjCfg):
                 obj_inst = self.scene_inst.add_entity(
-                    gs.morphs.URDF(file=obj.urdf_path, fixed=obj.fix_base_link, scale=obj.scale, merge_fixed_links=obj.colapse_fixed_joints),
+                    gs.morphs.URDF(file=obj.urdf_path, fixed=obj.fix_base_link, scale=obj.scale, merge_fixed_links=obj.colapse_fixed_joints, batch_fixed_verts=obj.batch_fixed_verts),
+
                 )
             else:
                 raise NotImplementedError(f"Object type {type(obj)} not supported")
@@ -128,6 +133,8 @@ class GenesisHandler(BaseSimHandler):
         self._previous_dof_vel_target: dict[str, torch.Tensor] = {}
 
         self._build_link_map()
+
+
     def _build_link_map(self):
         """
         Vytvoří slovník, který mapuje globální index linku (int) na dvojici (název_objektu, název_linku).
@@ -221,65 +228,13 @@ class GenesisHandler(BaseSimHandler):
             readable_collisions.append(collision_entry)
 
         return readable_collisions
-    # def get_contact(self, contact_data: dict) -> list[dict]:
-    #     """
-    #     Zpracuje surová data z get_contacts() a vrátí seznam slovníků s informacemi o kolizích.
-    #     Index 0 je explicitně mapován jako Podlaha (Ground).
-    #     """
-    #     if contact_data is None:
-    #         return []
 
-    #     readable_collisions = []
 
-    #     # Přesun dat na CPU (tato operace je nutná, ale děláme ji hromadně)
-    #     link_a = contact_data['link_a'].cpu().numpy()
-    #     link_b = contact_data['link_b'].cpu().numpy()
-    #     valid_mask = contact_data['valid_mask'].cpu().numpy()
 
-    #     # --- OPTIMALIZACE: Získáme souřadnice jen tam, kde je kolize skutečná ---
-    #     # np.where vrátí indexy (env_ids, contact_indices), kde je maska True
-    #     # Díky tomu neprocházíme prázdná místa v poli.
-    #     env_indices, contact_indices = np.where(valid_mask)
 
-    #     # Iterujeme pouze přes aktivní kolize
-    #     for env_id, i in zip(env_indices, contact_indices):
-
-    #         # Získáme raw indexy
-    #         idx_a_raw = int(link_a[env_id, i])
-    #         idx_b_raw = int(link_b[env_id, i])
-
-    #         # Přepočet na základní index (pro multi-env)
-    #         base_idx_a = idx_a_raw % self.num_bodies_per_env
-    #         base_idx_b = idx_b_raw % self.num_bodies_per_env
-
-    #         # Pomocná funkce pro získání jména (řeší index 0 jako podlahu)
-    #         def resolve_name(idx):
-    #             if idx == 0:
-    #                 return "World", "Ground"
-    #             return self.global_link_map.get(idx, (f"Unknown_{idx}", "unknown"))
-
-    #         obj_a, link_name_a = resolve_name(base_idx_a)
-    #         obj_b, link_name_b = resolve_name(base_idx_b)
-
-    #         # Ignorování "self-collision" (robot sám se sebou), pokud chcete
-    #         if obj_a == obj_b:
-    #             continue
-
-    #         # Vytvoření slovníku
-    #         collision_entry = {
-    #             "env_id": int(env_id),
-    #             "body_a": obj_a,
-    #             "link_a": link_name_a,
-    #             "body_b": obj_b,
-    #             "link_b": link_name_b,
-    #             "formatted": f"{obj_a}::{link_name_a} <-> {obj_b}::{link_name_b}"
-    #         }
-    #         readable_collisions.append(collision_entry)
-
-    #     return readable_collisions
 
     def _get_states(self, env_ids: list[int] | None = None) -> list[EnvState]:
-
+        extra = {}
 
         if env_ids is None:
             env_ids = list(range(self.num_envs))
@@ -331,7 +286,12 @@ class GenesisHandler(BaseSimHandler):
             if self._previous_dof_pos_target is None or obj.name not in self._previous_dof_pos_target:
                 self._previous_dof_pos_target[obj.name] = torch.zeros_like(obj_inst.get_dofs_position(envs_idx=env_ids))
             joint_reindex = self.get_joint_reindex(obj.name)
-
+            if obj_inst.base_link.is_fixed:
+                joint_pos = obj_inst.get_dofs_position(envs_idx=env_ids)
+                joint_vel = obj_inst.get_dofs_velocity(envs_idx=env_ids)
+            else:
+                joint_pos = obj_inst.get_dofs_position(envs_idx=env_ids)[:, 6:] # pokud není fixní, první 6 DOF jsou pro base link, takže je ignorujeme
+                joint_vel = obj_inst.get_dofs_velocity(envs_idx=env_ids)[:, 6:]
             state = RobotState(
                 root_state=torch.cat(
                     [
@@ -345,8 +305,8 @@ class GenesisHandler(BaseSimHandler):
                 joint_names=joints_names_arr,
                 body_names=self.get_body_names(obj.name),
                 body_state=self.get_body_states(obj.name, envs_idx=env_ids),
-                joint_pos=obj_inst.get_dofs_position(envs_idx=env_ids)[:, 6:],
-                joint_vel=obj_inst.get_dofs_velocity(envs_idx=env_ids)[:, 6:],
+                joint_pos=joint_pos,
+                joint_vel=joint_vel,
                 joint_pos_target=self._previous_dof_pos_target[obj.name],
                 joint_effort_target=self._get_effort_targets(),
                 contact=readable_contacts,
@@ -381,7 +341,8 @@ class GenesisHandler(BaseSimHandler):
                 sensors[sensor.name] = command_data
             else:
                 log.warning(f"Unknown sensor type: {sensor.cfg_type}, skipping...")
-        return TensorState(objects=object_states, robots=robot_states, cameras=camera_states, sensors=sensors)
+
+        return TensorState(objects=object_states, robots=robot_states, cameras=camera_states, sensors=sensors, extras=extra)
 
 
     def get_body_names(self, obj_name: str, sort: bool = False) -> list[str]:

@@ -855,6 +855,101 @@ class _DoorManChecker(BaseChecker):
         reset_doorman(handler, env_ids)
         print("reset door checker")
 
+class _ChairManChecker(BaseChecker):
+    # def reset_counters(self, handler: BaseSimHandler,env):
+    #     idx = handler.task.function_index_success_save_time #TODO součást debilního řešení potřeba předělat
+    #     handler.task.reward_functions[idx].reset_steps(env)
+
+    def check(self, handler: BaseSimHandler) -> torch.BoolTensor:
+        from metasim.utils.humanoid_robot_util import robot_position
+        from metasim.utils.humanoid_robot_util import right_palm_orientation
+        from metasim.utils.humanoid_robot_util import right_palm_position
+        from metasim.cfg.checkers.stages_chairman import (
+            stege0_chacker,
+            stege1_chacker,
+            stege2_chacker,
+            stege3_chacker,
+            stege4_chacker,
+            stege5_chacker,
+            save_snapshot_chairman,
+            load_snapshot_chairman,
+        )
+        num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
+        terminated = torch.zeros(num_envs, dtype=torch.bool, device=handler.device)
+        states = handler.get_states()
+
+        for env in range(num_envs):
+            stage = handler.task.reward_functions[0].actual_stage[env]
+            if stage == 0:
+                terminated[env],success = stege0_chacker(states,handler, env)
+                if success:
+                    save_snapshot_chairman(handler, env, 1)
+                    #handler.task.reward_functions[0].reset_steps(env) #reset steps
+                    terminated[env] = False
+                    handler.task.reward_functions[0].actual_stage[env] = 1
+                    handler.task.reward_functions[0].completed_stages[env] = 1
+                # if terminated[env]:
+                #     self.reset_counters(handler, env)
+
+
+
+            elif stage == 1:
+                terminated[env],success = stege1_chacker(states,handler, env)
+                if success:
+                    save_snapshot_chairman(handler, env, 2)
+                    terminated[env] = False
+                    handler.task.reward_functions[0].actual_stage[env] = 2
+                    handler.task.reward_functions[0].completed_stages[env] = 1
+                # if terminated[env]:
+                #     self.reset_counters(handler, env)
+            elif stage == 2:
+                terminated[env],success = stege2_chacker(states,handler, env)
+                if success:
+                    save_snapshot_chairman(handler, env, 3)
+                    terminated[env] = False
+                    handler.task.reward_functions[0].actual_stage[env] = 3
+                    handler.task.reward_functions[0].completed_stages[env] = 1
+                # if terminated[env]:
+                #     self.reset_counters(handler, env)
+            elif stage == 3:
+                terminated[env],success = stege3_chacker(states,handler, env)
+                if success:
+                    save_snapshot_chairman(handler, env, 4)
+                    terminated[env] = False
+                    handler.task.reward_functions[0].actual_stage[env] = 4
+                    handler.task.reward_functions[0].completed_stages[env] = 1
+                if terminated[env]:
+                    self.reset_counters(handler, env)
+            elif stage == 4:
+                terminated[env],success  = stege4_chacker(states,handler, env)
+                if success:
+                    save_snapshot_chairman(handler, env, 5)
+                    terminated[env] = False
+                    handler.task.reward_functions[0].actual_stage[env] = 5
+                    handler.task.reward_functions[0].completed_stages[env] = 1
+                if terminated[env]:
+                    self.reset_counters(handler, env)
+            elif stage == 5:
+                terminated[env],success = stege5_chacker(states,handler, env)
+                if success:
+                    handler.task.reward_functions[0].actual_stage[env] = 6
+                    handler.task.reward_functions[0].completed_stages[env] = 1
+                    terminated[env] = False
+                    print(f"env {env} finished the door task")
+            elif stage == 6:
+                terminated[env] = True
+        return terminated
+
+    def reset(self, handler: BaseSimHandler, env_ids: list[int] | None = None):
+        """
+        RESET
+        """
+        from metasim.cfg.checkers.stages_chairman import reset_chairman
+        reset_chairman(handler, env_ids)
+        print("reset chairman checker")
+
+
+
 ## FIXME: This checker should be removed!
 @configclass
 class _PackageChecker(BaseChecker):

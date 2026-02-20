@@ -711,6 +711,205 @@ class TaskCompleted(HumanoidBaseReward):
         # Vektorizovaný výpočet: Kde je stage 6, tam je 1.0, jinak 0.0
         return (self.actual_stage == 6).float()
 
+#-----------------------------------------STAGE 0-------------------------------------------------
+class WalkToDoorReward(HumanoidBaseReward):
+    """
+    Stage 0: Walk to door
+    Gaussian odměna za minimalizaci vzdálenosti a směru k cíli (velocity tracking).
+    Aplikuje se POUZE ve Stage 0.
+
+    Formula: exp(-||v_robot - v_target * d_door||^2 / (2 * sigma^2))
+    [cite_start]Sigma: 0.15 [cite: 8, 507]
+    [cite_start]Weight: 5.0 [cite: 507]
+    """
+    def __init__(self, robot_name="g1_with_hands", target_speed=0.6):
+        super().__init__(robot_name)
+        self.sigma = 0.15
+        # Cílová rychlost chůze (v m/s)
+        self.target_speed = target_speed
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        robot = states.robots[robot_name]
+        door = states.objects["door"]
+        device = robot.joint_pos.device
+        num_envs = robot.joint_pos.shape[0]
+
+        # 1. Kontrola Stage: Pokud actual_stage není definováno, vracíme 0
+        if self.actual_stage is None:
+            return torch.zeros(num_envs, device=device)
+
+        # 2. Vytvoření masky pro Stage 0
+        # Odměnu počítáme jen pro ty, kteří jsou ve Stage 0
+        stage_mask = (self.actual_stage == 0)
+
+        # Optimalizace: Pokud nikdo není ve Stage 0, vrátíme nuly rovnou
+        if not stage_mask.any():
+            return torch.zeros(num_envs, device=device)
+
+        # 3. Získání pozic a rychlostí
+        root_pos = robot.root_state[:, :3]
+        root_vel = robot.root_state[:, 7:10] # Lineární rychlost
+        target_pos = door.root_state[:, :3] # Pozice dveří
+
+        # 4. Výpočet směrového vektoru d_door (normalized)
+        vec_to_door = target_pos - root_pos
+        vec_to_door[:, 2] = 0.0 # Ignorujeme Z složku (chůze po rovině)
+
+        dist = torch.norm(vec_to_door, dim=-1, keepdim=True)
+        dir_to_door = vec_to_door / (dist + 1e-6)
+
+        # 5. Cílový vektor rychlosti (v_target * d_door)
+        target_vel_vec = self.target_speed * dir_to_door
+
+        # 6. Výpočet chyby rychlosti: ||v_robot - v_target_vec||^2
+        vel_error_sq = torch.sum(torch.square(root_vel - target_vel_vec), dim=-1)
+
+        # 7. Gaussian Reward
+        reward = torch.exp(-vel_error_sq / (2 * self.sigma**2))
+
+        # 8. Aplikace masky (vynulování odměny pro ty, co nejsou ve Stage 0)
+        reward = reward * stage_mask.float()
+
+        return reward
+#TODO zkontrolovat
+class UpperBodyDeviationReward(HumanoidBaseReward):
+    """
+    Upper body deviation: Penalizace za odchylku horní části těla od klidového stavu.
+    Aktivní ve Stages: 0, 5.
+
+    Formula: ||q_upper, non-finger - q_resting||_1
+    Weight: -1.0
+    """
+    def __init__(self, robot_name="g1_with_hands"):
+        super().__init__(robot_name)
+        self.upper_body_indices = None
+        self.q_resting_tensor = None
+
+        # Stages, ve kterých je tato penalizace aktivní
+        self.active_stages = [0, 5]
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        robot = states.robots[robot_name]
+        joint_pos = robot.joint_pos
+        device = joint_pos.device
+        num_envs = joint_pos.shape[0]
+
+        # 1. Kontrola Stage
+        if self.actual_stage is None:
+            return torch.zeros(num_envs, device=device)
+
+        # Maska: True pokud je actual_stage v seznamu [0, 5]
+        # Vytvoříme tensor aktivních stage pro porovnání
+        active_stages_tensor = torch.tensor(self.active_stages, device=device)
+        # isin vrátí True tam, kde je actual_stage přítomen v active_stages
+        stage_mask = torch.isin(self.actual_stage, active_stages_tensor)
+
+        if not stage_mask.any():
+            return torch.zeros(num_envs, device=device)
+
+        # 2. Inicializace (pouze poprvé)
+        if self.upper_body_indices is None:
+            self.upper_body_indices = []
+            resting_vals = []
+            upper_keywords = ["waist", "shoulder", "elbow", "wrist"]
+
+            for i, name in enumerate(robot.joint_names):
+                is_upper = any(k in name for k in upper_keywords)
+                is_finger = "hand" in name or "finger" in name
+
+                if is_upper and not is_finger:
+                    self.upper_body_indices.append(i)
+                    # Načtení klidové pozice
+                    val = 0.0
+                    if hasattr(self, 'initial_pos') and name in self.initial_pos:
+                        val = self.initial_pos[name]
+                    resting_vals.append(val)
+
+            self.upper_body_indices = torch.tensor(self.upper_body_indices, device=device, dtype=torch.long)
+            self.q_resting_tensor = torch.tensor(resting_vals, device=device).unsqueeze(0)
+
+        if len(self.upper_body_indices) == 0:
+            return torch.zeros(num_envs, device=device)
+
+        # 3. Výpočet odchylky
+        q_upper = joint_pos[:, self.upper_body_indices]
+        deviation = torch.sum(torch.abs(q_upper - self.q_resting_tensor), dim=-1)
+
+        # 4. Aplikace masky (vynulovat penalizaci pro neaktivní stage)
+        return deviation * stage_mask.float()
+#TODO zkontrolovat
+class FaceDoorReward(HumanoidBaseReward):
+    """
+    Face door: Penalizace za špatnou orientaci (Yaw) vůči dveřím.
+    Aktivní ve Stages: 0, 1, 2, 5.
+
+    Interpretace: Robot musí srovnat své natočení (Yaw) s natočením rámu dveří.
+    To zajistí, že ve Stage 0 jde kolmo ke dveřím a ve Stage 5 pokračuje rovně skrz ně
+    (neotáčí se zpět na dveře).
+
+    Formula: |wrap_pi( ||axis-angle(R_door)||_2 )|
+    Weight: -1.0
+    """
+    def __init__(self, robot_name="g1_with_hands"):
+        super().__init__(robot_name)
+        # Stages: 0-2 (příchod, úchop) a 5 (průchod)
+        self.active_stages = [0, 1, 2, 5]
+
+    def _wrap_to_pi(self, angle):
+        """Převede úhel do intervalu [-pi, pi]."""
+        return (angle + torch.pi) % (2 * torch.pi) - torch.pi
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        robot = states.robots[robot_name]
+        door = states.objects["door"]
+        device = robot.joint_pos.device
+        num_envs = robot.joint_pos.shape[0]
+
+        # 1. Kontrola Stage
+        if self.actual_stage is None:
+            return torch.zeros(num_envs, device=device)
+
+        active_stages_tensor = torch.tensor(self.active_stages, device=device)
+        stage_mask = torch.isin(self.actual_stage, active_stages_tensor)
+
+        if not stage_mask.any():
+            return torch.zeros(num_envs, device=device)
+
+        # 2. Získání Yaw (natočení) robota
+        # Root state: [pos(3), quat(4), ...]
+        q_r = robot.root_state[:, 3:7] # x, y, z, w
+        x, y, z, w = q_r[:, 0], q_r[:, 1], q_r[:, 2], q_r[:, 3]
+
+        # Vzorec pro Yaw z quaternionu
+        siny_cosp = 2 * (w * z + x * y)
+        cosy_cosp = 1 - 2 * (y * y + z * z)
+        robot_yaw = torch.atan2(siny_cosp, cosy_cosp)
+
+        # 3. Získání Yaw (natočení) dveří
+        # Předpokládáme, že "door" objekt reprezentuje rám (frame), který se nehýbe
+        q_d = door.root_state[:, 3:7]
+        xd, yd, zd, wd = q_d[:, 0], q_d[:, 1], q_d[:, 2], q_d[:, 3]
+
+        siny_cosp_d = 2 * (wd * zd + xd * yd)
+        cosy_cosp_d = 1 - 2 * (yd * yd + zd * zd)
+        door_yaw = torch.atan2(siny_cosp_d, cosy_cosp_d)
+
+        # POZNÁMKA: Zde záleží na tom, jak jsou dveře v simulaci otočeny.
+        # Pokud "forward" osa dveří směřuje tam, kam má robot jít, chceme rozdíl 0.
+        # Pokud dveře směřují "proti" robotovi, chtěli bychom rozdíl PI.
+        # Standardně v DoorMan (Stage 5 pass through) chceme, aby robot a dveře měli
+        # shodnou orientaci směru průchodu.
+
+        # 4. Výpočet chyby orientace (rozdíl úhlů)
+        yaw_error = self._wrap_to_pi(robot_yaw - door_yaw)
+
+        # Absolutní hodnota chyby
+        penalty = torch.abs(yaw_error)
+
+        # 5. Aplikace masky
+        return penalty * stage_mask.float()
+#-----------------------------------------STAGE 1-------------------------------------------------
+
 @configclass
 class DoorStandCfg(HumanoidTaskCfg):
     """Door task for humanoid robots."""
@@ -727,8 +926,8 @@ class DoorStandCfg(HumanoidTaskCfg):
     ]
     traj_filepath = "roboverse_data/trajs/humanoidbench/door/initial_state_v2.json"
     checker = _DoorManChecker()
-    reward_weights = [-1000.0, -0.01, 1.0,-5.0, -1.0, -1.0,-0.2, -0.1, -1.0, 1.0, 0.5,4.0]
-    function_index_success_save_time = 10 #TODO debilní řešení ale budiž to tak (potřeba opravit)
+    reward_weights = [-1000.0, -0.01, 1.0,-5.0, -1.0, -1.0,-0.2, -0.1, -1.0, 1.0, 0.5,4.0,5.0,-1.0,-1.0]
+    function_index_success_save_time = 10 #TODO hloupé řešení ale budiž to tak (potřeba opravit)
     reward_functions = [TerminationCfg(),
                         DeltaActionRateCfg(),
                         DoFVelocityAccelerationCfg(),
@@ -740,7 +939,10 @@ class DoorStandCfg(HumanoidTaskCfg):
                         UprightPenaltyCfg(),
                         StageProgressCfg(),
                         SuccessSaveTimeCfg(),
-                        TaskCompleted()
+                        TaskCompleted(),
+                        WalkToDoorReward(),
+                        UpperBodyDeviationReward(),
+                        FaceDoorReward()
                         ]
     def extra_spec(self):
         """This task does not require any extra observations."""

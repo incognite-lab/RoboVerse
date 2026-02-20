@@ -114,6 +114,47 @@ class HumanoidBaseReward:
         }
             self.actual_stage: torch.Tensor = None
             self.completed_stages: torch.Tensor = None
+        elif robot_name == "g1_slider":
+            self._stand_height = G1_STAND_HEAD_HEIGHT
+            self._stand_neck_height = G1_STAND_NECK_HEIGHT
+            self._crawl_height = G1_CRAWL_HEAD_HEIGHT
+            self.initial_pos = {  # = target angles [rad] when action = 0.0
+            "waist_yaw_joint": 0.0,
+            "waist_roll_joint": 0.0,
+            "waist_pitch_joint": 0.0,
+            "left_shoulder_pitch_joint": 0.0,
+            "left_shoulder_roll_joint": 0.0,
+            "left_shoulder_yaw_joint": 0.0,
+            "left_elbow_joint": 0.0,
+            "left_wrist_roll_joint": 0.0,
+            "left_wrist_pitch_joint": 0.0,
+            "left_wrist_yaw_joint": 0.0,
+            "right_shoulder_pitch_joint": 0.0,
+            "right_shoulder_roll_joint": 0.0,
+            "right_shoulder_yaw_joint": 0.0,
+            "right_elbow_joint": 0.0,
+            "right_wrist_roll_joint": 0.0,
+            "right_wrist_pitch_joint": 0.0,
+            "right_wrist_yaw_joint": 0.0,
+            # Left hand fingers
+            "left_hand_thumb_0_joint": 0.0,
+            "left_hand_thumb_1_joint": 0.0,
+            "left_hand_thumb_2_joint": 0.0,
+            "left_hand_middle_0_joint": 0.0,
+            "left_hand_middle_1_joint": 0.0,
+            "left_hand_index_0_joint": 0.0,
+            "left_hand_index_1_joint": 0.0,
+            # Right hand fingers
+            "right_hand_thumb_0_joint": 0.0,
+            "right_hand_thumb_1_joint": 0.0,
+            "right_hand_thumb_2_joint": 0.0,
+            "right_hand_middle_0_joint": 0.0,
+            "right_hand_middle_1_joint": 0.0,
+            "right_hand_index_0_joint": 0.0,
+            "right_hand_index_1_joint": 0.0,
+        }
+            self.actual_stage: torch.Tensor = None
+            self.completed_stages: torch.Tensor = None
         else:
             raise ValueError(f"Unknown robot {robot_name}")
 

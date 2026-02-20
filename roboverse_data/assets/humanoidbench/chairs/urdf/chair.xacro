@@ -1,0 +1,225 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="office_chair">
+
+  <xacro:property name="leg_length" value="0.35" />
+  <xacro:property name="wheel_radius" value="0.03" />
+  <xacro:property name="rod_height" value="0.3" />
+  <xacro:property name="seat_size" value="0.45" />
+  <xacro:property name="backrest_height" value="0.5" />
+  <xacro:property name="handle_radius" value="0.02" />
+  <xacro:property name="handle_width" value="0.5" />
+
+  <xacro:property name="slide_damping" value="10.0" /> <xacro:property name="slide_friction" value="5.0" /> <material name="black">
+    <color rgba="0.1 0.1 0.1 1"/>
+  </material>
+  <material name="grey">
+    <color rgba="0.5 0.5 0.5 1"/>
+  </material>
+  <material name="chrome">
+    <color rgba="0.8 0.8 0.9 1"/>
+  </material>
+  <material name="red_target">
+    <color rgba="1.0 0.0 0.0 1"/>
+  </material>
+
+  <xacro:macro name="default_inertial" params="mass">
+    <inertial>
+      <mass value="${mass}" />
+      <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1" />
+    </inertial>
+  </xacro:macro>
+
+  <link name="world"/>
+
+  <link name="slide_link_x">
+    <xacro:default_inertial mass="0.1"/>
+  </link>
+
+  <joint name="floor_slide_x" type="prismatic">
+    <parent link="world"/>
+    <child link="slide_link_x"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-5.0" upper="5.0" effort="1000" velocity="2.0"/>
+    <dynamics damping="${slide_damping}" friction="${slide_friction}"/>
+  </joint>
+
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <cylinder length="0.1" radius="0.08"/>
+      </geometry>
+      <material name="black"/>
+    </visual>
+    <collision>
+      <geometry>
+        <cylinder length="0.1" radius="0.08"/>
+      </geometry>
+    </collision>
+    <xacro:default_inertial mass="5.0"/>
+  </link>
+
+  <joint name="floor_slide_y" type="prismatic">
+    <parent link="slide_link_x"/>
+    <child link="base_link"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-5.0" upper="5.0" effort="1000" velocity="2.0"/>
+    <dynamics damping="${slide_damping}" friction="${slide_friction}"/>
+  </joint>
+
+  <xacro:macro name="chair_arm" params="index angle">
+    <link name="leg_${index}">
+      <visual>
+        <origin xyz="${leg_length/2} 0 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="${leg_length} 0.04 0.03"/>
+        </geometry>
+        <material name="black"/>
+      </visual>
+      <visual name="caster_wheel">
+        <origin xyz="${leg_length} 0 -0.05" rpy="1.5708 0 0"/>
+        <geometry>
+          <cylinder length="0.04" radius="${wheel_radius}"/>
+        </geometry>
+        <material name="grey"/>
+      </visual>
+      <collision>
+        <origin xyz="${leg_length/2} 0 -0.02" rpy="0 0 0"/>
+        <geometry>
+           <box size="${leg_length} 0.05 0.1"/>
+        </geometry>
+      </collision>
+      <xacro:default_inertial mass="0.5"/>
+    </link>
+
+    <joint name="base_to_leg_${index}" type="fixed">
+      <parent link="base_link"/>
+      <child link="leg_${index}"/>
+      <origin xyz="0 0 0" rpy="0 0 ${angle}"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:chair_arm index="1" angle="0" />
+  <xacro:chair_arm index="2" angle="1.2566" />
+  <xacro:chair_arm index="3" angle="2.5132" />
+  <xacro:chair_arm index="4" angle="3.7699" />
+  <xacro:chair_arm index="5" angle="5.0265" />
+
+  <link name="rod_link">
+    <visual>
+      <origin xyz="0 0 ${rod_height/2}" rpy="0 0 0"/>
+      <geometry>
+        <cylinder length="${rod_height}" radius="0.04"/>
+      </geometry>
+      <material name="chrome"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 ${rod_height/2}" rpy="0 0 0"/>
+      <geometry>
+        <cylinder length="${rod_height}" radius="0.04"/>
+      </geometry>
+    </collision>
+    <xacro:default_inertial mass="2.0"/>
+  </link>
+
+  <joint name="seat_swivel" type="continuous">
+    <parent link="base_link"/>
+    <child link="rod_link"/>
+    <origin xyz="0 0 0.05" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <dynamics damping="1.0" friction="0.5"/>
+  </joint>
+
+  <link name="seat_surface_link">
+    <visual>
+      <geometry>
+        <box size="${seat_size} ${seat_size} 0.05"/>
+      </geometry>
+      <material name="grey"/>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="${seat_size} ${seat_size} 0.05"/>
+      </geometry>
+    </collision>
+    <xacro:default_inertial mass="3.0"/>
+  </link>
+
+  <joint name="rod_to_seat" type="fixed">
+    <parent link="rod_link"/>
+    <child link="seat_surface_link"/>
+    <origin xyz="0 0 ${rod_height}" rpy="0 0 0"/>
+  </joint>
+
+  <link name="backrest_link">
+    <visual>
+      <origin xyz="0 0 ${backrest_height/2}" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.05 ${seat_size} ${backrest_height}"/>
+      </geometry>
+      <material name="grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 ${backrest_height/2}" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.05 ${seat_size} ${backrest_height}"/>
+      </geometry>
+    </collision>
+    <xacro:default_inertial mass="2.0"/>
+  </link>
+
+  <joint name="seat_to_backrest" type="fixed">
+    <parent link="seat_surface_link"/>
+    <child link="backrest_link"/>
+    <origin xyz="-${seat_size/2 - 0.025} 0 0.025" rpy="0 0 0"/>
+  </joint>
+
+  <link name="handle_link">
+    <visual>
+      <geometry>
+        <cylinder length="${handle_width}" radius="${handle_radius}"/>
+      </geometry>
+      <material name="black"/>
+    </visual>
+    <collision>
+      <geometry>
+        <cylinder length="${handle_width}" radius="${handle_radius}"/>
+      </geometry>
+    </collision>
+    <xacro:default_inertial mass="0.5"/>
+  </link>
+
+  <joint name="backrest_to_handle" type="fixed">
+    <parent link="backrest_link"/>
+    <child link="handle_link"/>
+    <origin xyz="0 0 ${backrest_height}" rpy="1.5708 0 0"/>
+  </joint>
+
+  <link name="target_left_link">
+    <visual>
+      <geometry>
+        <sphere radius="0.015"/> </geometry>
+      <material name="red_target"/>
+    </visual>
+    </link>
+
+  <joint name="handle_to_target_left" type="fixed">
+    <parent link="handle_link"/>
+    <child link="target_left_link"/>
+    <origin xyz="0 0 ${handle_width/2 - 0.05}" rpy="0 0 0"/>
+  </joint>
+
+  <link name="target_right_link">
+    <visual>
+      <geometry>
+        <sphere radius="0.015"/> </geometry>
+      <material name="red_target"/>
+    </visual>
+  </link>
+
+  <joint name="handle_to_target_right" type="fixed">
+    <parent link="handle_link"/>
+    <child link="target_right_link"/>
+    <origin xyz="0 0 -${handle_width/2 - 0.05}" rpy="0 0 0"/>
+  </joint>
+
+</robot>

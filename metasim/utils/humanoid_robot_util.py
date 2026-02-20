@@ -96,7 +96,9 @@ def door_angle_tensor(envstate, object_name: str):
     return envstate.objects[object_name].joint_pos[:, 0]
 def robot_position_tensor(envstate, robot_name: str):
     """Returns position of the robot."""
-    return envstate.robots[robot_name].root_state[:, 0:3]
+    base_link_idx = envstate.robots[robot_name].body_names.index("pelvis")
+
+    return envstate.robots[robot_name].body_state[:, base_link_idx, 0:3]
 
 
 def object_position(envstate, object_name: str):

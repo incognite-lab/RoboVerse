@@ -35,16 +35,36 @@ def _add_object(env: "EmptyEnv", obj: BaseObjCfg) -> None:
     prim_path = f"/World/envs/env_.*/{obj.name}"
 
     ## Articulation object
+    # if isinstance(obj, ArticulationObjCfg):
+    #     env.scene.articulations[obj.name] = Articulation(
+    #         ArticulationCfg(
+    #             prim_path=prim_path,
+    #             spawn=sim_utils.UsdFileCfg(usd_path=obj.usd_path, scale=obj.scale),
+    #             actuators={},
+    #         )
+    #     )
+    #     return
+    ## Articulation object
     if isinstance(obj, ArticulationObjCfg):
-        env.scene.articulations[obj.name] = Articulation(
-            ArticulationCfg(
-                prim_path=prim_path,
-                spawn=sim_utils.UsdFileCfg(usd_path=obj.usd_path, scale=obj.scale),
-                actuators={},
-            )
-        )
-        return
+        from isaaclab.assets import ArticulationCfg
+        import isaaclab.sim as sim_utils
 
+        # Vytvoření konfigurace
+        cfg = ArticulationCfg(
+            prim_path=prim_path,  # <--- TENTO ŘÁDEK JE NEZBYTNÝ (chyběl)
+            spawn=sim_utils.UsdFileCfg(
+                usd_path=obj.usd_path,
+                scale=obj.scale,
+                articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+                    fix_root_link=obj.fix_base_link
+                ),
+            ),
+            actuators={},
+        )
+
+        # Vytvoření objektu ze správné konfigurace
+        env.scene.articulations[obj.name] = Articulation(cfg)
+        return
     if obj.fix_base_link:
         rigid_props = sim_utils.RigidBodyPropertiesCfg(disable_gravity=True, kinematic_enabled=True)
     else:

@@ -86,8 +86,9 @@ def main():
         #config_name = "g1_stand_train"
         #config_name = "g1_walk_new_eval"
         #config_name = "g1_door_IK"
-        config_name = "g1_door_open_stand_train"
+        #config_name = "g1_door_open_stand_train"
         #config_name = "g1_door_stand_IK"
+        config_name = "g1_ChairMan"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
     elif len(sys.argv) == 2:
@@ -141,6 +142,11 @@ def main():
     elif config.get("task") == "door_stand":
         from SB3_door_stand_env import StableBaseline3VecEnv
         scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
+    elif config.get("task") == "chairman":
+        from SB3_chairman_env import StableBaseline3VecEnv
+        if scenario.robots[0].fix_base_link == False:
+            scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
+            scenario.robots[0].fix_base_link = False
 
 
 
@@ -386,7 +392,7 @@ def main():
         log.info(f"Evaluation complete. Plots saved to {model_dir}")
         quit()
 
-    elif config.get("train_or_eval") == "video_eval":
+    elif config.get("train_or_eval") == "eval_video":
         metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
         env = StableBaseline3VecEnv(metasim_env)
         #TODO fix numpy module issue when loading model only for cluster training

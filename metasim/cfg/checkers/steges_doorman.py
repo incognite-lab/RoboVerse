@@ -51,8 +51,10 @@ PASS_THROUGH_DOOR_X_THRESHOLD = 1.0 #STAGE 5
 #-----------------------------------------------
 #Define params for snapshots
 #-----------------------------------------------
-SNAPSHOT_DIR = Path("config_run/snapshots/")
+SNAPSHOT_DIR = Path("config_run/snapshots_door/")
 MAX_SNAPSHOTS = 5
+NAME_OF_THE_OBJECT = "door"
+
 
 
 
@@ -108,8 +110,9 @@ def stege0_chacker(states:list[EnvState], handler:BaseSimHandler, env: int) -> t
     """
     terminated = common_doorman_checker(states, handler, env)
     robot_pos = robot_position_tensor(states, handler.robot.name)[env]
-    door_pos = states.objects["door"].body_state[env,0,:3]
-    distance_x = (robot_pos[0] - door_pos[0])
+    #base_link_idx = states.objects[NAME_OF_THE_OBJECT].body_names.index("base_link")
+    door_pos = states.objects[NAME_OF_THE_OBJECT].body_state[env,0,:3]
+    distance_x = torch.abs(robot_pos[0] - door_pos[0])
     distance_y = torch.abs(robot_pos[1] - door_pos[1])
 
     if not terminated and distance_x >= DISTANCE_TO_DOOR_X_THRESHOLD and distance_y < DISTANCE_TO_DOOR_Y_THRESHOLD:

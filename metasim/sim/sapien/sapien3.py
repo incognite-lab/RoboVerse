@@ -653,17 +653,18 @@ class Sapien3Handler(BaseSimHandler):
 
     def refresh_render(self):
         robot_inst = self.object_ids[self.robot.name]
-        assert isinstance(robot_inst, sapien_core.physx.PhysxArticulation)
-        # reset joint forces
-        robot_inst.set_qf(np.zeros(robot_inst.dof))
+        for name, obj in self.object_ids.items():
+            if isinstance(self.object_dict[name], ArticulationObjCfg):
 
-        # reset joint velocities
-        robot_inst.set_qvel(np.zeros(robot_inst.dof))
+                # reset joint forces
+                obj.set_qf(np.zeros(obj.dof))
 
-        # reset root velocity (linear and angular)
-        robot_inst.set_root_linear_velocity(np.zeros(3))
-        robot_inst.set_root_angular_velocity(np.zeros(3))
+                # reset joint velocities
+                obj.set_qvel(np.zeros(obj.dof))
 
+                # reset root velocity (linear and angular)
+                obj.set_root_linear_velocity(np.zeros(3))
+                obj.set_root_angular_velocity(np.zeros(3))
 
 
         self.scene.update_render()

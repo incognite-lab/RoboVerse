@@ -1,5 +1,6 @@
 # ruff: noqa: F401
 from .g1_cfg_with_hands_simply import G1WithHandsSimpleCfg
+from .g1_cfg_with_hands_slider import G1SliderCfg
 from .allegrohand_cfg import AllegroHandCfg
 from .ant_cfg import AntCfg
 from .anymal_cfg import AnymalCfg

@@ -40,8 +40,8 @@ class Args:
     sim: Literal["isaaclab", "isaacgym", "genesis", "pybullet", "sapien2", "sapien3", "mujoco"] = "isaaclab"
 
     ## Others
-    num_envs: int = 1
-    headless: bool = False
+    num_envs: int = 10
+    headless: bool = True
 
     def __post_init__(self):
         """Post-initialization configuration."""
@@ -58,10 +58,9 @@ scenario = ScenarioCfg(
     headless=args.headless,
     num_envs=args.num_envs,
 )
-
 # add cameras
 scenario.cameras = [PinholeCameraCfg(width=1024, height=1024, pos=(1.5, -1.5, 1.5), look_at=(0.0, 0.0, 0.0))]
-
+scenario.robots[0].fix_base_link = False
 # add objects
 scenario.objects = [
     PrimitiveCubeCfg(
@@ -120,21 +119,58 @@ init_states = [
             },
         },
         "robots": {
-            "franka": {
-                "pos": torch.tensor([0.0, 0.0, 0.0]),
-                "rot": torch.tensor([1.0, 0.0, 0.0, 0.0]),
+            "g1_with_hands": {
+                "pos" : torch.tensor([-1.0,0.0,0.8]),
+                "rot" : torch.tensor([1.0,0.0,0.0,0.0]),
                 "dof_pos": {
-                    "panda_joint1": 0.0,
-                    "panda_joint2": -0.785398,
-                    "panda_joint3": 0.0,
-                    "panda_joint4": -2.356194,
-                    "panda_joint5": 0.0,
-                    "panda_joint6": 1.570796,
-                    "panda_joint7": 0.785398,
-                    "panda_finger_joint1": 0.04,
-                    "panda_finger_joint2": 0.04,
-                },
-            },
+                    "left_hip_pitch_joint": 0.0,
+                    "left_hip_roll_joint": 0.0,
+                    "left_hip_yaw_joint": 0.0,
+                    "left_knee_joint": 0.0,
+                    "left_ankle_pitch_joint": 0.0,
+                    "left_ankle_roll_joint": 0.0,
+                    "right_hip_pitch_joint": 0.0,
+                    "right_hip_roll_joint": 0.0,
+                    "right_hip_yaw_joint": 0.0,
+                    "right_knee_joint": 0.0,
+                    "right_ankle_pitch_joint": 0.0,
+                    "right_ankle_roll_joint": 0.0,
+                    "waist_yaw_joint": 0.0,
+                    "waist_roll_joint": 0.0,
+                    "waist_pitch_joint": 0.0,
+                    "left_shoulder_pitch_joint": 0.0,
+                    "left_shoulder_roll_joint": 0.0,
+                    "left_shoulder_yaw_joint": 0.0,
+                    "left_elbow_joint": 1.0,
+                    "left_wrist_roll_joint": 0.0,
+                    "left_wrist_pitch_joint": 0.0,
+                    "left_wrist_yaw_joint": 0.0,
+                    "right_shoulder_pitch_joint": 0.0,
+                    "right_shoulder_roll_joint": 0.0,
+                    "right_shoulder_yaw_joint": 0.0,
+                    "right_elbow_joint": 1.0,
+                    "right_wrist_roll_joint": 0.0,
+                    "right_wrist_pitch_joint": 0.0,
+                    "right_wrist_yaw_joint": 0.0,
+                    # Left hand fingers
+                    "left_hand_thumb_0_joint": 0.0,
+                    "left_hand_thumb_1_joint": 0.0,
+                    "left_hand_thumb_2_joint": 0.0,
+                    "left_hand_middle_0_joint": 0.0,
+                    "left_hand_middle_1_joint": 0.0,
+                    "left_hand_index_0_joint": 0.0,
+                    "left_hand_index_1_joint": 0.0,
+                    # Right hand fingers
+                    "right_hand_thumb_0_joint": 0.0,
+                    "right_hand_thumb_1_joint": 0.0,
+                    "right_hand_thumb_2_joint": 0.0,
+                    "right_hand_middle_0_joint": 0.0,
+                    "right_hand_middle_1_joint": 0.0,
+                    "right_hand_index_0_joint": 0.0,
+                    "right_hand_index_1_joint": 0.0,
+
+                }
+            }
         },
     }
 ]
