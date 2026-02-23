@@ -858,6 +858,9 @@ class GraspForceReward(HumanoidBaseReward):
         # Cílová síla pro KAŽDÝ prst zvlášť.
         # Pokud je threshold 1.0, znamená to, že každý prst musí tlačit alespoň silou 1N.
         self.force_threshold = 1.0
+        # Cached GPU tensors
+        self.base_idx_to_finger_cat = None
+        self.chair_ids = None
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -940,7 +943,7 @@ WALK_TO_CHAIR_REWARD_WEIGHT = 5.0
 FACE_CHAIR_REWARD_WEIGHT = -1.0
 REACH_CHAIR_REWARD_WEIGHT = 6.0
 REACH_ORIENTATION_REWARD_WEIGHT = 3.0
-STAND_STILL_PENALTY_WEIGHT = -1.0
+STAND_STILL_PENALTY_WEIGHT = -6.0
 OPEN_GRASP_REWARD_WEIGHT = 1.5
 CLOSE_GRASP_REWARD_WEIGHT = 3.0
 FORCE_GRASP_REWARD_WEIGHT = 3.0

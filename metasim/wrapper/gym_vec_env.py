@@ -17,7 +17,7 @@ from metasim.constants import SimType
 from metasim.sim import BaseSimHandler, EnvWrapper
 from metasim.utils.demo_util import get_traj
 from metasim.utils.setup_util import get_sim_env_class
-
+import time
 
 class MetaSimVecEnv(VectorEnv):
     """Vectorized environment for MetaSim that supports parallel RL training."""
@@ -65,7 +65,10 @@ class MetaSimVecEnv(VectorEnv):
         """Take a step in the environment."""
         _, _, success, timeout, _ = self.env.step(actions)
         obs = self.unwrapped._get_obs()
+        tic = time.time()
         rewards = self.unwrapped._calculate_rewards()
+        toc = time.time()
+        print(f"Time taken to calculate rewards: {toc - tic:.4f}s")
         return obs, rewards, success, timeout, {}
 
     def render(self):

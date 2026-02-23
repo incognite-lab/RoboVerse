@@ -860,7 +860,7 @@ class _ChairManChecker(BaseChecker):
     #     idx = handler.task.function_index_success_save_time #TODO součást debilního řešení potřeba předělat
     #     handler.task.reward_functions[idx].reset_steps(env)
 
-    def check(self, handler: BaseSimHandler) -> torch.BoolTensor:
+    def check1(self, handler: BaseSimHandler) -> torch.BoolTensor:
         from metasim.utils.humanoid_robot_util import robot_position
         from metasim.utils.humanoid_robot_util import right_palm_orientation
         from metasim.utils.humanoid_robot_util import right_palm_position
@@ -939,7 +939,72 @@ class _ChairManChecker(BaseChecker):
             elif stage == 6:
                 terminated[env] = True
         return terminated
+    def check(self, handler: BaseSimHandler) -> torch.BoolTensor:
+        from metasim.cfg.checkers.stages_chairman import (
+            stege0_chacker, stege1_chacker, stege2_chacker,
+            stege3_chacker, stege4_chacker, stege5_chacker,
+            save_snapshot_chairman
+        )
+        import random
+        SAVE_PROBABILITY = 0.3
 
+        states = handler.get_states()
+
+        # Získáme tenzor se všemi aktuálními stages [num_envs]
+        stages = handler.task.reward_functions[0].actual_stage
+
+        # --- 1. VYTVOŘENÍ MASEK ---
+        mask_0 = (stages == 0)
+        mask_1 = (stages == 1)
+        mask_2 = (stages == 2)
+        mask_3 = (stages == 3)
+        mask_4 = (stages == 4)
+        mask_5 = (stages == 5)
+        mask_6 = (stages == 6)
+
+        # --- 2. HROMADNÝ VÝPOČET PRO KAŽDOU STAGE ---
+        # Každá funkce vrátí (terminated, success) pouze pro envs z dané masky
+        term_0, succ_0 = stege0_chacker(states, handler, mask_0)
+        term_1, succ_1 = stege1_chacker(states, handler, mask_1)
+        term_2, succ_2 = stege2_chacker(states, handler, mask_2)
+        term_3, succ_3 = stege3_chacker(states, handler, mask_3)
+        term_4, succ_4 = stege4_chacker(states, handler, mask_4)
+        term_5, succ_5 = stege5_chacker(states, handler, mask_5)
+
+        # --- 3. SPOJENÍ VÝSLEDKŮ ---
+        # Pomocí operátoru logického NEBO (|) sjednotíme všechny masky
+        all_terminated = term_0 | term_1 | term_2 | term_3 | term_4 | term_5 | mask_6
+        all_success = succ_0 | succ_1 | succ_2 | succ_3 | succ_4 | succ_5
+
+        # --- 4. ZPRACOVÁNÍ ÚSPĚCHŮ (Aplikováno plošně tenzorově) ---
+        # Zvýšíme stage všem, kteří měli success
+        handler.task.reward_functions[0].actual_stage[all_success] += 1
+        handler.task.reward_functions[0].completed_stages[all_success] = 1
+
+        # Pokud někdo splnil stage, nepovažujeme to za "Failed termination",
+        # kód pojede dál v další stage. Terminaci mu tedy zrušíme.
+        all_terminated[all_success] = False
+
+        # --- 5. UKLÁDÁNÍ SNAPSHOTŮ (Pouze pro těch pár, co zrovna uspěly) ---
+        # Tady použijeme for cyklus POUZE na těch pár konkrétních envs, které zrovna dokončily stage.
+        # .nonzero() nám vrátí jen ty indexy, kde je True.
+
+        successful_env_indices = all_success.nonzero(as_tuple=False).squeeze(-1)
+        for env_tensor in successful_env_indices:
+            env_idx = env_tensor.item()
+
+            # Získáme NOVOU stage, do které se právě dostal (protože jsme ji o pár řádků výše zvedli +1)
+            new_stage = handler.task.reward_functions[0].actual_stage[env_idx].item()
+
+            # Print pro info (pokud se dostal do cíle)
+            if new_stage == 6:
+                print(f"Env {env_idx} finished the door task!")
+
+            # Náhodné ukládání snapshotu pro danou stage
+            if new_stage <= 5 and random.random() < SAVE_PROBABILITY:
+                save_snapshot_chairman(handler, env_idx, new_stage)
+
+        return all_terminated
     def reset(self, handler: BaseSimHandler, env_ids: list[int] | None = None):
         """
         RESET

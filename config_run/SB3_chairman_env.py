@@ -31,12 +31,46 @@ class StableBaseline3VecEnv(VecEnv):
             shape=(len(joint_limits),),
             dtype=np.float32,
         )
-
+        robot_name = env.scenario.robots[0].name
 
         num_joints = len(joint_limits)
+
         states = env.env.handler.get_states()
-        robot_name = env.scenario.robots[0].name
-        num_robot_bodies = states.robots[robot_name].body_state.shape[1]
+        self.main_robot_link_names = [
+                                "left_endeffector",
+                                "endeffector",
+                                "torso_link",
+                                "pelvis",
+                                'left_shoulder_pitch_link',
+                                'left_shoulder_roll_link',
+                                'left_shoulder_yaw_link',
+                                'left_elbow_link',
+                                'left_wrist_roll_link',
+                                'left_wrist_pitch_link',
+                                'left_wrist_yaw_link',
+                                 'right_shoulder_pitch_link',
+                                 'right_shoulder_roll_link',
+                                 'right_shoulder_yaw_link',
+                                 'right_elbow_link',
+                                 'right_wrist_roll_link',
+                                 'right_wrist_pitch_link',
+                                 'right_wrist_yaw_link',
+                                 'left_hand_thumb_0_link',
+                                 'left_hand_middle_0_link',
+                                 'left_hand_index_0_link',
+                                 'right_hand_thumb_0_link',
+                                 'right_hand_middle_0_link',
+                                 'right_hand_index_0_link',
+                                 'left_hand_thumb_1_link',
+                                 'left_hand_thumb_2_link',
+                                 'left_hand_middle_1_link',
+                                 'right_hand_thumb_1_link',
+                                 'right_hand_thumb_2_link',
+                                 'right_hand_middle_1_link'
+                                 ]
+        self.indexes = [states.robots[robot_name].body_names.index(link) for link in self.main_robot_link_names]
+
+        num_robot_bodies = len(self.main_robot_link_names)  # pozice (3) + orientace (4) pro každý link
         obs_shape = num_joints + (num_robot_bodies * 7) + 7 + 7
 
         self.observation_space = spaces.Box(
@@ -58,11 +92,11 @@ class StableBaseline3VecEnv(VecEnv):
         robot_name = self.env.scenario.robots[0].name
         chair = states.objects["chair"]
 
-        # 1. VŠECHNY body_states robota
+        # 1. vybrané body_states robota
         # Vybere pozici a orientaci (prvních 7 hodnot) pro všechny linky.
         # Shape: (num_envs, num_bodies, 7) -> po reshape: (num_envs, num_bodies * 7)
-        robot_body_states = states.robots[robot_name].body_state[:, :, :7].reshape(self.num_envs, -1).cpu().numpy()
 
+        robot_body_states = states.robots[robot_name].body_state[:, self.indexes, :7].reshape(self.num_envs, -1).cpu().numpy()
         # 2. Získání indexů a stavů pro cílové body na židli
         target_left_idx = chair.body_names.index("target_hand_left")
         target_right_idx = chair.body_names.index("target_hand_right")
@@ -99,16 +133,24 @@ class StableBaseline3VecEnv(VecEnv):
 
     def step_async(self, actions: np.ndarray) -> None:
         """Asynchronously step the environment."""
-        self.action_dicts = [
-            {
-                self.env.scenario.robots[0].name: {
-                    "dof_pos_target": dict(zip(self.env.scenario.robots[0].joint_limits.keys(), action))
-                    #"dof_pos_target": self.env.scenario.robots[0].default_joint_positions
 
+        # --- RYCHLÁ CESTA PRO GENESIS ---
+        if self.env.scenario.sim == 'genesis':
+            # Akce si uložíme rovnou jako numpy array, žádné slovníky!
+            self.raw_actions = actions
+            self.action_dicts = None
+
+        # --- POMALÁ CESTA PRO OSTATNÍ SIMULÁTORY ---
+        else:
+            self.raw_actions = None
+            self.action_dicts = [
+                {
+                    self.env.scenario.robots[0].name: {
+                        "dof_pos_target": dict(zip(self.env.scenario.robots[0].joint_limits.keys(), action))
+                    }
                 }
-            }
-            for action in actions
-        ]
+                for action in actions
+            ]
     def step_wait(self):
         """Wait for the step to complete."""
         #------------------------------------
@@ -126,7 +168,13 @@ class StableBaseline3VecEnv(VecEnv):
         #     obs, rewards, unsuccess, timeout, _ = self.env.step(self.debug2())
         #end debug
 
-        obs, rewards, unsuccess, timeout, _ = self.env.step(self.action_dicts)
+        if self.env.scenario.sim == 'genesis' and self.raw_actions is not None:
+            actions_to_pass = self.raw_actions
+        else:
+            actions_to_pass = self.action_dicts
+
+        # Provedení kroku s vybraným formátem akcí
+        obs, rewards, unsuccess, timeout, _ = self.env.step(actions_to_pass)
         obs = obs.cpu().numpy()
         obs = self.add_extra_to_obs(obs)
         #obs = self._combine_obs(obs)
