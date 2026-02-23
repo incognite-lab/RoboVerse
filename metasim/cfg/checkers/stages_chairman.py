@@ -276,7 +276,7 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
             # Pokud chybí např. stage 2, nemá smysl hledat stage 3 (curriculum je postupné)
             break
 
-    print(f"DEBUG: Max available stage found: {max_available_stage}")
+    #print(f"DEBUG: Max available stage found: {max_available_stage}")
 
     # --- KROK 2: Resetování jednotlivých prostředí ---
     for env in env_ids:
@@ -288,7 +288,7 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
             handler.task.reward_functions[i].actual_stage[env] = new_stage
             handler.task.reward_functions[i].completed_stages[env] = 0
 
-        print(f"Resetting env {env} to stage {new_stage} (Max avail: {max_available_stage})")
+        #print(f"Resetting env {env} to stage {new_stage} (Max avail: {max_available_stage})")
 
         state = None
 
