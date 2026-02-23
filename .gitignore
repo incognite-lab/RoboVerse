@@ -11,6 +11,7 @@ wandb/
 GSNet
 config_run/output/
 my_env/output/
+config_run/snapshots_chair/
 deploy
 debug/
 roboverse_demo/

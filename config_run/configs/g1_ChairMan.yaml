@@ -54,16 +54,17 @@ tensorboard_log: ./config_run/output/tensorboard
 
 # PPO parameters
 #-------------------------------------------
-net_arch: [128, 128, 128]
+net_arch_pivf: true
+net_arch_pi: [512, 256, 128]  # Větší síť, humanoid má 30+ kloubů
+net_arch_vf: [512, 256, 128]
 
-learning_rate: 0.0003
-n_steps: 128
-batch_size: 256
-n_epochs: 4
-gamma: 0.99
-gae_lambda: 0.95
-clip_range: 0.2
-ent_coef: 0.01
-vf_coef: 0.5
-max_grad_norm: 0.5
-ent_coef: 0.01
+learning_rate: 0.0005     # Mírně vyšší LR díky obrovskému batch size (běžně 3e-4 až 1e-3)
+n_steps: 32               # Kratší rollouty (častější updaty sítě). Pro 9k envs stačí bohatě 32 nebo 64
+batch_size: 72000         # MASIVNÍ batch size. (Vzorec: num_envs * n_steps / počet_minibatchů -> 9000*32 / 4)
+n_epochs: 5               # Počet průchodů bufferem (standard v RSL_RL je 4 nebo 5)
+gamma: 0.99               # Klasika, optimální pro běžný horizon
+gae_lambda: 0.95          # Klasika
+clip_range: 0.2           # Klasika
+ent_coef: 0.001           # Lehká entropie (0.01 - 0.001) pro podporu explorace u těžkých úloh, aby robot "neztuhl"
+vf_coef: 1.0              # Default je 0.5, ale u složitých odměn (stage) pomáhá 1.0 lépe predikovat Value funkci
+max_grad_norm: 1.0

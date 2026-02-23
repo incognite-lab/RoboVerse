@@ -32,7 +32,7 @@ POS_THRESHOLD = 0.3
 ORI_DOT_PRODUCT_THRESHOLD = 0.9
 
 SNAPSHOT_DIR = Path("config_run/snapshots_chair/")
-MAX_SNAPSHOTS = 1000
+MAX_SNAPSHOTS = 100
 
 # ---------------------------------------------------------
 # VEKTORIZOVANÉ POMOCNÉ FUNKCE

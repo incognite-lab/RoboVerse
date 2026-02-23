@@ -213,35 +213,33 @@ def main():
         model = PPO(
             "MlpPolicy",
             env,
-        #     verbose=1,
-        #     learning_rate=lr_schedule(float(config.get("learning_rate", 3e-4)), 1e-5),
-        #    # learning_rate=config.get("learning_rate", 3e-4),
-        #     n_steps=config.get("n_steps", 128),
-        #     batch_size=config.get("batch_size", 256),
-        #     n_epochs=config.get("n_epochs", 4),
-        #     gamma=config.get("gamma", 0.99),
-        #     gae_lambda=config.get("gae_lambda", 0.95),
-        #     clip_range=config.get("clip_range", 0.2),
-        #     ent_coef=config.get("ent_coef", 0.0),
-        #     vf_coef=config.get("vf_coef", 0.5),
-        #     max_grad_norm=config.get("max_grad_norm", 0.5),
-        #     tensorboard_log=config.get("tensorboard_log", "./ppo_tensorboard/"),
-        #     policy_kwargs=policy_kwargs,
-        #     device="cpu"#cuda" if torch.cuda.is_available() else "cpu",
+            verbose=1,
+            learning_rate=config.get("learning_rate", 3e-4),
+            n_steps=config.get("n_steps", 128),
+            batch_size=config.get("batch_size", 256),
+            n_epochs=config.get("n_epochs", 4),
+            gamma=config.get("gamma", 0.99),
+            gae_lambda=config.get("gae_lambda", 0.95),
+            clip_range=config.get("clip_range", 0.2),
+            ent_coef=config.get("ent_coef", 0.0),
+            vf_coef=config.get("vf_coef", 0.5),
+            max_grad_norm=config.get("max_grad_norm", 0.5),
+            tensorboard_log=config.get("tensorboard_log", "./ppo_tensorboard/"),
+            policy_kwargs=policy_kwargs,
         )
         model.learn(total_timesteps=config.get("total_timesteps", 1_000_000),
                     callback=[
                     SaveModelCallback(save_path=config.get("model_save_path"), save_freq=config.get("model_save_freq", 1_000_000),task_name=config.get("task")),
                     TensorboardMetricsCallback(log_dir=config.get("tensorboard_log", "./ppo_tensorboard/")),
-                    EvalCallback(
-                    eval_env=eval_env,
-                    eval_freq=config.get("eval_freq", 10_000_000),
-                    n_eval_episodes=config.get("n_eval_episodes", 5),
-                    log_dir=config.get("eval_log_dir", "./eval_logs"),
-                    save_best=True,
-                    best_model_dir=config.get("best_model_dir", "./best_models"),
-                    eval_max_steps=config.get("eval_max_steps", 1000)
-                        )
+                    # EvalCallback(
+                    # eval_env=eval_env,
+                    # eval_freq=config.get("eval_freq", 10_000_000),
+                    # n_eval_episodes=config.get("n_eval_episodes", 5),
+                    # log_dir=config.get("eval_log_dir", "./eval_logs"),
+                    # save_best=True,
+                    # best_model_dir=config.get("best_model_dir", "./best_models"),
+                    # eval_max_steps=config.get("eval_max_steps", 1000)
+                    #     )
                     ],
                     progress_bar=True,)
 
@@ -445,15 +443,15 @@ def main():
                     callback=[
                     SaveModelCallback(save_path=config.get("model_save_path"), save_freq=config.get("model_save_freq", 1_000_000),task_name=config.get("task")),
                     TensorboardMetricsCallback(log_dir=config.get("tensorboard_log", "./ppo_tensorboard/")),
-                    EvalCallback(
-                    eval_env=eval_env,
-                    eval_freq=config.get("eval_freq", 10_000_000),
-                    n_eval_episodes=config.get("n_eval_episodes", 5),
-                    log_dir=config.get("eval_log_dir", "./eval_logs"),
-                    save_best=True,
-                    best_model_dir=config.get("best_model_dir", "./best_models"),
-                    eval_max_steps=config.get("eval_max_steps", 1000)
-                        )
+                    # EvalCallback(
+                    # eval_env=eval_env,
+                    # eval_freq=config.get("eval_freq", 10_000_000),
+                    # n_eval_episodes=config.get("n_eval_episodes", 5),
+                    # log_dir=config.get("eval_log_dir", "./eval_logs"),
+                    # save_best=True,
+                    # best_model_dir=config.get("best_model_dir", "./best_models"),
+                    # eval_max_steps=config.get("eval_max_steps", 1000)
+                    #     )
                     ],
                     progress_bar=True,)
 
