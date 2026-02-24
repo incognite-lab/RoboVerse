@@ -369,7 +369,7 @@ class WalkToChairReward(HumanoidBaseReward):
 
         # Parametry brzdění
         self.stop_distance = 0.7  # Vzdálenost od středu židle, kde má robot mít rychlost 0 (odpovídá stage0 thresholdům)
-        self.braking_distance = 0.4  # Na jaké dráze začne robot zpomalovat z target_speed na 0
+        self.braking_distance = 0.5  # Na jaké dráze začne robot zpomalovat z target_speed na 0
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -643,7 +643,7 @@ class StandStillPenalty(HumanoidBaseReward):
     """
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
-        self.active_stages = [1, 2] # Active during pre-grasp and grasp
+        self.active_stages = [1, 2, 4] # Active during pre-grasp, grasp, and keep chair still
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -677,7 +677,7 @@ class OpenGraspReward(HumanoidBaseReward):
         self.sigma_pos = 0.3
         self.sigma_vel = 0.2
         self.target_angle = 0.0   # 0.0 je otevřená ruka pro vaše limity
-        self.active_stages = [1]  # Aktivní pouze v Pre-grasp fázi
+        self.active_stages = [1, 4]  # Aktivní pouze v Pre-grasp fázi
 
         # Cache pro indexy
         self.finger_indices = None
@@ -745,8 +745,6 @@ class OpenGraspReward(HumanoidBaseReward):
 
         return total_reward * stage_mask.float()
 #---------------------Stage 2----------------------
-#---------------------Stage 2----------------------
-
 class CloseGraspReward(HumanoidBaseReward):
     """
     Stage 2: Close Grasp Reward
@@ -757,7 +755,7 @@ class CloseGraspReward(HumanoidBaseReward):
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
         self.sigma_pos = 0.3
-        self.active_stages = [2]  # Aktivní pouze ve Stage 2
+        self.active_stages = [2,3]  # Aktivní pouze ve Stage 2 a stage 3
 
         # Cílové pozice prstů pro pevný úchop (z vaší předchozí konfigurace)
 
@@ -922,6 +920,137 @@ class GraspForceReward(HumanoidBaseReward):
         reward = torch.mean(finger_rewards, dim=1)
 
         return reward * stage_mask.float()
+#---------------------Stage 3----------------------
+class PullChairDistanceReward(HumanoidBaseReward):
+    """
+    Stage 3: Pull Chair Distance
+    Odměňuje robota za to, že se židle blíží k cílové pozici (1 metr dozadu).
+    Dense reward pomocí Gaussovy funkce.
+    """
+    def __init__(self, robot_name="g1_slider"):
+        super().__init__(robot_name)
+        self.active_stages = [3]
+        self.sigma = 0.4  # Tolerance
+
+        # Výchozí pozice židle je [0.75, 0.0, 0.1].
+        # O 1 metr dozadu v ose X to znamená [-0.25, 0.0, 0.1].
+        self.target_chair_pos = torch.tensor([-0.25, 0.0, 0.1])
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        robot = states.robots[robot_name]
+        chair = states.objects["chair"]
+        device = robot.joint_pos.device
+        num_envs = robot.joint_pos.shape[0]
+
+        if self.actual_stage is None: return torch.zeros(num_envs, device=device)
+        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        if not stage_mask.any(): return torch.zeros(num_envs, device=device)
+
+        chair_base_idx = chair.body_names.index("base_link")
+        chair_pos = chair.body_state[:, chair_base_idx, :3]
+
+        target_pos = self.target_chair_pos.to(device)
+
+        # Spočítáme chybu - jak daleko je židle od cíle
+        dist_sq = torch.sum(torch.square(chair_pos - target_pos), dim=-1)
+
+        # Gaussovská odměna
+        reward = torch.exp(-dist_sq / (2 * self.sigma**2))
+
+        return reward * stage_mask.float()
+class PullRobotVelocityReward(HumanoidBaseReward):
+    """
+    Stage 3: Pull Velocity & Smooth Braking
+    1. Motivuje robota couvat maximální rychlostí např. -0.5 m/s.
+    2. V posledních centimetrech před cílem (braking_distance) začne cílová rychlost plynule klesat k 0.
+    3. V cíli (target_distance) je cílová rychlost přesně 0.0 m/s.
+    """
+    def __init__(self, robot_name="g1_slider"):
+        super().__init__(robot_name)
+        self.active_stages = [3]
+        self.sigma = 0.3
+
+        self.pull_speed = 0.5          # Jak rychle má robot maximálně couvat (m/s)
+        self.target_distance = 1.0     # Cílová vzdálenost, kde už má stát
+        self.braking_distance = 0.4    # Posledních 30 cm před cílem začne plynule brzdit
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        robot = states.robots[robot_name]
+        chair = states.objects["chair"]
+        device = robot.joint_pos.device
+        num_envs = robot.joint_pos.shape[0]
+
+        if self.actual_stage is None: return torch.zeros(num_envs, device=device)
+        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        if not stage_mask.any(): return torch.zeros(num_envs, device=device)
+
+        # 1. Získání lineární rychlosti robota
+        base_idx = robot.body_names.index("pelvis")
+        root_vel = robot.body_state[:, base_idx, 7:10]
+
+        # 2. Získání vzdálenosti, o kterou se židle už posunula
+        chair_base_idx = chair.body_names.index("base_link")
+        chair_pos = chair.body_state[:, chair_base_idx, :3]
+        initial_chair_pos = torch.tensor([0.75, 0.0, 0.1], device=device)
+
+        moved_dist = torch.norm(chair_pos - initial_chair_pos, dim=-1)
+
+        # 3. VÝPOČET PLYNULÉHO BRZDĚNÍ
+        # Kolik metrů ještě zbývá do cíle?
+        dist_remaining = self.target_distance - moved_dist
+
+        # Vypočítáme faktor rychlosti od 0.0 do 1.0
+        # - Pokud zbývá více než 0.3m -> faktor je 1.0 (plná rychlost)
+        # - Pokud zbývá 0.15m -> faktor je 0.5 (poloviční rychlost)
+        # - Pokud už je v cíli (zbývá <= 0) -> faktor je 0.0 (stojí)
+        speed_factor = torch.clamp(dist_remaining / self.braking_distance, min=0.0, max=1.0)
+
+        # 4. Aplikace cílové rychlosti
+        target_vel = torch.zeros_like(root_vel)
+
+        # Osa X je u vás couvání (proto mínus). Rychlost škálujeme naším faktorem.
+        target_vel[:, 0] = -self.pull_speed * speed_factor
+
+        # 5. Výpočet Gaussovské odměny za sledování této dynamické rychlosti
+        vel_error_sq = torch.sum(torch.square(root_vel - target_vel), dim=-1)
+        reward = torch.exp(-vel_error_sq / (2 * self.sigma**2))
+
+        return reward * stage_mask.float()
+#---------------------Stage 4----------------------
+class KeepChairStillPenalty(HumanoidBaseReward):
+    """
+    Stage 4: Keep Chair Still
+    Penalizuje jakýkoliv pohyb židle (lineární i úhlovou rychlost).
+    Zajišťuje, že robot pustí židli jemně a neodhodí ji.
+    """
+    def __init__(self, robot_name="g1_slider"):
+        super().__init__(robot_name)
+        self.active_stages = [4]
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        robot = states.robots[robot_name]
+        chair = states.objects["chair"]
+        device = robot.joint_pos.device
+        num_envs = robot.joint_pos.shape[0]
+
+        if self.actual_stage is None: return torch.zeros(num_envs, device=device)
+        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        if not stage_mask.any(): return torch.zeros(num_envs, device=device)
+
+        # Rychlosti židle (root_state obsahuje pos[0:3], quat[3:7], lin_vel[7:10], ang_vel[10:13])
+        chair_lin_vel = chair.root_state[:, 7:10]
+        chair_ang_vel = chair.root_state[:, 10:13]
+
+        # Výpočet kvadratické odchylky od nuly (čím rychleji letí, tím větší trest)
+        lin_vel_sq = torch.sum(torch.square(chair_lin_vel), dim=-1)
+        ang_vel_sq = torch.sum(torch.square(chair_ang_vel), dim=-1)
+
+        # Sečteme penalty (úhlovou rychlost penalizujeme trochu méně,
+        # protože mírné zhoupnutí při puštění je fyzikálně přirozené)
+        total_penalty = lin_vel_sq + 0.5 * ang_vel_sq
+
+        return total_penalty * stage_mask.float()
+
 
 
 TERMINATION_WEIGHT = -1000.0
@@ -939,8 +1068,9 @@ STAND_STILL_PENALTY_WEIGHT = -6.0
 OPEN_GRASP_REWARD_WEIGHT = 1.5
 CLOSE_GRASP_REWARD_WEIGHT = 3.0
 FORCE_GRASP_REWARD_WEIGHT = 3.0
-
-
+PULL_CHAIR_DISTANCE_WEIGHT = 5.0
+PULL_ROBOT_VELOCITY_WEIGHT = 4.0
+KEEP_CHAIR_STILL_PENALTY_WEIGHT = -5.0
 @configclass
 class ChairmanCfg(HumanoidTaskCfg):
     """Chair task for humanoid robots."""
@@ -949,7 +1079,7 @@ class ChairmanCfg(HumanoidTaskCfg):
 
 
     success_bar = 0.9
-    episode_length = 400
+    episode_length = 800
     objects = [
         ArticulationObjCfg(
             name="chair",
@@ -977,7 +1107,9 @@ class ChairmanCfg(HumanoidTaskCfg):
         STAND_STILL_PENALTY_WEIGHT,
         OPEN_GRASP_REWARD_WEIGHT,
         CLOSE_GRASP_REWARD_WEIGHT,
-        FORCE_GRASP_REWARD_WEIGHT
+        FORCE_GRASP_REWARD_WEIGHT,
+        PULL_CHAIR_DISTANCE_WEIGHT,
+        PULL_ROBOT_VELOCITY_WEIGHT
     ]
     #function_index_success_save_time = 10 #TODO hloupé řešení ale budiž to tak (potřeba opravit)
     reward_functions = [TerminationCfg(),
@@ -994,7 +1126,10 @@ class ChairmanCfg(HumanoidTaskCfg):
                         StandStillPenalty(),
                         OpenGraspReward(),
                         CloseGraspReward(),
-                        GraspForceReward()
+                        GraspForceReward(),
+                        PullChairDistanceReward(),
+                        PullRobotVelocityReward(),
+                        KeepChairStillPenalty()
                         ]
     def extra_spec(self):
         """This task does not require any extra observations."""

@@ -58,7 +58,10 @@ class MetaSimVecEnv(VectorEnv):
         if env_ids is None:
             env_ids = list(range(self.num_envs))
         init_states = self.unwrapped._get_default_states(seed)
+        #tic = time.time()
         self.env.reset(states=init_states, env_ids=env_ids)
+        #toc = time.time()
+        #print(f"Reset took {toc - tic:.2f} seconds")
         return self.unwrapped._get_obs(), {}
 
     def step(self, actions: list[dict]):

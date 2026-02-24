@@ -7,8 +7,8 @@ robots: [g1_slider]
 fix_base_link: true
 task: chairman
 decimation: 5
-num_envs: 9
-headless: false
+num_envs: 8000
+headless: true
 add_table: true
 env_spacing: 4.0
 train_or_eval: train #eval_video
@@ -24,7 +24,7 @@ train_or_eval: train #eval_video
 #      type: PinholeCameraCfg
 #      params:
 #        name: camera0
-#        pos: (1.5, -1.5, 1.5)
+#        pos: (3.0, -3.0, 3.0)
 #        look_at: (0.0, 0.0, 0.0)
 #        width: 1024
 #        height: 1024
@@ -39,9 +39,10 @@ force: false
 #------------------------------------------
 #load_model_path: ./my_env/output/ppo_models/run_2025-10-16_13-59-07/model_80003072
 #load_model_path: ./config_run/output/ppo_model/run_2026-02-19_16_chairman/model_40000000
-load_model_path: ./config_run/output/ppo_model_cluster/run_2026-02-20_13_chairman/model_100020000
+load_model_path: ./config_run/output/ppo_model_cluster/run_2026-02-23_19_chairman/model_20016000
 video_save_path: ./config_run/output/eval_videos/chair_man.mp4
 eval_episodes: 300
+eval_max_steps: 500
 
 
 # PPO training settings

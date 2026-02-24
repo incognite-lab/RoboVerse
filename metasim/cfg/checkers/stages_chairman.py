@@ -31,6 +31,8 @@ CHAIR_OPEN_ANGLE_THRESHOLD = 1.57 # (Upraveno z DOOR na CHAIR podle vaseho kodu)
 PASS_THROUGH_CHAIR_X_THRESHOLD = 1.0
 POS_THRESHOLD = 0.3
 ORI_DOT_PRODUCT_THRESHOLD = 0.9
+CHAIR_PULL_DISTANCE_THRESHOLD = 1.0
+
 
 SNAPSHOT_DIR = Path("config_run/snapshots_chair/")
 MAX_SNAPSHOTS = 100
@@ -167,7 +169,73 @@ def get_batch_grasp_status(states: list[EnvState], handler: BaseSimHandler, forc
     success_right = torch.all(right_status, dim=1)
     return success_left & success_right
 
+def get_batch_any_grasp_status(states: list[EnvState], handler: BaseSimHandler, force_threshold: float, idx: torch.Tensor) -> torch.Tensor:
+    """Kontrola kontaktů (Stage 3+) - Stačí, když se židle drží alespoň JEDNÍM prstem na každé ruce."""
+    device = handler.device
+    num_active = len(idx)
 
+    contact_data = states.robots[handler.robot.name].contact
+    if contact_data is None:
+        return torch.zeros(num_active, dtype=torch.bool, device=device)
+
+    link_a = contact_data['link_a'][idx]
+    link_b = contact_data['link_b'][idx]
+    valid_mask = contact_data['valid_mask'][idx]
+
+    forces = contact_data.get('force_b', contact_data.get('force', None))
+    if forces is None:
+        forces = torch.zeros((*link_a.shape, 3), device=device)
+    else:
+        forces = forces[idx]
+
+    force_mags = torch.norm(forces, dim=-1)
+
+    finger_tips = {"thumb_2": 0, "index_1": 1, "middle_1": 2}
+    total_tips_per_hand = len(finger_tips)
+
+    global_map = states.extras.get("global_link_map", {})
+    num_bodies = states.extras.get("num_bodies_per_env", 1000)
+
+    idx_to_tip_left = torch.full((num_bodies,), -1, dtype=torch.long, device=device)
+    idx_to_tip_right = torch.full((num_bodies,), -1, dtype=torch.long, device=device)
+    chair_ids = []
+
+    for c_idx, (o_name, l_name) in global_map.items():
+        if o_name == handler.robot.name:
+            if "left" in l_name:
+                for tip, t_id in finger_tips.items():
+                    if tip in l_name: idx_to_tip_left[c_idx] = t_id
+            elif "right" in l_name:
+                for tip, t_id in finger_tips.items():
+                    if tip in l_name: idx_to_tip_right[c_idx] = t_id
+        elif o_name == "chair":
+            chair_ids.append(c_idx)
+
+    chair_ids = torch.tensor(chair_ids, device=device)
+
+    base_a = link_a % num_bodies
+    base_b = link_b % num_bodies
+
+    a_is_chair = torch.isin(base_a, chair_ids)
+    b_is_chair = torch.isin(base_b, chair_ids)
+
+    contact_base = torch.where(b_is_chair, base_a, torch.where(a_is_chair, base_b, torch.tensor(-1, device=device)))
+    valid_strong = valid_mask & (force_mags >= force_threshold) & (contact_base >= 0)
+
+    left_status = torch.zeros((num_active, total_tips_per_hand), dtype=torch.bool, device=device)
+    right_status = torch.zeros((num_active, total_tips_per_hand), dtype=torch.bool, device=device)
+
+    for t_id in range(total_tips_per_hand):
+        is_left_tip = (idx_to_tip_left[contact_base] == t_id)
+        left_status[:, t_id] = torch.any(valid_strong & is_left_tip, dim=1)
+        is_right_tip = (idx_to_tip_right[contact_base] == t_id)
+        right_status[:, t_id] = torch.any(valid_strong & is_right_tip, dim=1)
+
+    # ZMĚNA ZDE: any() místo all() - stačí jeden prst (True) v daném sloupci
+    success_left = torch.any(left_status, dim=1)
+    success_right = torch.any(right_status, dim=1)
+
+    return success_left & success_right
 # ---------------------------------------------------------
 # VEKTORIZOVANÉ CHECKERY S PŘED-MASKOVÁNÍM
 # ---------------------------------------------------------
@@ -287,16 +355,56 @@ def stege3_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     success = torch.zeros(num_envs, dtype=torch.bool, device=mask.device)
 
     idx = mask.nonzero(as_tuple=True)[0]
-    if idx.numel() == 0: return terminated, success
+    if idx.numel() == 0:
+        return terminated, success
 
+    # --- 1. Spadl robot? ---
     term_common = common_chairman_checker(states, handler, idx)
-    handle_angle = states.objects["chair"].joint_pos[idx, 0]
-    success_cond = torch.abs(handle_angle) > HANDLE_UNLOCK_ANGLE_THRESHOLD
 
-    terminated[idx] = term_common | success_cond
-    success[idx] = success_cond & (~term_common)
+    # --- 2. Kontrola Driftu (zda mu neujely ruce z madel) ---
+    right_ee_pos = right_palm_position(states, handler.robot.name, ee_name="endeffector")[idx]
+    left_ee_pos = right_palm_position(states, handler.robot.name, ee_name="left_endeffector")[idx]
+
+    chair = states.objects["chair"]
+    r_handle_pos = chair.body_state[idx, chair.body_names.index("target_hand_right"), :3]
+    l_handle_pos = chair.body_state[idx, chair.body_names.index("target_hand_left"), :3]
+
+    dist_right = torch.norm(right_ee_pos - r_handle_pos, dim=-1)
+    dist_left = torch.norm(left_ee_pos - l_handle_pos, dim=-1)
+
+    drift_fail = (dist_right > GRASP_DRIFT_THRESHOLD) | (dist_left > GRASP_DRIFT_THRESHOLD)
+
+    # --- 3. Kontrola úchopu (alespoň 1 prstem každé ruky) ---
+    has_any_grasp = get_batch_any_grasp_status(states, handler, GRASP_FORCE_THRESHOLD, idx)
+    grasp_fail = ~has_any_grasp
+
+    # --- 4. Kontrola posunu židle dozadu ---
+    chair_base_idx = chair.body_names.index("base_link")
+    chair_pos = chair.body_state[idx, chair_base_idx, :3]
+    initial_chair_pos = torch.tensor([0.75, 0.0, 0.1], device=chair_pos.device)
+
+    # Výpočet celkové euklidovské vzdálenosti, o kterou robot židli odtáhl od počátku
+    chair_moved_dist = torch.norm(chair_pos - initial_chair_pos, dim=-1)
+    chair_moved_enough = chair_moved_dist >= CHAIR_PULL_DISTANCE_THRESHOLD
+
+    # --- 5. Kontrola zastavení robota ---
+    base_link_idx = states.robots[handler.robot.name].body_names.index("pelvis")
+    robot_lin_vel = states.robots[handler.robot.name].body_state[idx, base_link_idx, 7:10]
+    vel_norm = torch.norm(robot_lin_vel, dim=-1)
+    standing_still = vel_norm < VELOCITY_THRESHOLD
+
+    # --- VYHODNOCENÍ ---
+    # Fail: pokud spadne, ujede mu ruka, nebo zcela ztratí kontakt prstů s židlí
+    fail_cond = term_common | drift_fail | grasp_fail
+
+    # Success: neselhal (ani nepustil židli), odtáhl židli dostatečně daleko a zastavil se
+    success_cond = (~fail_cond) & chair_moved_enough & standing_still
+
+    # Pokud selže, tak skončil epizodu. Pokud uspěje, taky ukončí checker, ale se sukcessem.
+    terminated[idx] = fail_cond | success_cond
+    success[idx] = success_cond
+
     return terminated, success
-
 def stege4_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.BoolTensor) -> tuple[torch.BoolTensor, torch.BoolTensor]:
     num_envs = mask.shape[0]
     terminated = torch.zeros(num_envs, dtype=torch.bool, device=mask.device)
@@ -305,12 +413,57 @@ def stege4_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     idx = mask.nonzero(as_tuple=True)[0]
     if idx.numel() == 0: return terminated, success
 
+    # --- 1. Kontrola pádu robota ---
     term_common = common_chairman_checker(states, handler, idx)
-    chair_angle = states.objects["chair"].joint_pos[idx, 1]
-    success_cond = torch.abs(chair_angle) >= CHAIR_OPEN_ANGLE_THRESHOLD
 
-    terminated[idx] = term_common | success_cond
-    success[idx] = success_cond & (~term_common)
+    # --- 2. Kontrola pohybu ŽIDLE (Nesmí se pohnout z NOVÉ pozice) ---
+    chair_base_idx = states.objects["chair"].body_names.index("base_link")
+    chair_pos = states.objects["chair"].body_state[idx, chair_base_idx, :3]
+    chair_lin_vel = states.objects["chair"].body_state[idx, chair_base_idx, 7:10]
+
+    # Cílová pozice ze Stage 3 (0.75 - 1.0 = -0.25)
+    target_chair_pos = torch.tensor([-0.25, 0.0, 0.1], device=mask.device)
+    chair_pos_diff = torch.norm(chair_pos - target_chair_pos, dim=-1)
+    chair_vel_norm = torch.norm(chair_lin_vel, dim=-1)
+
+    # Termination: Pokud židle ujela pryč z cíle, nebo do ní drbnul a získala rychlost
+    chair_moved = (chair_pos_diff > POS_THRESHOLD) | (chair_vel_norm > VELOCITY_THRESHOLD)
+
+    # --- 3. Kontrola pohybu ROBOTA (Nesmí se hýbat) ---
+    base_link_idx = states.robots[handler.robot.name].body_names.index("pelvis")
+    robot_lin_vel = states.robots[handler.robot.name].body_state[idx, base_link_idx, 7:10]
+    robot_vel_norm = torch.norm(robot_lin_vel, dim=-1)
+
+    # Termination: Pokud robot neudrží stabilitu a začne padat/couvat
+    robot_moved = robot_vel_norm > VELOCITY_THRESHOLD
+
+    # --- 4. Kontrola OTEVŘENÍ PRSTŮ ---
+    # Automaticky najdeme indexy všech prstů
+    joint_names = states.robots[handler.robot.name].joint_names
+    finger_keywords = ["thumb", "index", "middle"]
+    finger_indices = [i for i, name in enumerate(joint_names) if any(k in name for k in finger_keywords)]
+
+    # Získáme pozice prstů a zkontrolujeme, zda jsou blízko 0.0 (otevřeno)
+    q_fingers = states.robots[handler.robot.name].joint_pos[idx][:, finger_indices]
+
+    # max() vrátí tuple (values, indices), chceme jen values na indexu [0]
+    max_finger_angle = torch.max(torch.abs(q_fingers), dim=-1)[0]
+
+    # Úspěch: Nejvíce ohnutý prst musí být pod naším thresholdem (0.15)
+    FINGER_OPEN_THRESHOLD = 0.15
+    fingers_open = max_finger_angle < FINGER_OPEN_THRESHOLD
+
+    # --- VYHODNOCENÍ ---
+    # FAIL: Pokud robot spadne, pohne židlí, nebo sám ztratí rovnováhu a začne se hýbat
+    fail_cond = term_common | chair_moved | robot_moved
+
+    # SUCCESS: Neselhal (vše stojí na místě) A ZÁROVEŇ jsou prsty plně otevřené
+    success_cond = (~fail_cond) & fingers_open
+
+    # Ukončení a zápis výsledků
+    terminated[idx] = fail_cond | success_cond
+    success[idx] = success_cond
+
     return terminated, success
 
 def stege5_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.BoolTensor) -> tuple[torch.BoolTensor, torch.BoolTensor]:

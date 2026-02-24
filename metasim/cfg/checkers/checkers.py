@@ -947,6 +947,13 @@ class _ChairManChecker(BaseChecker):
         )
         import random
         import time
+
+        # --- INICIALIZACE PAMĚTI PRO VÝPISY PRŮLOMŮ ---
+        # Vytvoří množinu (set) pouze při prvním zavolání checkeru
+        if not hasattr(self, "announced_stages"):
+            self.announced_stages = set()
+            self.announced_stages.add(0) # Stage 0 nás nezajímá, tu už umí od začátku
+
         SAVE_PROBABILITY = 0.01
 
         states = handler.get_states()
@@ -963,7 +970,6 @@ class _ChairManChecker(BaseChecker):
         mask_6 = (stages == 6)
 
         # --- 2. HROMADNÝ VÝPOČET PRO KAŽDOU STAGE ---
-        # Každá funkce vrátí (terminated, success) pouze pro envs z dané masky
         term_0, succ_0 = stege0_chacker(states, handler, mask_0)
         term_1, succ_1 = stege1_chacker(states, handler, mask_1)
         term_2, succ_2 = stege2_chacker(states, handler, mask_2)
@@ -972,44 +978,35 @@ class _ChairManChecker(BaseChecker):
         term_5, succ_5 = stege5_chacker(states, handler, mask_5)
 
         # --- 3. SPOJENÍ VÝSLEDKŮ ---
-        # Pomocí operátoru logického NEBO (|) sjednotíme všechny masky
         all_terminated = term_0 | term_1 | term_2 | term_3 | term_4 | term_5 | mask_6
         all_success = succ_0 | succ_1 | succ_2 | succ_3 | succ_4 | succ_5
 
-        # --- 4. ZPRACOVÁNÍ ÚSPĚCHŮ (Aplikováno plošně tenzorově) ---
-        # Zvýšíme stage všem, kteří měli success
+        # --- 4. ZPRACOVÁNÍ ÚSPĚCHŮ ---
         handler.task.reward_functions[0].actual_stage[all_success] += 1
         handler.task.reward_functions[0].completed_stages[all_success] = 1
 
-        # Pokud někdo splnil stage, nepovažujeme to za "Failed termination",
-        # kód pojede dál v další stage. Terminaci mu tedy zrušíme.
         all_terminated[all_success] = False
 
-        # --- 5. UKLÁDÁNÍ SNAPSHOTŮ A LOGOVÁNÍ (Plně na GPU) ---
-        SAVE_PROBABILITY = 0.01
+        # --- 5. UKLÁDÁNÍ SNAPSHOTŮ A LOGOVÁNÍ PRŮLOMŮ ---
 
-        # A) Kteří roboti se právě dostali do finále (Stage 6)?
-        just_finished = all_success & (stages == 6)
+        # A) Finále (Stage 6) - Jelikož se Stage 6 neukládá do snapshotů, vypíšeme průlom rovnou
+        just_finished = all_success & (stages == 6) # (protože jsme v kroku 4 zvedli stages na 6)
         if just_finished.any():
-            # Přesuneme na CPU jen ty, kteří opravdu skončili (velmi málo z nich)
-            finished_indices = just_finished.nonzero(as_tuple=False).squeeze(-1).cpu().numpy()
-            for env_idx in finished_indices:
-                print(f"Env {env_idx} finished the chair task!")
+            if 6 not in self.announced_stages:
+                print("\n" + "="*50)
+                print(f"🏆 ABSOLUTNÍ PRŮLOM! Robot poprvé dokončil celou úlohu (Stage 6)!")
+                print("="*50 + "\n")
+                self.announced_stages.add(6)
 
-        # B) Náhodný výběr pro uložení snapshotu přímo na GPU
-        # Chceme ukládat jen ty úspěšné, kteří jsou ve stage 1 až 5.
+        # B) Náhodný výběr pro uložení snapshotu
         success_to_save = all_success & (stages <= 5)
 
         if success_to_save.any():
-            # Hodíme kostkou pro všechna prostředí najednou rovnou na grafice
             num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
-
             rand_mask = torch.rand(num_envs, device=handler.device) < SAVE_PROBABILITY
 
-            # Získáme POUZE ty indexy, které uspěly A ZÁROVEŇ měly štěstí v losování
             envs_to_save = (success_to_save & rand_mask).nonzero(as_tuple=False).squeeze(-1)
 
-            # Teprve teď jdeme na CPU (bude to např. jen 0 až 5 robotů z 9000)
             if len(envs_to_save) > 0:
                 envs_to_save_cpu = envs_to_save.cpu().numpy()
                 stages_cpu = stages[envs_to_save].cpu().numpy()
@@ -1017,7 +1014,17 @@ class _ChairManChecker(BaseChecker):
                 for i in range(len(envs_to_save_cpu)):
                     env_idx = int(envs_to_save_cpu[i])
                     new_stage = int(stages_cpu[i])
+
+                    # 1. Nejprve fyzicky uložíme snapshot
                     save_snapshot_chairman(handler, env_idx, new_stage)
+
+                    # 2. Pokud se uložení provedlo a stage ještě nebyla oznámena -> Vypiš to!
+                    if new_stage not in self.announced_stages:
+                        print("\n" + "*"*50)
+                        print(f"🚀 PRŮLOM: Robot se poprvé posunul a ULOŽIL stav pro STAGE {new_stage}! (Env: {env_idx})")
+                        print("*"*50 + "\n")
+                        # Zapíšeme do paměti, ať už to nikdy nevypíše
+                        self.announced_stages.add(new_stage)
 
         return all_terminated
     def reset(self, handler: BaseSimHandler, env_ids: list[int] | None = None):
