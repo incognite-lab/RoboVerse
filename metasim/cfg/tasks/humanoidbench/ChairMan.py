@@ -834,30 +834,19 @@ class CloseGraspReward(HumanoidBaseReward):
 
 class GraspForceReward(HumanoidBaseReward):
     """
-    Stage 2: Grasp Force Reward
-    Odměňuje robota za generování síly do prstů při kontaktu se židlí.
-    Síla se vyhodnocuje pro každý prst (palec, ukazovák, prostředník pro obě ruce) zvlášť.
-    Maximální odměny (1.0) je dosaženo pouze tehdy, když VŠECHNY prsty působí silou větší
-    nebo rovnou `force_threshold`.
+    Vektorizovaná odměna za generování síly do prstů.
+    Využívá 100% PyTorch tenzorové operace.
     """
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
         self.active_stages = [2]
 
-        # Mapování konkrétních prstů na indexy (6 prstů celkem)
         self.finger_categories = {
-            "left_hand_thumb_2_link": 0,
-            "left_hand_index_1_link": 1,
-            "left_hand_middle_1_link": 2,
-            "right_hand_thumb_2_link": 3,
-            "right_hand_index_1_link": 4,
-            "right_hand_middle_1_link": 5
+            "left_hand_thumb": 0, "left_hand_index": 1, "left_hand_middle": 2,
+            "right_hand_thumb": 3, "right_hand_index": 4, "right_hand_middle": 5
         }
-        self.num_fingers = len(self.finger_categories)
-
-        # Cílová síla pro KAŽDÝ prst zvlášť.
-        # Pokud je threshold 1.0, znamená to, že každý prst musí tlačit alespoň silou 1N.
         self.force_threshold = 1.0
+
         # Cached GPU tensors
         self.base_idx_to_finger_cat = None
         self.chair_ids = None
@@ -867,69 +856,72 @@ class GraspForceReward(HumanoidBaseReward):
         device = robot.joint_pos.device
         num_envs = robot.joint_pos.shape[0]
 
-        # 1. Kontrola, zda jsme ve správné stage
         if self.actual_stage is not None:
             stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
-            if not stage_mask.any():
-                return torch.zeros(num_envs, device=device)
+            if not stage_mask.any(): return torch.zeros(num_envs, device=device)
         else:
             stage_mask = torch.ones(num_envs, device=device, dtype=torch.bool)
 
-        # 2. Inicializace tensoru pro síly: [num_envs, počet_prstů]
-        # Pro každé prostředí a každý prst uchováváme maximální detekovanou sílu
-        finger_forces = torch.zeros((num_envs, self.num_fingers), device=device)
+        contact_data = robot.contact
+        if contact_data is None:
+            return torch.zeros(num_envs, device=device)
 
-        # 3. Zpracování kontaktů ze state bufferu
-        if hasattr(robot, 'contact') and robot.contact is not None:
-            for c in robot.contact:
-                # Ochrana: získání env_id
-                env_id = c.get('env_id', None)
-                if env_id is None or env_id >= num_envs:
-                    continue
+        # 1. JEDNORÁZOVÁ INICIALIZACE INDEXŮ
+        if self.base_idx_to_finger_cat is None:
+            global_map = states.extras.get("global_link_map", {})
+            num_bodies = states.extras.get("num_bodies_per_env", 1000)
 
-                # Zohledníme pouze kontakt se židlí
-                is_chair = (c.get('body_a') == "chair" or c.get('body_b') == "chair")
-                if not is_chair:
-                    continue
+            idx_to_cat = torch.full((num_bodies,), -1, dtype=torch.long, device=device)
+            chair_ids = []
 
-                # Určení názvu článku (linku) robota
-                robot_link = c['link_a'] if c.get('body_b') == "chair" else c['link_b']
+            for idx, (o_name, l_name) in global_map.items():
+                if o_name == robot_name:
+                    for cat_name, cat_id in self.finger_categories.items():
+                        if cat_name in l_name:
+                            idx_to_cat[idx] = cat_id
+                elif o_name == "chair":
+                    chair_ids.append(idx)
 
-                # Identifikace konkrétního prstu, který se židle dotýká
-                finger_idx = None
-                for prefix, idx in self.finger_categories.items():
-                    if prefix in robot_link:
-                        finger_idx = idx
-                        break
+            self.base_idx_to_finger_cat = idx_to_cat
+            self.chair_ids = torch.tensor(chair_ids, device=device)
+            self.num_bodies = num_bodies
 
-                # Pokud kontakt patří jednomu z našich sledovaných prstů
-                if finger_idx is not None:
-                    force = c.get('force', 0.0)
+        # 2. RYCHLÉ TENZOROVÉ OPERACE
+        link_a = contact_data['link_a'] # [num_envs, max_contacts]
+        link_b = contact_data['link_b']
+        valid_mask = contact_data['valid_mask']
 
-                    # Získání skalární hodnoty síly
-                    if isinstance(force, (list, tuple)):
-                        import numpy as np
-                        force = float(np.linalg.norm(force))
-                    elif hasattr(force, "item"):
-                        force = float(force.item())
+        forces = contact_data.get('force_b', contact_data.get('force', None))
+        if forces is None:
+            forces = torch.zeros((*link_a.shape, 3), device=device)
 
-                    # Pro daný prst si uložíme maximální naměřenou sílu v tomto kroku
-                    if force > finger_forces[env_id, finger_idx]:
-                        finger_forces[env_id, finger_idx] = force
+        force_mags = torch.norm(forces, dim=-1) # [num_envs, max_contacts]
 
-        # 4. Výpočet odměny
-        # Pro každý prst spočítáme dílčí odměnu (poměr k thresholdu, max 1.0)
-        # Výsledek bude tensor o velikosti [num_envs, 6], kde hodnoty jsou 0.0 až 1.0
+        base_a = link_a % self.num_bodies
+        base_b = link_b % self.num_bodies
+
+        a_is_chair = torch.isin(base_a, self.chair_ids)
+        b_is_chair = torch.isin(base_b, self.chair_ids)
+
+        cat_a = self.base_idx_to_finger_cat[base_a]
+        cat_b = self.base_idx_to_finger_cat[base_b]
+
+        contact_cat = torch.where(b_is_chair, cat_a, torch.where(a_is_chair, cat_b, torch.tensor(-1, device=device)))
+        valid_interaction = (contact_cat >= 0) & valid_mask
+
+        finger_forces = torch.zeros((num_envs, len(self.finger_categories)), device=device)
+
+        for cat_id in range(len(self.finger_categories)):
+            cat_mask = valid_interaction & (contact_cat == cat_id)
+            cat_forces = force_mags * cat_mask.float()
+            max_f, _ = torch.max(cat_forces, dim=1)
+            finger_forces[:, cat_id] = max_f
+
+        # 3. VÝPOČET ODMĚNY
         finger_rewards = torch.clamp(finger_forces / self.force_threshold, max=1.0)
-
-        # Celková odměna je průměrem odměn všech prstů.
-        # Díky tomu robot dostane 1.0 jen tehdy, pokud má na všech 6 prstech odměnu 1.0.
-        # (Používáme průměr místo "all()", aby robot dostával postupnou odměnu za každý přidaný prst)
         reward = torch.mean(finger_rewards, dim=1)
 
-        # Aplikování stage masky
         return reward * stage_mask.float()
-
 
 
 TERMINATION_WEIGHT = -1000.0

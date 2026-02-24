@@ -111,14 +111,17 @@ def GymEnvWrapper(cls: type[THandler]) -> type[EnvWrapper[THandler]]:
             self.handler.simulate()
             toc = time.time()
             log.trace(f"Time taken to handler.simulate(): {toc - tic:.4f}s")
+            #print(f"Simulate took {toc - tic:.2f} seconds")
             reward = None
             tic = time.time()
             success = self.handler.checker.check(self.handler)
             toc = time.time()
+            #print(f"Checker check took {toc - tic:.2f} seconds")
             log.trace(f"Time taken to handler.checker.check(): {toc - tic:.4f}s")
             tic = time.time()
             states = self.handler.get_states()
             toc = time.time()
+            #print(f"Get states took {toc - tic:.2f} seconds")
             log.trace(f"Time taken to handler.get_states(): {toc - tic:.4f}s")
             time_out = self._episode_length_buf >= self.handler.scenario.episode_length
             return states, reward, success, time_out, None

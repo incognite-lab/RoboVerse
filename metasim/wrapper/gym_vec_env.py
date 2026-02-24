@@ -65,7 +65,10 @@ class MetaSimVecEnv(VectorEnv):
         """Take a step in the environment."""
         _, _, success, timeout, _ = self.env.step(actions)
         obs = self.unwrapped._get_obs()
+        #tic = time.time()
         rewards = self.unwrapped._calculate_rewards()
+        #toc = time.time()
+        #print(f"Reward calculation took {toc - tic:.2f} seconds")
         return obs, rewards, success, timeout, {}
 
     def render(self):

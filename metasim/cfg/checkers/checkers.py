@@ -860,7 +860,7 @@ class _ChairManChecker(BaseChecker):
     #     idx = handler.task.function_index_success_save_time #TODO součást debilního řešení potřeba předělat
     #     handler.task.reward_functions[idx].reset_steps(env)
 
-    def check1(self, handler: BaseSimHandler) -> torch.BoolTensor:
+    def check_not_optimazed(self, handler: BaseSimHandler) -> torch.BoolTensor:
         from metasim.utils.humanoid_robot_util import robot_position
         from metasim.utils.humanoid_robot_util import right_palm_orientation
         from metasim.utils.humanoid_robot_util import right_palm_position
@@ -946,10 +946,10 @@ class _ChairManChecker(BaseChecker):
             save_snapshot_chairman
         )
         import random
-        SAVE_PROBABILITY = 0.3
+        import time
+        SAVE_PROBABILITY = 0.01
 
         states = handler.get_states()
-
         # Získáme tenzor se všemi aktuálními stages [num_envs]
         stages = handler.task.reward_functions[0].actual_stage
 
@@ -985,24 +985,39 @@ class _ChairManChecker(BaseChecker):
         # kód pojede dál v další stage. Terminaci mu tedy zrušíme.
         all_terminated[all_success] = False
 
-        # --- 5. UKLÁDÁNÍ SNAPSHOTŮ (Pouze pro těch pár, co zrovna uspěly) ---
-        # Tady použijeme for cyklus POUZE na těch pár konkrétních envs, které zrovna dokončily stage.
-        # .nonzero() nám vrátí jen ty indexy, kde je True.
+        # --- 5. UKLÁDÁNÍ SNAPSHOTŮ A LOGOVÁNÍ (Plně na GPU) ---
+        SAVE_PROBABILITY = 0.01
 
-        successful_env_indices = all_success.nonzero(as_tuple=False).squeeze(-1)
-        for env_tensor in successful_env_indices:
-            env_idx = env_tensor.item()
+        # A) Kteří roboti se právě dostali do finále (Stage 6)?
+        just_finished = all_success & (stages == 6)
+        if just_finished.any():
+            # Přesuneme na CPU jen ty, kteří opravdu skončili (velmi málo z nich)
+            finished_indices = just_finished.nonzero(as_tuple=False).squeeze(-1).cpu().numpy()
+            for env_idx in finished_indices:
+                print(f"Env {env_idx} finished the chair task!")
 
-            # Získáme NOVOU stage, do které se právě dostal (protože jsme ji o pár řádků výše zvedli +1)
-            new_stage = handler.task.reward_functions[0].actual_stage[env_idx].item()
+        # B) Náhodný výběr pro uložení snapshotu přímo na GPU
+        # Chceme ukládat jen ty úspěšné, kteří jsou ve stage 1 až 5.
+        success_to_save = all_success & (stages <= 5)
 
-            # Print pro info (pokud se dostal do cíle)
-            if new_stage == 6:
-                print(f"Env {env_idx} finished the door task!")
+        if success_to_save.any():
+            # Hodíme kostkou pro všechna prostředí najednou rovnou na grafice
+            num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
 
-            # Náhodné ukládání snapshotu pro danou stage
-            if new_stage <= 5 and random.random() < SAVE_PROBABILITY:
-                save_snapshot_chairman(handler, env_idx, new_stage)
+            rand_mask = torch.rand(num_envs, device=handler.device) < SAVE_PROBABILITY
+
+            # Získáme POUZE ty indexy, které uspěly A ZÁROVEŇ měly štěstí v losování
+            envs_to_save = (success_to_save & rand_mask).nonzero(as_tuple=False).squeeze(-1)
+
+            # Teprve teď jdeme na CPU (bude to např. jen 0 až 5 robotů z 9000)
+            if len(envs_to_save) > 0:
+                envs_to_save_cpu = envs_to_save.cpu().numpy()
+                stages_cpu = stages[envs_to_save].cpu().numpy()
+
+                for i in range(len(envs_to_save_cpu)):
+                    env_idx = int(envs_to_save_cpu[i])
+                    new_stage = int(stages_cpu[i])
+                    save_snapshot_chairman(handler, env_idx, new_stage)
 
         return all_terminated
     def reset(self, handler: BaseSimHandler, env_ids: list[int] | None = None):
@@ -1010,6 +1025,7 @@ class _ChairManChecker(BaseChecker):
         RESET
         """
         from metasim.cfg.checkers.stages_chairman import reset_chairman
+        import time
         reset_chairman(handler, env_ids)
         #print("reset chairman checker")
 

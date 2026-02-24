@@ -282,7 +282,7 @@ class GenesisHandler(BaseSimHandler):
             #joints_names_reindexed = joints_names_arr[joint_reindex].tolist()
             obj_inst = self.object_inst_dict[obj.name]
             raw_contact = obj_inst.get_contacts()
-            readable_contacts = self.get_contact(raw_contact)
+            #readable_contacts = self.get_contact(raw_contact)
             if self._previous_dof_pos_target is None or obj.name not in self._previous_dof_pos_target:
                 self._previous_dof_pos_target[obj.name] = torch.zeros_like(obj_inst.get_dofs_position(envs_idx=env_ids))
             joint_reindex = self.get_joint_reindex(obj.name)
@@ -309,7 +309,7 @@ class GenesisHandler(BaseSimHandler):
                 joint_vel=joint_vel,
                 joint_pos_target=self._previous_dof_pos_target[obj.name],
                 joint_effort_target=self._get_effort_targets(),
-                contact=readable_contacts,
+                contact=raw_contact,
                 joint_vel_target=None # TODO
 
 

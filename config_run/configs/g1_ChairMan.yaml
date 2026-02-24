@@ -7,8 +7,8 @@ robots: [g1_slider]
 fix_base_link: true
 task: chairman
 decimation: 5
-num_envs: 9000
-headless: true
+num_envs: 9
+headless: false
 add_table: true
 env_spacing: 4.0
 train_or_eval: train #eval_video
