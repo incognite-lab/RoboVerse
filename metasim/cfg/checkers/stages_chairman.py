@@ -20,9 +20,10 @@ except:
     pass
 VELOCITY_THRESHOLD = 0.2
 HEIGHT_THRESHOLD = 0.4
-DISTANCE_TO_CHAIR_X_THRESHOLD = 0.7
+DISTANCE_TO_CHAIR_X_THRESHOLD = 0.75
 DISTANCE_TO_CHAIR_Y_THRESHOLD = 0.2
-DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.03
+
+DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.06
 ORIENTATION_DISTANCE_HANDLE_THRESHOLD = 0.03
 GRASP_DRIFT_THRESHOLD = 0.05
 GRASP_FORCE_THRESHOLD = 2.0
@@ -33,7 +34,7 @@ POS_THRESHOLD = 0.3
 ORI_DOT_PRODUCT_THRESHOLD = 0.9
 CHAIR_PULL_DISTANCE_THRESHOLD = 1.0
 
-
+ARM_RESTING_THRESHOLD = 0.35
 SNAPSHOT_DIR = Path("config_run/snapshots_chair/")
 MAX_SNAPSHOTS = 100
 
@@ -472,17 +473,67 @@ def stege5_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     success = torch.zeros(num_envs, dtype=torch.bool, device=mask.device)
 
     idx = mask.nonzero(as_tuple=True)[0]
-    if idx.numel() == 0: return terminated, success
+    if idx.numel() == 0:
+        return terminated, success
 
+    # --- 1. Kontrola pádu robota ---
     term_common = common_chairman_checker(states, handler, idx)
-    robot_pos = robot_position_tensor(states, handler.robot.name)[idx]
-    chair_pos = states.objects["chair"].body_state[idx, 0, :3]
-    distance_x = (robot_pos[:, 0] - chair_pos[:, 0])
 
-    success_cond = distance_x > PASS_THROUGH_CHAIR_X_THRESHOLD
+    # --- 2. Kontrola pohybu ŽIDLE (Nesmí se pohnout z NOVÉ pozice) ---
+    # Židle už je odtažená na pozici x = -0.25
+    chair_base_idx = states.objects["chair"].body_names.index("base_link")
+    chair_pos = states.objects["chair"].body_state[idx, chair_base_idx, :3]
+    chair_lin_vel = states.objects["chair"].body_state[idx, chair_base_idx, 7:10]
 
-    terminated[idx] = term_common | success_cond
-    success[idx] = success_cond & (~term_common)
+    target_chair_pos = torch.tensor([-0.25, 0.0, 0.1], device=mask.device)
+    chair_pos_diff = torch.norm(chair_pos - target_chair_pos, dim=-1)
+    chair_vel_norm = torch.norm(chair_lin_vel, dim=-1)
+
+    # Termination: Židle odjela, nebo do ní kopnul a rozjela se
+    chair_moved = (chair_pos_diff > POS_THRESHOLD) | (chair_vel_norm > VELOCITY_THRESHOLD)
+
+    # --- 3. Kontrola pohybu ROBOTA (Nesmí couvat ani jít vpřed) ---
+    base_link_idx = states.robots[handler.robot.name].body_names.index("pelvis")
+    robot_lin_vel = states.robots[handler.robot.name].body_state[idx, base_link_idx, 7:10]
+    robot_vel_norm = torch.norm(robot_lin_vel, dim=-1)
+
+    # Termination: Robot nezastavil, potácí se
+    robot_moved = robot_vel_norm > VELOCITY_THRESHOLD
+
+    # --- 4. Kontrola RUKOU PODÉL TĚLA (Success condition) ---
+    # Zkontrolujeme klíčové klouby ramen a loktů, zda jsou blízko nuly
+    joint_names = states.robots[handler.robot.name].joint_names
+    arm_joints_to_check = [
+        "left_shoulder_pitch_joint", "right_shoulder_pitch_joint",
+        "left_shoulder_roll_joint", "right_shoulder_roll_joint",
+        "left_shoulder_yaw_joint", "right_shoulder_yaw_joint",
+        "left_elbow_joint", "right_elbow_joint"
+    ]
+
+    arm_indices = []
+    for i, name in enumerate(joint_names):
+        if name in arm_joints_to_check:
+            arm_indices.append(i)
+
+    q_arms = states.robots[handler.robot.name].joint_pos[idx][:, arm_indices]
+
+    # max() vrátí nejdále vychýlený kloub ze všech osmi sledovaných
+    max_arm_angle = torch.max(torch.abs(q_arms), dim=-1)[0]
+
+    # Jsou ruce spuštěné volně podél těla?
+    arms_are_down = max_arm_angle < ARM_RESTING_THRESHOLD
+
+    # --- VYHODNOCENÍ ---
+    # FAIL: Pokud robot spadne, posune odloženou židli, nebo nezvládne zastavit a padá do stran
+    fail_cond = term_common | chair_moved | robot_moved
+
+    # SUCCESS: Vše stojí jak má (neselhal) A ZÁROVEŇ jsou obě paže volně podél těla
+    success_cond = (~fail_cond) & arms_are_down
+
+    # Ukončení a zápis výsledků
+    terminated[idx] = fail_cond | success_cond
+    success[idx] = success_cond
+
     return terminated, success
 
 def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):

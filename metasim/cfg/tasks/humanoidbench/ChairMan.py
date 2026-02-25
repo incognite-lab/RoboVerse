@@ -299,7 +299,8 @@ class UprightPenaltyCfg(HumanoidBaseReward):
 
         # Získání orientace trupu (root) jako quaternion [x, y, z, w]
         # Shape: (num_envs, 4)
-        root_quat = robot.root_state[:, 3:7]
+        torso_link_idx = robot.body_names.index("torso_link")
+        root_quat = robot.body_state[:, torso_link_idx, 3:7]
         device = root_quat.device
 
         # Ujistíme se, že target je na správném zařízení
@@ -368,7 +369,7 @@ class WalkToChairReward(HumanoidBaseReward):
         self.target_speed = target_speed
 
         # Parametry brzdění
-        self.stop_distance = 0.7  # Vzdálenost od středu židle, kde má robot mít rychlost 0 (odpovídá stage0 thresholdům)
+        self.stop_distance = 0.75  # Vzdálenost od středu židle, kde má robot mít rychlost 0 (odpovídá stage0 thresholdům)
         self.braking_distance = 0.5  # Na jaké dráze začne robot zpomalovat z target_speed na 0
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
@@ -433,11 +434,11 @@ class FaceChairReward(HumanoidBaseReward):
     Face chair: Penalizace za špatnou orientaci (Yaw) vůči židli.
     Aktivní ve Stages: 0, 1, 2, 5.
 
-    Interpretace: Robot musí srovnat své natočení (Yaw) s natočením rámu židle.
-    To zajistí, že ve Stage 0 jde kolmo ke židli a ve Stage 5 pokračuje rovně skrz ně
-    (neotáčí se zpět na židli).
+    Interpretace: Robot musí srovnat své natočení (Yaw) torza tak, aby
+    směřoval přímo k souřadnicím (base_link) židle, nezávisle na tom,
+    jak je židle samotná rotována.
 
-    Formula: |wrap_pi( ||axis-angle(R_chair)||_2 )|
+    Formula: |wrap_pi( yaw_torso - atan2(dy, dx) )|
     Weight: -1.0
     """
     def __init__(self, robot_name="g1_slider"):
@@ -465,40 +466,115 @@ class FaceChairReward(HumanoidBaseReward):
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
-        # 2. Získání Yaw (natočení) robota
+        torso_link_idx = robot.body_names.index("torso_link")
+        chair_base_link_idx = chair.body_names.index("base_link")
+
+        # 2. Získání pozic torza a židle v rovině X, Y
+        torso_pos = robot.body_state[:, torso_link_idx, :2]
+        chair_pos = chair.body_state[:, chair_base_link_idx, :2]
+
+        # Výpočet cílového úhlu (kudy leží židle od robota)
+        target_vec = chair_pos - torso_pos
+        # torch.atan2(y, x) vrací úhel v radiánech
+        target_yaw = torch.atan2(target_vec[:, 1], target_vec[:, 0])
+
+        # 3. Získání aktuálního Yaw (natočení) torza robota
         # Root state: [pos(3), quat(4), ...]
-        q_r = robot.root_state[:, 3:7] # x, y, z, w
+        q_r = robot.body_state[:, torso_link_idx, 3:7] # x, y, z, w
         x, y, z, w = q_r[:, 0], q_r[:, 1], q_r[:, 2], q_r[:, 3]
 
-        # Vzorec pro Yaw z quaternionu
+        # Vzorec pro Yaw z quaternionu (předpokládá osy XYZW)
         siny_cosp = 2 * (w * z + x * y)
         cosy_cosp = 1 - 2 * (y * y + z * z)
-        robot_yaw = torch.atan2(siny_cosp, cosy_cosp)
-
-        # 3. Získání Yaw (natočení) židle
-        # Předpokládáme, že "chair" objekt reprezentuje rám (frame), který se nehýbe
-        q_d = chair.root_state[:, 3:7]
-        xd, yd, zd, wd = q_d[:, 0], q_d[:, 1], q_d[:, 2], q_d[:, 3]
-
-        siny_cosp_d = 2 * (wd * zd + xd * yd)
-        cosy_cosp_d = 1 - 2 * (yd * yd + zd * zd)
-        door_yaw = torch.atan2(siny_cosp_d, cosy_cosp_d)
-
-        # POZNÁMKA: Zde záleží na tom, jak jsou dveře v simulaci otočeny.
-        # Pokud "forward" osa dveří směřuje tam, kam má robot jít, chceme rozdíl 0.
-        # Pokud dveře směřují "proti" robotovi, chtěli bychom rozdíl PI.
-        # Standardně v DoorMan (Stage 5 pass through) chceme, aby robot a dveře měli
-        # shodnou orientaci směru průchodu.
+        torso_yaw = torch.atan2(siny_cosp, cosy_cosp)
 
         # 4. Výpočet chyby orientace (rozdíl úhlů)
-        yaw_error = self._wrap_to_pi(robot_yaw - door_yaw)
+        yaw_error = self._wrap_to_pi(torso_yaw - target_yaw)
 
         # Absolutní hodnota chyby
         penalty = torch.abs(yaw_error)
 
         # 5. Aplikace masky
-        #print(f"Face chair penalty: {penalty.mean().item():.6f}")
         return penalty * stage_mask.float()
+class ArmRestingPosePenaltyCfg(HumanoidBaseReward):
+    """
+    Stage 0: Penalizace za rozhazování rukama během chůze.
+    Aktivní pouze ve Stage 0.
+
+    Nutí robota držet ruce v klidové poloze podél těla. Povoluje pouze malý
+    kývavý pohyb (cca +/- 0.3 rad) nutný pro přirozenou chůzi.
+    """
+    def __init__(self, robot_name="g1_slider"):
+        super().__init__(robot_name)
+        self.active_stages = [0, 5]
+
+        # Cache
+        self.dof_indices = None
+        self.q_lower_tensor = None
+        self.q_upper_tensor = None
+
+        # Přísné limity pro ruce podél těla (Stage 0)
+        # Výchozí póza G1 má ruce svisle dolů. Povolíme jen malý kyv pro rovnováhu.
+        self.resting_limits: dict[str, tuple[float, float]] = {
+            # Ramena Pitch (předpažování/zapažování) - povolíme lehký kyv
+            "left_shoulder_pitch_joint": (-0.3, 0.3),
+            "right_shoulder_pitch_joint": (-0.3, 0.3),
+
+            # Ramena Roll (upažování) - zakážeme máchání do stran
+            "left_shoulder_roll_joint": (-0.1, 0.1),
+            "right_shoulder_roll_joint": (-0.1, 0.1),
+
+            # Ramena Yaw (rotace v rameni)
+            "left_shoulder_yaw_joint": (-0.1, 0.1),
+            "right_shoulder_yaw_joint": (-0.1, 0.1),
+
+            # Lokty - G1 by je měl mít natažené (0.0), dovolíme max mírné pokrčení
+            "left_elbow_joint": (-0.1, 0.3),
+            "right_elbow_joint": (-0.1, 0.3),
+        }
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        robot = states.robots[robot_name]
+        joint_pos = robot.joint_pos
+        device = joint_pos.device
+        num_envs = joint_pos.shape[0]
+
+        # 1. Kontrola Stage
+        if self.actual_stage is None: return torch.zeros(num_envs, device=device)
+        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        if not stage_mask.any(): return torch.zeros(num_envs, device=device)
+
+        # 2. Inicializace (pouze poprvé)
+        if self.dof_indices is None:
+            self.dof_indices = []
+            lower_vals = []
+            upper_vals = []
+
+            for i, name in enumerate(robot.joint_names):
+                if name in self.resting_limits:
+                    self.dof_indices.append(i)
+                    limits = self.resting_limits[name]
+                    lower_vals.append(limits[0])
+                    upper_vals.append(limits[1])
+
+            if not self.dof_indices:
+                return torch.zeros(num_envs, device=device)
+
+            self.dof_indices = torch.tensor(self.dof_indices, device=device, dtype=torch.long)
+            self.q_lower_tensor = torch.tensor(lower_vals, device=device).unsqueeze(0)
+            self.q_upper_tensor = torch.tensor(upper_vals, device=device).unsqueeze(0)
+
+        # 3. Výpočet chyby
+        q_active = joint_pos[:, self.dof_indices]
+
+        violation_lower = torch.clamp(q_active - self.q_lower_tensor, max=0.0)
+        violation_upper = torch.clamp(q_active - self.q_upper_tensor, min=0.0)
+
+        total_violation = violation_lower + violation_upper
+        penalty = torch.sum(torch.square(total_violation), dim=-1)
+
+        return penalty * stage_mask.float()
+
 
 #---------------------stage 1----------------------
 
@@ -643,7 +719,7 @@ class StandStillPenalty(HumanoidBaseReward):
     """
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
-        self.active_stages = [1, 2, 4] # Active during pre-grasp, grasp, and keep chair still
+        self.active_stages = [1, 2, 4, 5] # Active during pre-grasp, grasp, and keep chair still
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -1025,7 +1101,7 @@ class KeepChairStillPenalty(HumanoidBaseReward):
     """
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
-        self.active_stages = [4]
+        self.active_stages = [4,5]
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -1038,8 +1114,10 @@ class KeepChairStillPenalty(HumanoidBaseReward):
         if not stage_mask.any(): return torch.zeros(num_envs, device=device)
 
         # Rychlosti židle (root_state obsahuje pos[0:3], quat[3:7], lin_vel[7:10], ang_vel[10:13])
-        chair_lin_vel = chair.root_state[:, 7:10]
-        chair_ang_vel = chair.root_state[:, 10:13]
+        base_link_idx = chair.body_names.index("base_link")
+
+        chair_lin_vel = chair.body_state[:, base_link_idx, 7:10]
+        chair_ang_vel = chair.body_state[:, base_link_idx, 10:13]
 
         # Výpočet kvadratické odchylky od nuly (čím rychleji letí, tím větší trest)
         lin_vel_sq = torch.sum(torch.square(chair_lin_vel), dim=-1)
@@ -1050,7 +1128,59 @@ class KeepChairStillPenalty(HumanoidBaseReward):
         total_penalty = lin_vel_sq + 0.5 * ang_vel_sq
 
         return total_penalty * stage_mask.float()
+#---------------------Stage 5----------------------
+class DropArmsReward(HumanoidBaseReward):
+    """
+    Stage 5: Drop Arms Reward
+    Odměňuje robota (Gaussian reward) za to, že stahuje ramena a lokty k nule
+    (tj. spouští paže volně podél těla).
+    """
+    def __init__(self, robot_name="g1_slider"):
+        super().__init__(robot_name)
+        self.active_stages = [5]
+        self.sigma = 0.5  # Tolerance pro Gaussovu křivku
 
+        self.arm_indices = None
+
+        # Sledujeme ty samé klouby jako v Checkeru pro Stage 5
+        self.arm_joints_to_track = [
+            "left_shoulder_pitch_joint", "right_shoulder_pitch_joint",
+            "left_shoulder_roll_joint", "right_shoulder_roll_joint",
+            "left_shoulder_yaw_joint", "right_shoulder_yaw_joint",
+            "left_elbow_joint", "right_elbow_joint"
+        ]
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        robot = states.robots[robot_name]
+        device = robot.joint_pos.device
+        num_envs = robot.joint_pos.shape[0]
+
+        # 1. Kontrola Stage
+        if self.actual_stage is None: return torch.zeros(num_envs, device=device)
+        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        if not stage_mask.any(): return torch.zeros(num_envs, device=device)
+
+        # 2. Inicializace (pouze poprvé)
+        if self.arm_indices is None:
+            indices = []
+            for name in self.arm_joints_to_track:
+                if name in robot.joint_names:
+                    indices.append(list(robot.joint_names).index(name))
+
+            if not indices:
+                return torch.zeros(num_envs, device=device)
+
+            self.arm_indices = torch.tensor(indices, device=device, dtype=torch.long)
+
+        # 3. Získání pozic paží
+        q_arms = robot.joint_pos[:, self.arm_indices]
+
+        # 4. Výpočet Gaussianské odměny (Cílová póza je 0.0 pro všechny tyto klouby)
+        # exp(-||q_arms - 0||^2 / 2sigma^2)
+        pos_error_sq = torch.sum(torch.square(q_arms), dim=-1)
+        reward = torch.exp(-pos_error_sq / (2 * self.sigma**2))
+
+        return reward * stage_mask.float()
 
 
 TERMINATION_WEIGHT = -1000.0
@@ -1060,10 +1190,10 @@ DOF_POSITION_LIMITS_WEIGHT = -5.0
 HUMANLY_DOF_LIMIT_WEIGHT = -1.0
 UPRIGHT_PENALTY_WEIGHT = -1.0
 STAGE_PROGRESS_WEIGHT = 1.0
-WALK_TO_CHAIR_REWARD_WEIGHT = 5.0
+WALK_TO_CHAIR_REWARD_WEIGHT = 3.0
 FACE_CHAIR_REWARD_WEIGHT = -1.0
-REACH_CHAIR_REWARD_WEIGHT = 6.0
-REACH_ORIENTATION_REWARD_WEIGHT = 3.0
+REACH_CHAIR_REWARD_WEIGHT = 3.0
+REACH_ORIENTATION_REWARD_WEIGHT = 2.0
 STAND_STILL_PENALTY_WEIGHT = -6.0
 OPEN_GRASP_REWARD_WEIGHT = 1.5
 CLOSE_GRASP_REWARD_WEIGHT = 3.0
@@ -1071,6 +1201,7 @@ FORCE_GRASP_REWARD_WEIGHT = 3.0
 PULL_CHAIR_DISTANCE_WEIGHT = 5.0
 PULL_ROBOT_VELOCITY_WEIGHT = 4.0
 KEEP_CHAIR_STILL_PENALTY_WEIGHT = -5.0
+ARM_RESTING_POSE_PENALTY_WEIGHT = -2.0
 @configclass
 class ChairmanCfg(HumanoidTaskCfg):
     """Chair task for humanoid robots."""
@@ -1109,7 +1240,9 @@ class ChairmanCfg(HumanoidTaskCfg):
         CLOSE_GRASP_REWARD_WEIGHT,
         FORCE_GRASP_REWARD_WEIGHT,
         PULL_CHAIR_DISTANCE_WEIGHT,
-        PULL_ROBOT_VELOCITY_WEIGHT
+        PULL_ROBOT_VELOCITY_WEIGHT,
+        KEEP_CHAIR_STILL_PENALTY_WEIGHT,
+        ARM_RESTING_POSE_PENALTY_WEIGHT
     ]
     #function_index_success_save_time = 10 #TODO hloupé řešení ale budiž to tak (potřeba opravit)
     reward_functions = [TerminationCfg(),
@@ -1129,7 +1262,8 @@ class ChairmanCfg(HumanoidTaskCfg):
                         GraspForceReward(),
                         PullChairDistanceReward(),
                         PullRobotVelocityReward(),
-                        KeepChairStillPenalty()
+                        KeepChairStillPenalty(),
+                        ArmRestingPosePenaltyCfg()
                         ]
     def extra_spec(self):
         """This task does not require any extra observations."""
