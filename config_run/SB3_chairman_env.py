@@ -156,16 +156,16 @@ class StableBaseline3VecEnv(VecEnv):
         #------------------------------------
         #--------------DEBUG-----------------
         #------------------------------------
-        # debug = 2
-        # if debug == 0:
-        #     actions = self.debug0()
-        #     obs, rewards, unsuccess, timeout, _ = self.env.step(actions)
-        # elif debug == 1:
-        #     if self.timesteps[0] % 20 == 0:
-        #         self.action = self.ik_solver()
-        #     obs, rewards, unsuccess, timeout, _ = self.env.step([{"g1_slider": {"dof_pos_target": self.action}}])
-        # elif debug == 2:
-        #     obs, rewards, unsuccess, timeout, _ = self.env.step(self.debug2())
+        debug = 0
+        if debug == 0:
+            actions = self.debug0()
+            obs, rewards, unsuccess, timeout, _ = self.env.step(actions)
+        elif debug == 1:
+            if self.timesteps[0] % 20 == 0:
+                self.action = self.ik_solver()
+            obs, rewards, unsuccess, timeout, _ = self.env.step([{"g1_slider": {"dof_pos_target": self.action}}])
+        elif debug == 2:
+            obs, rewards, unsuccess, timeout, _ = self.env.step(self.debug2())
         #end debug
 
         if self.env.scenario.sim == 'genesis' and self.raw_actions is not None:
@@ -174,7 +174,7 @@ class StableBaseline3VecEnv(VecEnv):
             actions_to_pass = self.action_dicts
 
         # Provedení kroku s vybraným formátem akcí
-        obs, rewards, unsuccess, timeout, _ = self.env.step(actions_to_pass)
+        #obs, rewards, unsuccess, timeout, _ = self.env.step(actions_to_pass)
         obs = obs.cpu().numpy()
         obs = self.add_extra_to_obs(obs)
         #obs = self._combine_obs(obs)
@@ -356,11 +356,11 @@ class StableBaseline3VecEnv(VecEnv):
         actions = [{"g1_slider": {"dof_pos_target":
                                   {
                         "baseslide_joint": 0.0, #y
-                        "baseslide_joint2": 0.6, #x
+                        "baseslide_joint2": 0.0, #x
                         "baserot_joint": 0.0,
                         "waist_yaw_joint": 0.0,
                         "waist_roll_joint": 0.0,
-                        "waist_pitch_joint": 0.0,
+                        "waist_pitch_joint": 0.34,
                         "left_shoulder_pitch_joint": 0.0,
                         "left_shoulder_roll_joint": 0.0,
                         "left_shoulder_yaw_joint": 0.0,

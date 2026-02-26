@@ -461,7 +461,7 @@ class FaceChairReward(HumanoidBaseReward):
 
         # Přidáme offset, aby robot koukal výš (na sedák), ne do země
         target_pos = chair_pos.clone()
-        target_pos[:, 2] += self.chair_look_z_offset
+        #target_pos[:, 2] += self.chair_look_z_offset
 
         # 3. Výpočet cílového vektoru (směr od hlavy k židli)
         target_vec = target_pos - head_pos
@@ -471,7 +471,7 @@ class FaceChairReward(HumanoidBaseReward):
         # 4. Získání aktuálního natočení hlavy
         # Quaternion formát: [x, y, z, w]
         q = robot.body_state[:, head_link_idx, 3:7]
-        x, y, z, w = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+        w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
 
         # Výpočet směru, kam hlava KOUKÁ (Předpokládáme, že "vpřed" je lokální osa +X)
         # Toto je první sloupec rotační matice vytvořené z quaternionu
