@@ -358,19 +358,17 @@ class StageProgressCfg(HumanoidBaseReward):
 class WalkToChairReward(HumanoidBaseReward):
     """
     Stage 0: Walk to chair
-    Gaussian odměna za minimalizaci vzdálenosti a směru k cíli (velocity tracking).
-    Aplikuje se POUZE ve Stage 0. Robot nyní automaticky brzdí, aby zastavil před židlí.
+    Kombinuje velocity tracking (pro plynulou chůzi) a distance reward (aby necouval).
     """
     def __init__(self, robot_name="g1_slider", target_speed=0.6):
         super().__init__(robot_name)
         self.sigma = 0.15
-
-        # Maximální cílová rychlost chůze (v m/s)
         self.target_speed = target_speed
 
-        # Parametry brzdění
-        self.stop_distance = 0.75  # Vzdálenost od středu židle, kde má robot mít rychlost 0 (odpovídá stage0 thresholdům)
-        self.braking_distance = 0.5  # Na jaké dráze začne robot zpomalovat z target_speed na 0
+        # 1. OPRAVA: Cíl zastavení je mnohem hlouběji (0.5), než je threshold Checkeru (0.75).
+        # Robot se tak bude snažit přes cílovou čáru normálně projít a Checker ho u toho chytí.
+        self.stop_distance = 0.5
+        self.braking_distance = 0.5
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -378,77 +376,64 @@ class WalkToChairReward(HumanoidBaseReward):
         device = robot.joint_pos.device
         num_envs = robot.joint_pos.shape[0]
 
-        # 1. Kontrola Stage
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
 
-        # 2. Vytvoření masky pro Stage 0
         stage_mask = (self.actual_stage == 0)
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
-        # 3. Získání pozic a rychlostí
         base_link_idx = robot.body_names.index("pelvis")
         root_pos = robot.body_state[:, base_link_idx, :3]
-        root_vel = robot.body_state[:, base_link_idx, 7:10] # Lineární rychlost
+        root_vel = robot.body_state[:, base_link_idx, 7:10]
 
         chair_base_link_idx = chair.body_names.index("base_link")
-        target_pos = chair.body_state[:, chair_base_link_idx, :3] # Pozice židle
+        target_pos = chair.body_state[:, chair_base_link_idx, :3]
 
-        # 4. Výpočet směrového vektoru d_chair a vzdálenosti
         vec_to_chair = target_pos - root_pos
-        vec_to_chair[:, 2] = 0.0 # Ignorujeme Z složku (chůze po rovině)
+        vec_to_chair[:, 2] = 0.0
 
-        dist = torch.norm(vec_to_chair, dim=-1, keepdim=True)
-        dir_to_chair = vec_to_chair / (dist + 1e-6)
+        # Vypočítáme vzdálenost [N]
+        dist = torch.norm(vec_to_chair, dim=-1)
+        # Normalizovaný směr [N, 3]
+        dir_to_chair = vec_to_chair / (dist.unsqueeze(-1) + 1e-6)
 
-        # --- NOVÉ: Dynamický výpočet cílové rychlosti ---
-        # dist_to_stop říká, kolik metrů zbývá k místu zastavení
+        # Dynamická rychlost
         dist_to_stop = dist - self.stop_distance
-
-        # speed_factor klesá lineárně od 1.0 do 0.0 na úseku braking_distance
         speed_factor = torch.clamp(dist_to_stop / self.braking_distance, min=0.0, max=1.0)
-
-        # Výsledná rychlost (robot brzdí, když je blízko)
         dynamic_speed = self.target_speed * speed_factor
 
-        # 5. Cílový vektor rychlosti
-        target_vel_vec = dynamic_speed * dir_to_chair
-
-        # 6. Výpočet chyby rychlosti: ||v_robot - target_vel_vec||^2
+        # Cílová rychlost
+        target_vel_vec = dynamic_speed.unsqueeze(-1) * dir_to_chair
         vel_error_sq = torch.sum(torch.square(root_vel - target_vel_vec), dim=-1)
-
-        # 7. Výpočet odměn
-        # Odměna za rychlost (bude tlačit robota do pohybu, nebo do zastavení - podle toho, kde stojí)
         vel_reward = torch.exp(-vel_error_sq / (2 * self.sigma**2))
 
+        # 2. OPRAVA: Distance Reward
+        # Exponenciální odměna za to, že je blízko u židle.
+        # Pokud se robot rozhodne couvnout, hodnota dist se zvětší a tato odměna mu okamžitě klesne.
+        dist_reward = torch.exp(-dist / 1.0)
 
-        total_reward = 1.0 * vel_reward
+        # Sečteme obě odměny (Váhy 1.0 a 2.0 můžete ladit, ale takto to robotovi
+        # jasně říká: "Být u židle je 2x důležitější, než u toho hezky hýbat nohama").
+        total_reward = (1.0 * vel_reward) + (2.0 * dist_reward)
 
-        # 8. Aplikace masky
-        total_reward = total_reward * stage_mask.float()
-
-        return total_reward
+        return total_reward * stage_mask.float()
 class FaceChairReward(HumanoidBaseReward):
     """
-    Face chair: Penalizace za špatnou orientaci (Yaw) vůči židli.
+    Face chair: Penalizace za to, že se hlava robota nedívá přímo na židli ve 3D.
     Aktivní ve Stages: 0, 1, 2, 5.
 
-    Interpretace: Robot musí srovnat své natočení (Yaw) torza tak, aby
-    směřoval přímo k souřadnicím (base_link) židle, nezávisle na tom,
-    jak je židle samotná rotována.
-
-    Formula: |wrap_pi( yaw_torso - atan2(dy, dx) )|
-    Weight: -1.0
+    Využívá vektorovou matematiku (Dot product) pro srovnání osy pohledu hlavy
+    s vektorem směřujícím k židli. Navíc penalizuje náklon hlavy do stran (Roll).
     """
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
         # Stages: 0-2 (příchod, úchop) a 5 (průchod)
         self.active_stages = [0, 1, 2, 5]
 
-    def _wrap_to_pi(self, angle):
-        """Převede úhel do intervalu [-pi, pi]."""
-        return (angle + torch.pi) % (2 * torch.pi) - torch.pi
+        # O kolik metrů výše nad base_link židle se má robot dívat
+        # (aby nekoukal na kolečka/nohy, ale na sedák)
+        self.chair_look_z_offset = 0.4
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -466,36 +451,56 @@ class FaceChairReward(HumanoidBaseReward):
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
-        torso_link_idx = robot.body_names.index("torso_link")
+        # Přesunuli jsme se z torza na hlavu
+        head_link_idx = robot.body_names.index("head_link")
         chair_base_link_idx = chair.body_names.index("base_link")
 
-        # 2. Získání pozic torza a židle v rovině X, Y
-        torso_pos = robot.body_state[:, torso_link_idx, :2]
-        chair_pos = chair.body_state[:, chair_base_link_idx, :2]
+        # 2. Získání 3D pozic
+        head_pos = robot.body_state[:, head_link_idx, :3]
+        chair_pos = chair.body_state[:, chair_base_link_idx, :3]
 
-        # Výpočet cílového úhlu (kudy leží židle od robota)
-        target_vec = chair_pos - torso_pos
-        # torch.atan2(y, x) vrací úhel v radiánech
-        target_yaw = torch.atan2(target_vec[:, 1], target_vec[:, 0])
+        # Přidáme offset, aby robot koukal výš (na sedák), ne do země
+        target_pos = chair_pos.clone()
+        target_pos[:, 2] += self.chair_look_z_offset
 
-        # 3. Získání aktuálního Yaw (natočení) torza robota
-        # Root state: [pos(3), quat(4), ...]
-        q_r = robot.body_state[:, torso_link_idx, 3:7] # x, y, z, w
-        x, y, z, w = q_r[:, 0], q_r[:, 1], q_r[:, 2], q_r[:, 3]
+        # 3. Výpočet cílového vektoru (směr od hlavy k židli)
+        target_vec = target_pos - head_pos
+        # Normalizace vektoru (aby měl délku 1)
+        target_vec = target_vec / (torch.norm(target_vec, dim=-1, keepdim=True) + 1e-6)
 
-        # Vzorec pro Yaw z quaternionu (předpokládá osy XYZW)
-        siny_cosp = 2 * (w * z + x * y)
-        cosy_cosp = 1 - 2 * (y * y + z * z)
-        torso_yaw = torch.atan2(siny_cosp, cosy_cosp)
+        # 4. Získání aktuálního natočení hlavy
+        # Quaternion formát: [x, y, z, w]
+        q = robot.body_state[:, head_link_idx, 3:7]
+        x, y, z, w = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
 
-        # 4. Výpočet chyby orientace (rozdíl úhlů)
-        yaw_error = self._wrap_to_pi(torso_yaw - target_yaw)
+        # Výpočet směru, kam hlava KOUKÁ (Předpokládáme, že "vpřed" je lokální osa +X)
+        # Toto je první sloupec rotační matice vytvořené z quaternionu
+        forward_x = 1 - 2 * (y**2 + z**2)
+        forward_y = 2 * (x*y + w*z)
+        forward_z = 2 * (x*z - w*y)
+        head_forward_vec = torch.stack([forward_x, forward_y, forward_z], dim=-1)
 
-        # Absolutní hodnota chyby
-        penalty = torch.abs(yaw_error)
+        # Výpočet směru, kde má hlava "VRŠEK" (lokální osa +Z)
+        # Toto je třetí sloupec rotační matice
+        up_x = 2 * (x*z + w*y)
+        up_y = 2 * (y*z - w*x)
+        up_z = 1 - 2 * (x**2 + y**2)
+        head_up_vec = torch.stack([up_x, up_y, up_z], dim=-1)
 
-        # 5. Aplikace masky
-        return penalty * stage_mask.float()
+        # 5. Výpočet penalizací
+        # A) Penalizace za odklon pohledu (Dot product: 1 = kouká přesně tam, -1 = kouká na opačnou stranu)
+        look_dot = torch.sum(head_forward_vec * target_vec, dim=-1)
+        # Převedeme do rozsahu 0 (perfektní) až 2 (nejhorší)
+        look_penalty = 1.0 - look_dot
+
+        # B) Penalizace za naklánění hlavy do stran/dolů (Up vektor by měl mířit kolmo nahoru na osu Z = [0,0,1])
+        # Chceme, aby up_z bylo co nejblíže 1.0
+        tilt_penalty = 1.0 - up_z
+
+        # Celková chyba (Můžete si váhy uvnitř upravit, ale 1:1 většinou funguje skvěle)
+        total_penalty = look_penalty + tilt_penalty
+
+        return total_penalty * stage_mask.float()
 class ArmRestingPosePenaltyCfg(HumanoidBaseReward):
     """
     Stage 0: Penalizace za rozhazování rukama během chůze.
@@ -1189,9 +1194,9 @@ DOF_VELOCITY_ACCELERATION_WEIGHT = 1.0
 DOF_POSITION_LIMITS_WEIGHT = -5.0
 HUMANLY_DOF_LIMIT_WEIGHT = -1.0
 UPRIGHT_PENALTY_WEIGHT = -1.0
-STAGE_PROGRESS_WEIGHT = 1.0
+STAGE_PROGRESS_WEIGHT = 20.0
 WALK_TO_CHAIR_REWARD_WEIGHT = 3.0
-FACE_CHAIR_REWARD_WEIGHT = -1.0
+FACE_CHAIR_REWARD_WEIGHT = -5.0
 REACH_CHAIR_REWARD_WEIGHT = 3.0
 REACH_ORIENTATION_REWARD_WEIGHT = 2.0
 STAND_STILL_PENALTY_WEIGHT = -6.0

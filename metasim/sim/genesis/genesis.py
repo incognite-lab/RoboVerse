@@ -6,6 +6,7 @@ import torch
 import random
 gs.init(backend=gs.gpu,logging_level=gs._logging.WARNING)  # TODO: add option for cpu
 
+import genesis.utils.geom as gu
 from genesis.engine.entities.rigid_entity import RigidEntity, RigidJoint
 from genesis.vis.camera import Camera
 from loguru import logger as log
@@ -116,15 +117,69 @@ class GenesisHandler(BaseSimHandler):
                 raise NotImplementedError(f"Object type {type(obj)} not supported")
             self.object_inst_dict[obj.name] = obj_inst
 
+        # ## Add cameras
+        # for camera in self.cameras:
+        #     camera_inst = self.scene_inst.add_camera(
+        #         res=(camera.width, camera.height),
+        #         pos=camera.pos,
+        #         lookat=camera.look_at,
+        #         fov=camera.vertical_fov,
+        #     )
+        #     self.camera_inst_dict[camera.name] = camera_inst
         ## Add cameras
         for camera in self.cameras:
-            camera_inst = self.scene_inst.add_camera(
-                res=(camera.width, camera.height),
-                pos=camera.pos,
-                lookat=camera.look_at,
-                fov=camera.vertical_fov,
-            )
+            mount_entity = None
+            mount_link = None
+
+            attached_obj_name = getattr(camera, "mount_to", None)
+            attached_link_name = getattr(camera, "mount_link", None)
+
+            if attached_obj_name and attached_obj_name in self.object_inst_dict:
+                mount_entity = self.object_inst_dict[attached_obj_name]
+                # Získáme lokální offsety
+                pos = getattr(camera, "mount_pos", (0.05, 0.0, 0.0))
+                quat = getattr(camera, "mount_quat", (1.0, 0.0, 0.0, 0.0))
+
+                for link in mount_entity.links:
+                    if link.name == attached_link_name:
+                        mount_link = link
+                        break
+
+            if mount_entity and mount_link:
+                camera_inst = self.scene_inst.add_camera(
+                    res=(camera.width, camera.height),
+                    fov=camera.vertical_fov,
+                )
+
+                # --- OPRAVA: Převod pos a quat na 4x4 matici (offset_T) ---
+                pos_t = torch.tensor(pos, dtype=gs.tc_float, device=gs.device)
+                quat_t = torch.tensor(quat, dtype=gs.tc_float, device=gs.device)
+
+                # Vytvoření 4x4 offset matice
+                offset_T = gu.trans_quat_to_T(pos_t, quat_t)
+
+                # Připojení kamery pomocí matice
+                camera_inst.attach(mount_link, offset_T=offset_T)
+                # --- NOVÉ: DEBUGOVACÍ KULIČKA (BEZ ROTACE) ---
+                debug_dot = self.scene_inst.add_entity(
+                    gs.morphs.Sphere(radius=0.03), # Kulička o poloměru 3 cm
+                    surface=gs.surfaces.Default(color=(1.0, 0.0, 0.0, 1.0)), # Červená
+                    material=gs.materials.Rigid(gravity_compensation=1.0)
+                )
+                self.camera_debug_dot = (debug_dot, mount_link, pos)
+
+                log.info(f"Camera '{camera.name}' attached to {attached_obj_name}::{attached_link_name}")
+            else:
+                # Statická kamera
+                camera_inst = self.scene_inst.add_camera(
+                    res=(camera.width, camera.height),
+                    pos=camera.pos,
+                    lookat=camera.look_at,
+                    fov=camera.vertical_fov,
+                )
+
             self.camera_inst_dict[camera.name] = camera_inst
+
 
         self.scene_inst.build(
             n_envs=self.scenario.num_envs, env_spacing=(self.scenario.env_spacing, self.scenario.env_spacing)
@@ -320,13 +375,50 @@ class GenesisHandler(BaseSimHandler):
             )
             robot_states[obj.name] = state
 
+        # camera_states = {}
+        # for camera in self.cameras:
+        #     camera_inst = self.camera_inst_dict[camera.name]
+        #     rgb, depth, _, _ = camera_inst.render(depth=True)
+        #     state = CameraState(
+        #         rgb=torch.from_numpy(rgb.copy()).unsqueeze(0).repeat_interleave(self.num_envs, dim=0),  # XXX
+        #         depth=torch.from_numpy(depth.copy()).unsqueeze(0).repeat_interleave(self.num_envs, dim=0),  # XXX
+        #     )
+        #     camera_states[camera.name] = state
         camera_states = {}
         for camera in self.cameras:
             camera_inst = self.camera_inst_dict[camera.name]
+
+            if getattr(camera_inst, "_attached_link", None) is not None:
+                camera_inst.move_to_attach()
+
+                # --- NOVÉ: PŘESUN KULIČKY (JEN POZICE) ---
+                if hasattr(self, "camera_debug_dot"):
+                    debug_dot, link, local_pos = self.camera_debug_dot
+
+                    # 1. Pozice a rotace hlavy
+                    link_pos = link.get_pos(envs_idx=env_ids)
+                    link_quat = link.get_quat(envs_idx=env_ids)
+
+                    # 2. Vytvoření matice a výpočet nové pozice
+                    link_T = gu.trans_quat_to_T(link_pos, link_quat)
+                    pos_t = torch.tensor(local_pos, dtype=gs.tc_float, device=gs.device)
+
+                    # Přidáme 1.0 na konec vektoru, abychom ho mohli násobit 4x4 maticí
+                    pos_homogenous = torch.nn.functional.pad(pos_t, (0, 1), value=1.0)
+
+                    # Vynásobíme: Tím získáme přesnou globální pozici bodíku
+                    new_pos = torch.matmul(link_T, pos_homogenous)[:, :3]
+
+                    # 3. Nastavíme pouze pozici kuličky, rotaci ignorujeme
+                    debug_dot.set_pos(new_pos, envs_idx=env_ids)
+                # -----------------------------------------
+
+            # Render obrazu
             rgb, depth, _, _ = camera_inst.render(depth=True)
+
             state = CameraState(
-                rgb=torch.from_numpy(rgb.copy()).unsqueeze(0).repeat_interleave(self.num_envs, dim=0),  # XXX
-                depth=torch.from_numpy(depth.copy()).unsqueeze(0).repeat_interleave(self.num_envs, dim=0),  # XXX
+                rgb=torch.from_numpy(rgb.copy()).unsqueeze(0).repeat_interleave(self.num_envs, dim=0),
+                depth=torch.from_numpy(depth.copy()).unsqueeze(0).repeat_interleave(self.num_envs, dim=0),
             )
             camera_states[camera.name] = state
         sensors = {}

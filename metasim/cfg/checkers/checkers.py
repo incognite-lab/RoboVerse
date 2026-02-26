@@ -982,7 +982,10 @@ class _ChairManChecker(BaseChecker):
         all_success = succ_0 | succ_1 | succ_2 | succ_3 | succ_4 | succ_5
 
         # --- 4. ZPRACOVÁNÍ ÚSPĚCHŮ ---
+        if all_success.any():
+            print(f"complete success stage {handler.task.reward_functions[0].actual_stage[all_success]}")
         handler.task.reward_functions[0].actual_stage[all_success] += 1
+
         handler.task.reward_functions[0].completed_stages[all_success] = 1
 
         all_terminated[all_success] = False

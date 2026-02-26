@@ -2,6 +2,7 @@ import sys
 import os
 import yaml
 import torch
+import random
 
 from loguru import logger as log
 
@@ -62,8 +63,8 @@ def get_cameras_from_config(cameras: dict):
         params = camera_config.get("params", {})
         if camera_type == "PinholeCameraCfg":
             camera = PinholeCameraCfg(**params)
-            camera.pos = tuple(map(float, camera.pos.strip("()").split(",")))
-            camera.look_at = tuple(map(float, camera.look_at.strip("()").split(",")))
+            #camera.pos = tuple(map(float, camera.pos.strip("()").split(",")))
+            #camera.look_at = tuple(map(float, camera.look_at.strip("()").split(",")))
         else:
             log.warning(f"Unknown camera type: {camera_type}, skipping...")
             continue
@@ -500,5 +501,167 @@ def main():
 
         runner = OnPolicyRunner(env, algo, runner_cfg)
         runner.learn()
+
+
+    elif config.get("train_or_eval") == "train_dagger":
+        from dagger.student_net import VisionStudent
+        from dagger.dagger_trainer import DAggerBuffer, train_dagger_step
+        import torch.nn.functional as F
+        from torch.utils.tensorboard import SummaryWriter # <--- PŘIDÁNO PRO TENSORBOARD
+
+        metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
+        env = StableBaseline3VecEnv(metasim_env)
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        # --- TENSORBOARD SETUP ---
+        tb_log_dir = config.get("tensorboard_log", "./dagger_tensorboard/")
+        os.makedirs(tb_log_dir, exist_ok=True)
+        writer = SummaryWriter(log_dir=tb_log_dir)
+
+        # --- MODEL SAVING SETUP ---
+        save_dir = config.get("model_save_path", "./output/dagger_models/")
+        os.makedirs(save_dir, exist_ok=True)
+        save_freq = config.get("model_save_freq", 5000)
+
+        # 1. Načtení EXPERTA (PPO) - Zmrazený, už se neučí
+        log.info(f"Loading Expert model from {config.get('load_model_path')}")
+        sys.modules['numpy._core'] = np.core
+        sys.modules['numpy._core.numeric'] = np.core.numeric
+        expert_model = PPO.load(config.get("load_model_path"), env=env, device=device)
+
+        # 2. Inicializace STUDENTA a Bufferu
+        num_actions = env.action_space.shape[0]
+        student_model = VisionStudent(num_actions=num_actions).to(device)
+        optimizer = torch.optim.Adam(student_model.parameters(), lr=3e-4)
+
+        buffer = DAggerBuffer(max_size=15000, device=device)
+
+        total_iterations = config.get("total_timesteps", 100_000)
+        beta = 1.0
+        beta_decay = 0.999
+
+        expert_obs = env.reset()
+
+        log.info("Starting DAgger Training...")
+        for step in range(total_iterations):
+            states = metasim_env.env.handler.get_states()
+
+            # Extrakce a zmenšení obrazu pro trénink
+            rgb_tensor = states.cameras["camera0"].rgb.to(device)
+            rgb_permuted = rgb_tensor.permute(0, 3, 1, 2).float()
+            student_obs_small = F.interpolate(rgb_permuted, size=(72, 128), mode='bilinear', align_corners=False)
+
+            student_obs_uint8 = student_obs_small.to(dtype=torch.uint8)
+            student_obs_net_input = student_obs_small / 255.0
+
+            with torch.no_grad():
+                expert_actions, _ = expert_model.predict(expert_obs, deterministic=True)
+                expert_actions_tensor = torch.tensor(expert_actions, device=device)
+
+                student_model.eval()
+                student_actions_tensor = student_model(student_obs_net_input)
+                student_actions = student_actions_tensor.cpu().numpy()
+
+            if random.random() < beta:
+                env_actions = expert_actions
+            else:
+                env_actions = student_actions
+
+            buffer.add_batch(student_obs_uint8, expert_actions_tensor)
+            expert_obs, rewards, dones, infos = env.step(env_actions)
+
+            # Zápis do Tensorboardu a učení
+            if step > 0 and step % 5 == 0:
+                loss = train_dagger_step(student_model, optimizer, buffer, batch_size=128)
+
+                # --- LOGOVÁNÍ TENSORBOARD ---
+                writer.add_scalar("DAgger/MSE_Loss", loss, step)
+                writer.add_scalar("DAgger/Beta_Mix_Ratio", beta, step)
+                writer.add_scalar("DAgger/Env_Mean_Reward", rewards.mean().item(), step)
+
+                log.info(f"Step {step}/{total_iterations} | Beta: {beta:.2f} | Loss: {loss:.5f}")
+
+            # --- PRŮBĚŽNÉ UKLÁDÁNÍ MODELU ---
+            if step > 0 and step % save_freq == 0:
+                current_save_path = os.path.join(save_dir, f"student_model_step_{step}.pth")
+                torch.save(student_model.state_dict(), current_save_path)
+                log.info(f"Checkpoint saved to {current_save_path}")
+
+            beta = max(0.0, beta * beta_decay)
+
+        # --- FINÁLNÍ ULOŽENÍ A UKONČENÍ ---
+        final_save_path = os.path.join(save_dir, "student_model_final.pth")
+        torch.save(student_model.state_dict(), final_save_path)
+        log.info(f"DAgger Training Finished! Final model saved to {final_save_path}")
+
+        writer.close()
+        env.close()
+    elif config.get("train_or_eval") == "eval_dagger_video":
+        from dagger.student_net import VisionStudent
+        import torch.nn.functional as F
+        import cv2  # <--- PRO TVORBU VIDEA Z KAMERY
+
+        metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
+        env = StableBaseline3VecEnv(metasim_env)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        # 1. Načtení STUDENTA a jeho natrénovaných vah
+        num_actions = env.action_space.shape[0]
+        student_model = VisionStudent(num_actions=num_actions).to(device)
+
+        model_path = config.get("load_model_path")
+        log.info(f"Loading Student model from {model_path}")
+        student_model.load_state_dict(torch.load(model_path, map_location=device))
+        student_model.eval() # Přepnutí do eval módu (vypne dropout atd.)
+
+        # 2. Nastavení tvorby videa
+        video_path = config.get("video_save_path", "./output/dagger_fpv_video.mp4")
+        os.makedirs(os.path.dirname(video_path), exist_ok=True)
+
+        # Očekáváme plné rozlišení z vaší kamery
+        video_width, video_height = 640, 360
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v') # Kodek pro .mp4
+        video_writer = cv2.VideoWriter(video_path, fourcc, 30.0, (video_width, video_height))
+
+        obs = env.reset()
+        log.info("Starting DAgger Evaluation...")
+
+        # 3. Evaluační smyčka
+        for step in range(config.get("eval_max_steps", 1000)):
+            states = metasim_env.env.handler.get_states()
+
+            # Získání raw obrazu [B, H, W, C]
+            rgb_tensor_raw = states.cameras["camera0"].rgb
+
+            # --- Zápis do Videa (Použijeme prostředí s indexem 0) ---
+            # Převod na numpy a uint8 (formát pro obrázky)
+            frame_np = rgb_tensor_raw[0].cpu().numpy().astype(np.uint8)
+            # OpenCV používá barevný prostor BGR, Genesis RGB. Musíme to přehodit.
+            frame_bgr = cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
+            video_writer.write(frame_bgr)
+
+            # --- Zpracování obrazu pro neuronovou síť ---
+            rgb_tensor_gpu = rgb_tensor_raw.to(device)
+            rgb_permuted = rgb_tensor_gpu.permute(0, 3, 1, 2).float()
+            # Student potřebuje zmenšený formát 128x72
+            student_obs_small = F.interpolate(rgb_permuted, size=(72, 128), mode='bilinear', align_corners=False)
+            student_obs_net_input = student_obs_small / 255.0
+
+            # 4. Predikce a krok v prostředí
+            with torch.no_grad():
+                student_actions_tensor = student_model(student_obs_net_input)
+                actions = student_actions_tensor.cpu().numpy()
+
+            obs, rewards, dones, infos = env.step(actions)
+
+            if step % 100 == 0:
+                log.info(f"Eval step: {step}/{config.get('eval_max_steps', 1000)}")
+
+        # 5. Úklid a uložení videa
+        video_writer.release()
+        log.info(f"🎬 FPV Video saved successfully to: {video_path}")
+        env.close()
+        quit()
 if __name__ == "__main__":
     main()
