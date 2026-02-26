@@ -314,7 +314,7 @@ class UprightPenaltyCfg(HumanoidBaseReward):
         # z_y = 2(yz - xw)
         # z_z = 1 - 2(x^2 + y^2)
 
-        w, y, z, x = root_quat[:, 0], root_quat[:, 1], root_quat[:, 2], root_quat[:, 3]
+        y, z, x, w = root_quat[:, 0], root_quat[:, 1], root_quat[:, 2], root_quat[:, 3]
 
         current_z_x = 2 * (x * z + y * w)
         current_z_y = 2 * (y * z - x * w)
@@ -367,7 +367,7 @@ class WalkToChairReward(HumanoidBaseReward):
 
         # 1. OPRAVA: Cíl zastavení je mnohem hlouběji (0.5), než je threshold Checkeru (0.75).
         # Robot se tak bude snažit přes cílovou čáru normálně projít a Checker ho u toho chytí.
-        self.stop_distance = 0.5
+        self.stop_distance = 0.72
         self.braking_distance = 0.5
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
