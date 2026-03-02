@@ -358,17 +358,19 @@ class StageProgressCfg(HumanoidBaseReward):
 class WalkToChairReward(HumanoidBaseReward):
     """
     Stage 0: Walk to chair
-    Kombinuje velocity tracking (pro plynulou chůzi) a distance reward (aby necouval).
+    Kombinuje velocity tracking (pro plynulou chůzi) a penalizaci za couvání.
     """
     def __init__(self, robot_name="g1_slider", target_speed=0.6):
         super().__init__(robot_name)
         self.sigma = 0.15
         self.target_speed = target_speed
 
-        # 1. OPRAVA: Cíl zastavení je mnohem hlouběji (0.5), než je threshold Checkeru (0.75).
-        # Robot se tak bude snažit přes cílovou čáru normálně projít a Checker ho u toho chytí.
         self.stop_distance = 0.72
         self.braking_distance = 0.5
+
+        # Váha trestu za couvání. Musí být dost velká, aby přebila zisk z následného pohybu vpřed.
+        # Pokud je 5.0, tak za každý 1 m/s rychlosti dozadu dostane -5 bodů.
+        self.backward_penalty_weight = 5.0
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -395,27 +397,35 @@ class WalkToChairReward(HumanoidBaseReward):
 
         # Vypočítáme vzdálenost [N]
         dist = torch.norm(vec_to_chair, dim=-1)
-        # Normalizovaný směr [N, 3]
+        # Normalizovaný směr k židli [N, 3]
         dir_to_chair = vec_to_chair / (dist.unsqueeze(-1) + 1e-6)
 
-        # Dynamická rychlost
+        # --- ČÁST 1: Cílová rychlost (Gaussian Reward) ---
         dist_to_stop = dist - self.stop_distance
         speed_factor = torch.clamp(dist_to_stop / self.braking_distance, min=0.0, max=1.0)
         dynamic_speed = self.target_speed * speed_factor
 
-        # Cílová rychlost
         target_vel_vec = dynamic_speed.unsqueeze(-1) * dir_to_chair
         vel_error_sq = torch.sum(torch.square(root_vel - target_vel_vec), dim=-1)
+
+        # Kladná odměna za správný pohyb (0 až 1)
         vel_reward = torch.exp(-vel_error_sq / (2 * self.sigma**2))
 
-        # 2. OPRAVA: Distance Reward
-        # Exponenciální odměna za to, že je blízko u židle.
-        # Pokud se robot rozhodne couvnout, hodnota dist se zvětší a tato odměna mu okamžitě klesne.
-        dist_reward = torch.exp(-dist / 1.0)
+        # --- ČÁST 2: Penalizace za couvání (Backward Penalty) ---
+        # Spočítáme projekci rychlosti robota do směru k židli
+        # Kladné číslo = jde k židli, Záporné číslo = couvá
+        velocity_projection = torch.sum(root_vel * dir_to_chair, dim=-1)
 
-        # Sečteme obě odměny (Váhy 1.0 a 2.0 můžete ladit, ale takto to robotovi
-        # jasně říká: "Být u židle je 2x důležitější, než u toho hezky hýbat nohama").
-        total_reward = (1.0 * vel_reward) + (2.0 * dist_reward)
+        # Vezmeme jen záporné hodnoty (couvání) a ořízneme kladné na 0
+        backward_movement = torch.clamp(velocity_projection, max=0.0)
+
+        # Vynásobíme velkou vahou (např. 5.0).
+        # Výsledek bude záporné číslo (např. -0.5 m/s * 5.0 = -2.5 reward)
+        backward_penalty = backward_movement * self.backward_penalty_weight
+
+        # --- Celkový reward ---
+        # Pokud couvá, dostane (malý vel_reward) + (velký záporný penalty)
+        total_reward = (1.0 * vel_reward) + backward_penalty
 
         return total_reward * stage_mask.float()
 class FaceChairReward(HumanoidBaseReward):
@@ -429,7 +439,7 @@ class FaceChairReward(HumanoidBaseReward):
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
         # Stages: 0-2 (příchod, úchop) a 5 (průchod)
-        self.active_stages = [0, 1, 2, 5]
+        self.active_stages = [0, 1, 3, 4, 2, 5]
 
         # O kolik metrů výše nad base_link židle se má robot dívat
         # (aby nekoukal na kolečka/nohy, ale na sedák)
@@ -586,21 +596,23 @@ class ArmRestingPosePenaltyCfg(HumanoidBaseReward):
 class ReachChairReward(HumanoidBaseReward):
     """
     Stage 1: Reach chair (Dual Arm)
-    Reward for minimizing distance between robot end-effectors and target points on the chair.
+    Kombinuje navádění na pozici (Gaussian) s tvrdou penalizací za pohyb rukou směrem od cíle.
 
-    Paper Reference: Table 2, Stage 1 "Pre-grasp target distance"
-    Formula: exp(-||p_hand - p_target||^2 / (2 * sigma^2))
+    Formula: Gaussian(dist) + (Velocity_Projection < 0 ? Penalty : 0)
     """
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
-        self.sigma = 0.15 # Precision sigma from DoorMan paper
+        self.sigma = 0.15
         self.active_stages = [1]
 
-        # Define body names based on user prompt
         self.robot_left_hand = "left_endeffector"
         self.robot_right_hand = "endeffector"
         self.chair_target_left = "target_hand_left"
         self.chair_target_right = "target_hand_right"
+
+        # Váha trestu za "cukání zpátky".
+        # 5.0 znamená, že za rychlost 1 m/s směrem od cíle dostane penalizaci -5.0
+        self.retreat_penalty_weight = 5.0
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -618,36 +630,64 @@ class ReachChairReward(HumanoidBaseReward):
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
-        # 2. Get Robot Hand Positions
-        # We assume these body names exist in the URDF/Sim
+        # 2. Get Indices & States
         try:
             r_left_idx = robot.body_names.index(self.robot_left_hand)
             r_right_idx = robot.body_names.index(self.robot_right_hand)
+
+            # Pozice rukou [N, 3]
             p_hand_left = robot.body_state[:, r_left_idx, :3]
             p_hand_right = robot.body_state[:, r_right_idx, :3]
 
-            # 3. Get Chair Target Positions
+            # --- NOVÉ: Rychlosti rukou [N, 3] (indexy 7:10 v body_state) ---
+            v_hand_left = robot.body_state[:, r_left_idx, 7:10]
+            v_hand_right = robot.body_state[:, r_right_idx, 7:10]
+
+            # Pozice cílů na židli [N, 3]
             c_left_idx = chair.body_names.index(self.chair_target_left)
             c_right_idx = chair.body_names.index(self.chair_target_right)
             p_target_left = chair.body_state[:, c_left_idx, :3]
             p_target_right = chair.body_state[:, c_right_idx, :3]
         except ValueError as e:
-            # Fallback for safety if names are wrong during testing
             print(f"Body name error: {e}")
             return torch.zeros(num_envs, device=device)
 
-        # 4. Compute Squared Distances
-        dist_sq_left = torch.sum(torch.square(p_hand_left - p_target_left), dim=-1)
-        dist_sq_right = torch.sum(torch.square(p_hand_right - p_target_right), dim=-1)
+        # --- VÝPOČET PRO LEVOU RUKU ---
+        # 1. Směrový vektor k cíli
+        vec_left = p_target_left - p_hand_left
+        dist_sq_left = torch.sum(torch.square(vec_left), dim=-1)
+        dist_left = torch.sqrt(dist_sq_left + 1e-6)
+        dir_left = vec_left / dist_left.unsqueeze(-1) # Normalizovaný směr
 
-        # 5. Compute Gaussian Reward (Average of both hands)
-        # DoorMan uses exp(-error^2 / 2sigma^2)
-        rew_left = torch.exp(-dist_sq_left / (2 * self.sigma**2))
-        rew_right = torch.exp(-dist_sq_right / (2 * self.sigma**2))
+        # 2. Gaussian Reward (za blízkost)
+        rew_pos_left = torch.exp(-dist_sq_left / (2 * self.sigma**2))
 
-        total_reward = (rew_left + rew_right) / 2.0
+        # 3. Penalizace za ústup (projekce rychlosti)
+        # Kladné = jde k cíli, Záporné = jde od cíle
+        vel_proj_left = torch.sum(v_hand_left * dir_left, dim=-1)
+        # Penalizujeme jen záporné hodnoty (pohyb pryč)
+        retreat_left = torch.clamp(vel_proj_left, max=0.0)
+        rew_vel_left = retreat_left * self.retreat_penalty_weight
 
-        # 6. Apply Mask
+        # --- VÝPOČET PRO PRAVOU RUKU ---
+        vec_right = p_target_right - p_hand_right
+        dist_sq_right = torch.sum(torch.square(vec_right), dim=-1)
+        dist_right = torch.sqrt(dist_sq_right + 1e-6)
+        dir_right = vec_right / dist_right.unsqueeze(-1)
+
+        rew_pos_right = torch.exp(-dist_sq_right / (2 * self.sigma**2))
+
+        vel_proj_right = torch.sum(v_hand_right * dir_right, dim=-1)
+        retreat_right = torch.clamp(vel_proj_right, max=0.0)
+        rew_vel_right = retreat_right * self.retreat_penalty_weight
+
+        # --- CELKOVÝ REWARD ---
+        # Průměr za obě ruce: (Pozice + Penalizace)
+        total_left = rew_pos_left + rew_vel_left
+        total_right = rew_pos_right + rew_vel_right
+
+        total_reward = (total_left + total_right) / 2.0
+
         return total_reward * stage_mask.float()
 class HandOrientationReward(HumanoidBaseReward):
     """
@@ -845,14 +885,14 @@ class CloseGraspReward(HumanoidBaseReward):
         self.finger_targets_dict = {
             # --- LEVÁ RUKA ---
             # Palec se zavírá do PLUSU
-            "left_hand_thumb_0_joint": 0.396 - self.trashold,   # (původně 0.396)
-            "left_hand_thumb_1_joint": 0.214 - self.trashold,   # (původně 0.214)
-            "left_hand_thumb_2_joint": 0.357 - self.trashold,   # (původně 0.357)
+            "left_hand_thumb_0_joint": 0.396 + self.trashold,   # (původně 0.396)
+            "left_hand_thumb_1_joint": 0.214 + self.trashold,   # (původně 0.214)
+            "left_hand_thumb_2_joint": 0.357 + self.trashold,   # (původně 0.357)
             # Ostatní prsty se zavírají do MÍNUSU
-            "left_hand_middle_0_joint": -0.523 + self.trashold, # (původně -0.523)
-            "left_hand_middle_1_joint": -0.527 + self.trashold, # (původně -0.527)
-            "left_hand_index_0_joint": -0.485 + self.trashold,  # (původně -0.485)
-            "left_hand_index_1_joint": -0.542 + self.trashold,  # (původně -0.542)
+            "left_hand_middle_0_joint": -0.523 - self.trashold, # (původně -0.523)
+            "left_hand_middle_1_joint": -0.527 - self.trashold, # (původně -0.527)
+            "left_hand_index_0_joint": -0.485 - self.trashold,  # (původně -0.485)
+            "left_hand_index_1_joint": -0.542 - self.trashold,  # (původně -0.542)
 
             # --- PRAVÁ RUKA ---
             # Palec se zavírá do MÍNUSU
@@ -1194,9 +1234,11 @@ DOF_VELOCITY_ACCELERATION_WEIGHT = 1.0
 DOF_POSITION_LIMITS_WEIGHT = -5.0
 HUMANLY_DOF_LIMIT_WEIGHT = -1.0
 UPRIGHT_PENALTY_WEIGHT = -1.0
-STAGE_PROGRESS_WEIGHT = 20.0
+STAGE_PROGRESS_WEIGHT = 4.0
+#stage 0
 WALK_TO_CHAIR_REWARD_WEIGHT = 3.0
-FACE_CHAIR_REWARD_WEIGHT = -5.0
+FACE_CHAIR_REWARD_WEIGHT = -0.2
+#stage 1
 REACH_CHAIR_REWARD_WEIGHT = 3.0
 REACH_ORIENTATION_REWARD_WEIGHT = 2.0
 STAND_STILL_PENALTY_WEIGHT = -6.0
