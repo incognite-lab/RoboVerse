@@ -365,12 +365,12 @@ class WalkToChairReward(HumanoidBaseReward):
         self.sigma = 0.15
         self.target_speed = target_speed
 
-        self.stop_distance = 0.72
+        self.stop_distance = 0.725
         self.braking_distance = 0.5
 
         # Váha trestu za couvání. Musí být dost velká, aby přebila zisk z následného pohybu vpřed.
         # Pokud je 5.0, tak za každý 1 m/s rychlosti dozadu dostane -5 bodů.
-        self.backward_penalty_weight = 5.0
+        self.backward_penalty_weight = 6.0
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -492,10 +492,10 @@ class FaceChairReward(HumanoidBaseReward):
 
         # Výpočet směru, kde má hlava "VRŠEK" (lokální osa +Z)
         # Toto je třetí sloupec rotační matice
-        up_x = 2 * (x*z + w*y)
-        up_y = 2 * (y*z - w*x)
+        #up_x = 2 * (x*z + w*y)
+        #up_y = 2 * (y*z - w*x)
         up_z = 1 - 2 * (x**2 + y**2)
-        head_up_vec = torch.stack([up_x, up_y, up_z], dim=-1)
+        #head_up_vec = torch.stack([up_x, up_y, up_z], dim=-1)
 
         # 5. Výpočet penalizací
         # A) Penalizace za odklon pohledu (Dot product: 1 = kouká přesně tam, -1 = kouká na opačnou stranu)
@@ -1237,7 +1237,7 @@ UPRIGHT_PENALTY_WEIGHT = -1.0
 STAGE_PROGRESS_WEIGHT = 4.0
 #stage 0
 WALK_TO_CHAIR_REWARD_WEIGHT = 3.0
-FACE_CHAIR_REWARD_WEIGHT = -0.2
+FACE_CHAIR_REWARD_WEIGHT = -5.0
 #stage 1
 REACH_CHAIR_REWARD_WEIGHT = 3.0
 REACH_ORIENTATION_REWARD_WEIGHT = 2.0
