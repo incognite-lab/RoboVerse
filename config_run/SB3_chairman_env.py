@@ -156,7 +156,7 @@ class StableBaseline3VecEnv(VecEnv):
         #------------------------------------
         #--------------DEBUG-----------------
         #------------------------------------
-        # debug = 0
+        # debug = 2
         # if debug == 0:
         #     actions = self.debug0()
         #     obs, rewards, unsuccess, timeout, _ = self.env.step(actions)
@@ -397,13 +397,27 @@ class StableBaseline3VecEnv(VecEnv):
     def debug2(self):
         """
         Drží tělo ve fixní pozici a postupně zavírá prsty.
-        Zastaví pohyb prstu pouze pokud:
-        1. Síla kontaktu přesáhne FORCE_THRESHOLD.
-        2. Kontakt nastane na ŠPIČCE prstu (thumb_2, index_1, middle_1).
+        Zastaví pohyb prstu pouze pokud síla kontaktu na ŠPIČCE přesáhne práh.
+
+        Implementace využívá optimalizované tensorové operace kompatibilní s Genesis.
         """
         FORCE_THRESHOLD = 1.0
+        STEP_SIZE = 0.02
+        robot_name = "g1_slider"
 
-        # 1. FIXNÍ POZICE TĚLA
+        # 1. DEFINICE CÍLOVÝCH HODNOT (Limity kam až se mají prsty zavřít)
+        finger_limits = {
+            # --- LEVÁ RUKA ---
+            "left_hand_thumb_0_joint": 1.0, "left_hand_thumb_1_joint": 0.7, "left_hand_thumb_2_joint": 1.0,
+            "left_hand_middle_0_joint": -1.5, "left_hand_middle_1_joint": -1.7,
+            "left_hand_index_0_joint": -1.5, "left_hand_index_1_joint": -1.7,
+            # --- PRAVÁ RUKA ---
+            "right_hand_thumb_0_joint": -1.0, "right_hand_thumb_1_joint": -0.7, "right_hand_thumb_2_joint": -1.0,
+            "right_hand_middle_0_joint": 1.5, "right_hand_middle_1_joint": 1.7,
+            "right_hand_index_0_joint": 1.5, "right_hand_index_1_joint": 1.7
+        }
+
+        # Base pose zbytku těla
         base_pose = {
             'baseslide_joint': 1.0338146e-05, 'baseslide_joint2': 0.042001966, 'baserot_joint': -7.5084286e-06,
             'waist_yaw_joint': -4.4286382e-05, 'waist_roll_joint': 8.922054e-05, 'waist_pitch_joint': 0.008053156,
@@ -416,93 +430,148 @@ class StableBaseline3VecEnv(VecEnv):
             'left_wrist_yaw_joint': -0.24424289, 'right_wrist_yaw_joint': 0.24177466
         }
 
-        # 2. DEFINICE PRSTŮ
-        finger_config = {
-            # --- LEVÁ RUKA ---
-            "left_hand_thumb_0_joint": 1.0, "left_hand_thumb_1_joint": 0.7, "left_hand_thumb_2_joint": 1.0,
-            "left_hand_middle_0_joint": -1.5, "left_hand_middle_1_joint": -1.7,
-            "left_hand_index_0_joint": -1.5, "left_hand_index_1_joint": -1.7,
-            # --- PRAVÁ RUKA ---
-            "right_hand_thumb_0_joint": -1.0, "right_hand_thumb_1_joint": -0.7, "right_hand_thumb_2_joint": -1.0,
-            "right_hand_middle_0_joint": 1.5, "right_hand_middle_1_joint": 1.7,
-            "right_hand_index_0_joint": 1.5, "right_hand_index_1_joint": 1.7
+        # 2. DEFINICE SKUPIN PRSTŮ (Které klouby patří ke kterému "senzoru" na špičce)
+        # Mapování: ID skupiny -> (Seznam kloubů, Klíčové slovo pro link špičky)
+        finger_groups = {
+            0: (["left_hand_thumb_0_joint", "left_hand_thumb_1_joint", "left_hand_thumb_2_joint"], "left_hand_thumb_2_link"),
+            1: (["left_hand_index_0_joint", "left_hand_index_1_joint"], "left_hand_index_1_link"),
+            2: (["left_hand_middle_0_joint", "left_hand_middle_1_joint"], "left_hand_middle_1_link"),
+            3: (["right_hand_thumb_0_joint", "right_hand_thumb_1_joint", "right_hand_thumb_2_joint"], "right_hand_thumb_2_link"),
+            4: (["right_hand_index_0_joint", "right_hand_index_1_joint"], "right_hand_index_1_link"),
+            5: (["right_hand_middle_0_joint", "right_hand_middle_1_joint"], "right_hand_middle_1_link"),
         }
 
-        # Definice klíčových slov pro konce prstů (linky)
-        # Toto zajistí, že budeme ignorovat kolize na článcích 0 (index_0, middle_0, thumb_1 atd.)
-        TIP_IDENTIFIERS = ["thumb_2", "index_1", "middle_1"]
+        handler = self.env.env.handler
+        device = handler.device
+        states = handler.get_states()
+        num_envs = self.num_envs
 
-        # Inicializace paměti
-        if not self.finger_current_positions:
-            self.finger_current_positions = {k: 0.0 for k in finger_config.keys()}
+        # --- INICIALIZACE STAVU (běží jen poprvé) ---
+        if not hasattr(self, "_debug2_cache_init"):
+            # 1. Inicializace aktuálních pozic prstů (Tenzor [num_envs, num_finger_joints])
+            self._finger_joint_names = list(finger_limits.keys())
+            self._finger_joint_limits = torch.tensor([finger_limits[n] for n in self._finger_joint_names], device=device)
+            self._current_finger_pos = torch.zeros((num_envs, len(self._finger_joint_names)), device=device)
 
-        # 3. ZÍSKÁNÍ KONTAKTŮ
-        try:
-            # Předpokládáme, že struktura je správná dle vašeho prostředí
-            contacts = self.env.env.handler.get_states().robots["g1_slider"].contact
-        except Exception as e:
-            log.warning(f"Failed to get contacts: {e}")
-            contacts = []
+            # 2. Mapování ID linků na ID skupiny prstů (stejné jako v GraspForceReward)
+            global_map = states.extras.get("global_link_map", {})
+            num_bodies = states.extras.get("num_bodies_per_env", 1000)
 
-        # 4. ZJIŠTĚNÍ BLOKOVANÝCH PRSTŮ
-        blocked_joints = set()
-        target_obj_name = "chair"
+            # Vytvoříme mapu: Global Link ID -> Finger Group ID (0-5) nebo -1
+            self._idx_to_group = torch.full((num_bodies,), -1, dtype=torch.long, device=device)
+            chair_ids = []
 
-        for c in contacts:
-            # Kontrola jmen objektů
-            is_chair_collision = (c['body_a'] == target_obj_name) or (c['body_b'] == target_obj_name)
+            for idx, (o_name, l_name) in global_map.items():
+                if o_name == robot_name:
+                    for grp_id, (_, tip_link_name) in finger_groups.items():
+                        # Hledáme přesnou shodu špičky prstu
+                        if tip_link_name in l_name:
+                            self._idx_to_group[idx] = grp_id
+                elif o_name == "chair":
+                    chair_ids.append(idx)
 
-            if is_chair_collision:
-                # A) Kontrola síly
-                current_force = c.get('force', 0.0)
-                if current_force < FORCE_THRESHOLD:
-                    continue
+            self._chair_ids = torch.tensor(chair_ids, device=device)
+            self._num_bodies = num_bodies
+            self._debug2_cache_init = True
 
-                # Zjištění linku robota
-                robot_link = c['link_a'] if c['body_b'] == target_obj_name else c['link_b']
+            log.info("Debug2: Initialization complete.")
 
-                # B) Kontrola, zda jde o ŠPIČKU prstu
-                # Pokud název linku (např. left_hand_index_0_link) neobsahuje identifikátor špičky, ignorujeme ho.
-                is_tip = any(tip_id in robot_link for tip_id in TIP_IDENTIFIERS)
+        # --- DETEKCE KONTAKTŮ (Tenzorově) ---
+        # Získáme kontakty přímo z robota
+        contact_data = states.robots[robot_name].contact
 
-                if not is_tip:
-                    continue
+        # Maska blokovaných skupin prstů [num_envs, 6] (6 skupin)
+        blocked_groups = torch.zeros((num_envs, len(finger_groups)), dtype=torch.bool, device=device)
 
-                # Pokud je to špička a má sílu -> Zablokujeme celý prst
-                # Hledáme, které klouby patří k tomuto prstu (podle prefixu, např. "left_hand_index")
-                for joint_name in finger_config.keys():
-                    # Rozparsujeme jméno kloubu: "left_hand_index_0_joint" -> prefix "left_hand_index"
-                    # To zajistí, že když se dotkne index_1, zastaví se i index_0
-                    parts = joint_name.split('_')
-                    # Předpoklad: side_hand_fingername_... (např. left, hand, index)
-                    if len(parts) >= 3:
-                        finger_prefix = "_".join(parts[:3]) # "left_hand_index"
+        if contact_data is not None:
+            link_a = contact_data['link_a']
+            link_b = contact_data['link_b']
+            valid_mask = contact_data['valid_mask']
 
-                        if finger_prefix in robot_link:
-                            blocked_joints.add(joint_name)
+            # Získání sil
+            forces = contact_data.get('force_b', contact_data.get('force', None))
+            if forces is None:
+                forces = torch.zeros((*link_a.shape, 3), device=device)
+            force_mags = torch.norm(forces, dim=-1)
 
-        # 5. AKTUALIZACE POZIC PRSTŮ
-        step_size = 0.01
+            # Modulo pro získání base indexů (pro multi-env)
+            base_a = link_a % self._num_bodies
+            base_b = link_b % self._num_bodies
 
-        for joint, limit in finger_config.items():
-            if joint in blocked_joints:
-                continue
+            # Zjištění, kdo je židle a kdo je prst
+            a_is_chair = torch.isin(base_a, self._chair_ids)
+            b_is_chair = torch.isin(base_b, self._chair_ids)
 
-            current = self.finger_current_positions[joint]
+            # Mapování na skupiny (pokud není prst, vrátí -1)
+            group_a = self._idx_to_group[base_a]
+            group_b = self._idx_to_group[base_b]
 
-            if current < limit:
-                new_val = min(current + step_size, limit)
-            elif current > limit:
-                new_val = max(current - step_size, limit)
-            else:
-                new_val = current
+            # Která skupina prstů se dotýká židle?
+            # Pokud b je židle -> kontakt je na a. Pokud a je židle -> kontakt je na b.
+            contact_group = torch.where(b_is_chair, group_a, torch.where(a_is_chair, group_b, torch.tensor(-1, device=device)))
 
-            self.finger_current_positions[joint] = new_val
+            # Validní kontakt: (Je to kontakt prst-židle) AND (Validní v simulaci) AND (Síla > Threshold)
+            valid_interaction = (contact_group >= 0) & valid_mask & (force_mags > FORCE_THRESHOLD)
 
-        # 6. SESTAVENÍ VÝSTUPNÍ AKCE
-        final_dof_targets = base_pose.copy()
-        final_dof_targets.update(self.finger_current_positions)
+            # Vyplnění masky blokovaných skupin
+            # Pro každou skupinu zjistíme, zda má v daném envu validní silný kontakt
+            for grp_id in range(len(finger_groups)):
+                # Má tento env nějaký kontakt pro tuto skupinu?
+                has_contact = (valid_interaction & (contact_group == grp_id)).any(dim=1)
+                blocked_groups[:, grp_id] = has_contact
 
-        action = [{"g1_slider": {"dof_pos_target": final_dof_targets}}]
+        # --- AKTUALIZACE POZIC ---
+        # Iterujeme přes definované klouby a aktualizujeme pozice
+        for i, joint_name in enumerate(self._finger_joint_names):
+            # Zjistíme, do které skupiny tento kloub patří
+            target_grp = -1
+            for grp_id, (joints, _) in finger_groups.items():
+                if joint_name in joints:
+                    target_grp = grp_id
+                    break
 
-        return action
+            # Získáme limit pro tento kloub
+            limit = self._finger_joint_limits[i]
+
+            # Maska: Kde MŮŽEME hýbat? (Kde NENÍ skupina blokovaná)
+            can_move = ~blocked_groups[:, target_grp]
+
+            # Logika pohybu směrem k limitu
+            current_val = self._current_finger_pos[:, i]
+
+            # Vypočítáme krok (plus nebo mínus podle směru k limitu)
+            direction = torch.sign(limit - current_val)
+            step = direction * STEP_SIZE
+
+            # Nová hodnota (před oříznutím)
+            next_val = current_val + step
+
+            # Ošetření přehmitu (clamp mezi current a limit nefunguje jednoduše, uděláme to logicky)
+            # Pokud jsme blízko limitu, nastavíme limit
+            close_to_limit = torch.abs(current_val - limit) < STEP_SIZE
+            next_val = torch.where(close_to_limit, limit, next_val)
+
+            # Aplikujeme změnu jen tam, kde není blokace
+            self._current_finger_pos[:, i] = torch.where(can_move, next_val, current_val)
+
+        # --- SESTAVENÍ AKCE ---
+        # Protože vracíme list[dict] pro SB3 wrapper, musíme převést tensor zpět (nebo použít tensor přímo, pokud wrapper podporuje)
+        # Zde sestavíme full dictionary, kde base_pose je statická a prsty dynamické.
+
+        # Poznámka: Aby to bylo rychlé, ideálně bychom měli posílat Tensor přímo do handleru,
+        # ale SB3VecEnv ve vaší implementaci očekává list dictů. Uděláme to tedy hybridně.
+
+        actions = []
+        cpu_finger_pos = self._current_finger_pos.cpu().numpy()
+
+        for env_id in range(num_envs):
+            # Kopie base pose
+            dof_targets = base_pose.copy()
+
+            # Update prstů pro tento env
+            for i, name in enumerate(self._finger_joint_names):
+                dof_targets[name] = float(cpu_finger_pos[env_id, i])
+
+            actions.append({robot_name: {"dof_pos_target": dof_targets}})
+
+        return actions

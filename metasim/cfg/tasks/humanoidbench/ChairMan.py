@@ -314,7 +314,7 @@ class UprightPenaltyCfg(HumanoidBaseReward):
         # z_y = 2(yz - xw)
         # z_z = 1 - 2(x^2 + y^2)
 
-        y, z, x, w = root_quat[:, 0], root_quat[:, 1], root_quat[:, 2], root_quat[:, 3]
+        w, x, y, z = root_quat[:, 0], root_quat[:, 1], root_quat[:, 2], root_quat[:, 3]
 
         current_z_x = 2 * (x * z + y * w)
         current_z_y = 2 * (y * z - x * w)
@@ -365,7 +365,7 @@ class WalkToChairReward(HumanoidBaseReward):
         self.sigma = 0.15
         self.target_speed = target_speed
 
-        self.stop_distance = 0.725
+        self.stop_distance = 0.748
         self.braking_distance = 0.5
 
         # Váha trestu za couvání. Musí být dost velká, aby přebila zisk z následného pohybu vpřed.
@@ -596,13 +596,11 @@ class ArmRestingPosePenaltyCfg(HumanoidBaseReward):
 class ReachChairReward(HumanoidBaseReward):
     """
     Stage 1: Reach chair (Dual Arm)
-    Kombinuje navádění na pozici (Gaussian) s tvrdou penalizací za pohyb rukou směrem od cíle.
-
-    Formula: Gaussian(dist) + (Velocity_Projection < 0 ? Penalty : 0)
+    Kombinuje 'Dense' (lineární) odměnu pro navádění z dálky a 'Gaussian' odměnu pro přesnost zblízka.
     """
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
-        self.sigma = 0.15
+        self.sigma = 0.2  # Mírně zvětšeno pro lepší toleranci
         self.active_stages = [1]
 
         self.robot_left_hand = "left_endeffector"
@@ -610,83 +608,46 @@ class ReachChairReward(HumanoidBaseReward):
         self.chair_target_left = "target_hand_left"
         self.chair_target_right = "target_hand_right"
 
-        # Váha trestu za "cukání zpátky".
-        # 5.0 znamená, že za rychlost 1 m/s směrem od cíle dostane penalizaci -5.0
-        self.retreat_penalty_weight = 5.0
-
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
         chair = states.objects["chair"]
         device = robot.joint_pos.device
         num_envs = robot.joint_pos.shape[0]
 
-        # 1. Check Stage
-        if self.actual_stage is None:
-            return torch.zeros(num_envs, device=device)
+        if self.actual_stage is None: return torch.zeros(num_envs, device=device)
+        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        if not stage_mask.any(): return torch.zeros(num_envs, device=device)
 
-        active_stages_tensor = torch.tensor(self.active_stages, device=device)
-        stage_mask = torch.isin(self.actual_stage, active_stages_tensor)
-
-        if not stage_mask.any():
-            return torch.zeros(num_envs, device=device)
-
-        # 2. Get Indices & States
         try:
             r_left_idx = robot.body_names.index(self.robot_left_hand)
             r_right_idx = robot.body_names.index(self.robot_right_hand)
-
-            # Pozice rukou [N, 3]
             p_hand_left = robot.body_state[:, r_left_idx, :3]
             p_hand_right = robot.body_state[:, r_right_idx, :3]
 
-            # --- NOVÉ: Rychlosti rukou [N, 3] (indexy 7:10 v body_state) ---
-            v_hand_left = robot.body_state[:, r_left_idx, 7:10]
-            v_hand_right = robot.body_state[:, r_right_idx, 7:10]
-
-            # Pozice cílů na židli [N, 3]
             c_left_idx = chair.body_names.index(self.chair_target_left)
             c_right_idx = chair.body_names.index(self.chair_target_right)
             p_target_left = chair.body_state[:, c_left_idx, :3]
             p_target_right = chair.body_state[:, c_right_idx, :3]
-        except ValueError as e:
-            print(f"Body name error: {e}")
+        except ValueError:
             return torch.zeros(num_envs, device=device)
 
-        # --- VÝPOČET PRO LEVOU RUKU ---
-        # 1. Směrový vektor k cíli
-        vec_left = p_target_left - p_hand_left
-        dist_sq_left = torch.sum(torch.square(vec_left), dim=-1)
-        dist_left = torch.sqrt(dist_sq_left + 1e-6)
-        dir_left = vec_left / dist_left.unsqueeze(-1) # Normalizovaný směr
+        # Výpočet vzdáleností
+        dist_left = torch.norm(p_hand_left - p_target_left, dim=-1)
+        dist_right = torch.norm(p_hand_right - p_target_right, dim=-1)
 
-        # 2. Gaussian Reward (za blízkost)
-        rew_pos_left = torch.exp(-dist_sq_left / (2 * self.sigma**2))
+        # 1. Lineární (Dense) složka: Tlačí ruce k cíli už z dálky (např. 1 metr -> 0 reward, 0 metrů -> 1.0 reward)
+        dense_left = torch.clamp(1.0 - dist_left, min=0.0, max=1.0)
+        dense_right = torch.clamp(1.0 - dist_right, min=0.0, max=1.0)
 
-        # 3. Penalizace za ústup (projekce rychlosti)
-        # Kladné = jde k cíli, Záporné = jde od cíle
-        vel_proj_left = torch.sum(v_hand_left * dir_left, dim=-1)
-        # Penalizujeme jen záporné hodnoty (pohyb pryč)
-        retreat_left = torch.clamp(vel_proj_left, max=0.0)
-        rew_vel_left = retreat_left * self.retreat_penalty_weight
+        # 2. Gaussovská složka: Jemné doladění těsně u cíle
+        gauss_left = torch.exp(-torch.square(dist_left) / (2 * self.sigma**2))
+        gauss_right = torch.exp(-torch.square(dist_right) / (2 * self.sigma**2))
 
-        # --- VÝPOČET PRO PRAVOU RUKU ---
-        vec_right = p_target_right - p_hand_right
-        dist_sq_right = torch.sum(torch.square(vec_right), dim=-1)
-        dist_right = torch.sqrt(dist_sq_right + 1e-6)
-        dir_right = vec_right / dist_right.unsqueeze(-1)
+        # Složení (50% z dálky, 50% jemná motorika)
+        rew_left = (0.5 * dense_left) + (0.5 * gauss_left)
+        rew_right = (0.5 * dense_right) + (0.5 * gauss_right)
 
-        rew_pos_right = torch.exp(-dist_sq_right / (2 * self.sigma**2))
-
-        vel_proj_right = torch.sum(v_hand_right * dir_right, dim=-1)
-        retreat_right = torch.clamp(vel_proj_right, max=0.0)
-        rew_vel_right = retreat_right * self.retreat_penalty_weight
-
-        # --- CELKOVÝ REWARD ---
-        # Průměr za obě ruce: (Pozice + Penalizace)
-        total_left = rew_pos_left + rew_vel_left
-        total_right = rew_pos_right + rew_vel_right
-
-        total_reward = (total_left + total_right) / 2.0
+        total_reward = (rew_left + rew_right) / 2.0
 
         return total_reward * stage_mask.float()
 class HandOrientationReward(HumanoidBaseReward):
@@ -756,34 +717,73 @@ class HandOrientationReward(HumanoidBaseReward):
         return ((rew_left + rew_right) / 2.0) * stage_mask.float()
 class StandStillPenalty(HumanoidBaseReward):
     """
-    Stage 1: Stability / Stand Still
-    Penalizes root velocity during manipulation stages to ensure stable grasp.
-
-    Paper Reference: Table 2, Stage 1 "Penalty not standing still"
-    Formula: ||v_root||^2
+    Stage 1, 2, 4, 5: Stability / Stand Still
+    Penalizes movement from a saved anchor position.
+    The penalty grows exponentially with the distance from the anchor.
+    The anchor is reset upon entering Stage 1, 4, or 5.
     """
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
         self.active_stages = [1, 2, 4, 5] # Active during pre-grasp, grasp, and keep chair still
+
+        # Stavové proměnné pro logiku uložení pozice
+        self.saved_positions = None
+        self.prev_stages = None
+
+        # Koeficient strmosti exponenciály (čím vyšší, tím rychleji penalizace roste)
+        self.alpha = 5.0
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
         device = robot.joint_pos.device
         num_envs = robot.joint_pos.shape[0]
 
-        if self.actual_stage is None: return torch.zeros(num_envs, device=device)
+        if self.actual_stage is None:
+            return torch.zeros(num_envs, device=device)
 
         stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
 
-        # Root linear velocity (usually indices 7:10 in body_state for the root/pelvis)
-        # Assuming pelvis is body 0 or explicitly named
+        # Root pozice robota [num_envs, 3]
         base_idx = robot.body_names.index("pelvis")
-        root_vel = robot.body_state[:, base_idx, 7:10]
+        current_pos = robot.body_state[:, base_idx, :3]
 
-        velocity_sq = torch.sum(torch.square(root_vel), dim=-1)
+        # 1. Inicializace tenzorů při úplně prvním kroku
+        if self.saved_positions is None:
+            self.saved_positions = current_pos.clone()
+            self.prev_stages = self.actual_stage.clone()
 
-        # Paper weight is -1.0 for this penalty
-        return velocity_sq * stage_mask.float()
+        # 2. Logika pro aktualizaci uložené pozice
+        # Zjišťujeme, zda se prostředí právě přepnulo do nové stage
+        stage_changed = (self.actual_stage != self.prev_stages)
+
+        # Nechceme přepsat pozici při přechodu ze Stage 1 do Stage 2,
+        # protože tam má pořád stát na tom samém místě jako při přípravě na úchop.
+        is_1_to_2 = (self.prev_stages == 1) & (self.actual_stage == 2)
+
+        # Maska pro updatování pozice (např. vlezl do Stage 1, Stage 4 nebo Stage 5)
+        update_mask = stage_changed & stage_mask & ~is_1_to_2
+
+        # Pokud nějaké prostředí splňuje podmínky, přepíšeme jeho uloženou pozici
+        if update_mask.any():
+            self.saved_positions[update_mask] = current_pos[update_mask].clone()
+
+        # Uložíme si aktuální stage pro kontrolu v dalším kroku
+        self.prev_stages = self.actual_stage.clone()
+
+        # 3. Výpočet vzdálenosti od uloženého bodu (ve 3D)
+        dist = torch.norm(current_pos - self.saved_positions, dim=-1)
+
+        # 4. Exponenciální penalizace: exp(alpha * dist) - 1.0
+        # - Pokud dist = 0 -> exp(0) - 1 = 0
+        # - Pokud dist = 0.2 (20 cm) -> exp(5 * 0.2) - 1 = exp(1) - 1 = 1.71
+        # - Pokud dist = 0.5 (50 cm) -> exp(5 * 0.5) - 1 = exp(2.5) - 1 = 11.18
+        penalty = torch.exp(self.alpha * dist) - 1.0
+
+        # Ochrana proti explozi gradientu (pokud by fyzikální engine vystřelil robota do vesmíru)
+        penalty = torch.clamp(penalty, max=50.0)
+
+        # Váha v configu (STAND_STILL_PENALTY_WEIGHT) se postará o to, aby toto číslo bylo záporné
+        return penalty * stage_mask.float()
 class OpenGraspReward(HumanoidBaseReward):
     """
     Stage 1: Open Grasp Reward
@@ -1146,7 +1146,7 @@ class KeepChairStillPenalty(HumanoidBaseReward):
     """
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
-        self.active_stages = [4,5]
+        self.active_stages = [0,1,4,5]
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -1237,7 +1237,7 @@ UPRIGHT_PENALTY_WEIGHT = -1.0
 STAGE_PROGRESS_WEIGHT = 4.0
 #stage 0
 WALK_TO_CHAIR_REWARD_WEIGHT = 3.0
-FACE_CHAIR_REWARD_WEIGHT = -5.0
+FACE_CHAIR_REWARD_WEIGHT = -2.0
 #stage 1
 REACH_CHAIR_REWARD_WEIGHT = 3.0
 REACH_ORIENTATION_REWARD_WEIGHT = 2.0

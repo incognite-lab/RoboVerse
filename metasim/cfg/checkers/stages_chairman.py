@@ -18,9 +18,9 @@ try:
     from metasim.sim import BaseSimHandler
 except:
     pass
-VELOCITY_THRESHOLD = 0.3
+VELOCITY_THRESHOLD = 0.1
 HEIGHT_THRESHOLD = 0.4
-DISTANCE_TO_CHAIR_X_THRESHOLD = 0.73
+DISTANCE_TO_CHAIR_X_THRESHOLD = 0.78
 DISTANCE_TO_CHAIR_Y_THRESHOLD = 0.2
 
 DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.02
@@ -28,7 +28,7 @@ ORIENTATION_DISTANCE_HANDLE_THRESHOLD = 0.03
 GRASP_DRIFT_THRESHOLD = 0.06
 GRASP_FORCE_THRESHOLD = 2.0
 
-POS_THRESHOLD = 0.3
+POS_THRESHOLD = 0.4
 ORI_DOT_PRODUCT_THRESHOLD = 0.9
 CHAIR_PULL_DISTANCE_THRESHOLD = 1.0
 
@@ -94,7 +94,7 @@ def check_movement_chair(states: list[EnvState], handler: BaseSimHandler, idx: t
     pos_diff = torch.norm(chair_pos - initial_chair_pos, dim=-1)
     dot_product = torch.abs(torch.sum(chair_ori * initial_chair_ori, dim=-1))
 
-    return (pos_diff > POS_THRESHOLD) | (dot_product < ORI_DOT_PRODUCT_THRESHOLD)
+    return (pos_diff > POS_THRESHOLD) #| (dot_product < ORI_DOT_PRODUCT_THRESHOLD)
 
 def common_chairman_checker(states: list[EnvState], handler: BaseSimHandler, idx: torch.Tensor) -> torch.BoolTensor:
     """Kontroluje pád robota POUZE pro aktivní indexy."""
@@ -268,10 +268,12 @@ def stege0_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     # Podmínka úspěchu: Vzdálenost je OK a ZÁROVEŇ robot téměř stojí
     success_cond = (
         (distance_x <= DISTANCE_TO_CHAIR_X_THRESHOLD) &
+        (distance_x >= DISTANCE_TO_CHAIR_X_THRESHOLD - 0.1) &
         (distance_y < DISTANCE_TO_CHAIR_Y_THRESHOLD) &
         (vel_norm < VELOCITY_THRESHOLD)
     )
 
+    #distance_x musí být tedy mezi hodnotami (0.78 a 0.68)
     # Zápis výsledků zpět na správné indexy do velkého tenzoru
     terminated[idx] = term_common | success_cond
     success[idx] = success_cond & (~term_common)
@@ -288,7 +290,10 @@ def stege1_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
         return terminated, success
 
     term_common = common_chairman_checker(states, handler, idx) | check_movement_chair(states, handler, idx)
-
+    if term_common.any():
+        print(f"Stage 1 - Termination due to fall or movement: {term_common.sum().item()} / {len(idx)}")
+        print(f"Stage 1 - Masked indices: {idx}")
+        print(f"stage 1 - chair pos: {states.objects['chair'].body_state[idx, states.objects['chair'].body_names.index('base_link'), :3]}")
     right_ee_pos = right_palm_position(states, handler.robot.name, ee_name="endeffector")[idx]
     right_ee_ori = right_palm_orientation(states, handler.robot.name, ee_name="endeffector")[idx]
     left_ee_pos = right_palm_position(states, handler.robot.name, ee_name="left_endeffector")[idx]
