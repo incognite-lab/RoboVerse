@@ -67,7 +67,7 @@ def train_dagger_step(student_net, optimizer, buffer, batch_size=1024):
     # 1. Predikce studenta
     student_acts = student_net(imgs)
 
-    # 2. Výpočet chyby (Supervised Learning - MSE)
+    # 2. Výpočet chyby (Supervised Learning - MSE) L2 loss mezi akcemi studenta a experta
     loss_fn = nn.MSELoss()
     loss = loss_fn(student_acts, expert_acts)
 

@@ -352,6 +352,32 @@ class StageProgressCfg(HumanoidBaseReward):
             return ret
         else:
             return torch.zeros_like(self.completed_stages)
+class ContinuousStageReward(HumanoidBaseReward):
+    """
+    Continuous Stage Reward: Dává permanentní odměnu za to, ve kterém Stage se robot nachází.
+    Stage 0 = 0 bodů
+    Stage 1 = 1 * váha
+    Stage 2 = 2 * váha
+    ... atd.
+
+    Tímto robotovi jasně říkáme, že udržet se v pozdějších fázích je matematicky
+    nejvýhodnější věc v celé hře.
+    """
+    def __init__(self, robot_name="g1_slider"):
+        super().__init__(robot_name)
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        # 1. Ochrana pro úplně první krok, kdy stage ještě nemusí být zinicializován
+        if self.actual_stage is None:
+            robot = states.robots[robot_name]
+            num_envs = robot.joint_pos.shape[0]
+            device = robot.joint_pos.device
+            return torch.zeros(num_envs, device=device)
+
+        # 2. Jednoduše vrátíme aktuální číslo stage (0, 1, 2, 3...)
+        # Váš framework (Metasim/Gym wrapper) tuto hodnotu následně
+        # automaticky vynásobí váhou, kterou máte definovanou v configu.
+        return self.actual_stage.float()
 
 #---------------------stage 0----------------------
 
@@ -365,7 +391,7 @@ class WalkToChairReward(HumanoidBaseReward):
         self.sigma = 0.15
         self.target_speed = target_speed
 
-        self.stop_distance = 0.748
+        self.stop_distance = 0.76
         self.braking_distance = 0.5
 
         # Váha trestu za couvání. Musí být dost velká, aby přebila zisk z následného pohybu vpřed.
@@ -414,18 +440,18 @@ class WalkToChairReward(HumanoidBaseReward):
         # --- ČÁST 2: Penalizace za couvání (Backward Penalty) ---
         # Spočítáme projekci rychlosti robota do směru k židli
         # Kladné číslo = jde k židli, Záporné číslo = couvá
-        velocity_projection = torch.sum(root_vel * dir_to_chair, dim=-1)
+        #velocity_projection = torch.sum(root_vel * dir_to_chair, dim=-1)
 
         # Vezmeme jen záporné hodnoty (couvání) a ořízneme kladné na 0
-        backward_movement = torch.clamp(velocity_projection, max=0.0)
+        #backward_movement = torch.clamp(velocity_projection, max=0.0)
 
         # Vynásobíme velkou vahou (např. 5.0).
         # Výsledek bude záporné číslo (např. -0.5 m/s * 5.0 = -2.5 reward)
-        backward_penalty = backward_movement * self.backward_penalty_weight
+        #backward_penalty = backward_movement * self.backward_penalty_weight
 
         # --- Celkový reward ---
         # Pokud couvá, dostane (malý vel_reward) + (velký záporný penalty)
-        total_reward = (1.0 * vel_reward) + backward_penalty
+        total_reward = (1.0 * vel_reward) #+ backward_penalty
 
         return total_reward * stage_mask.float()
 class FaceChairReward(HumanoidBaseReward):
@@ -798,7 +824,7 @@ class OpenGraspReward(HumanoidBaseReward):
         self.sigma_pos = 0.3
         self.sigma_vel = 0.2
         self.target_angle = 0.0   # 0.0 je otevřená ruka pro vaše limity
-        self.active_stages = [1, 4]  # Aktivní pouze v Pre-grasp fázi
+        self.active_stages = [0, 1, 4]  # Aktivní pouze v Pre-grasp fázi
 
         # Cache pro indexy
         self.finger_indices = None
@@ -1234,21 +1260,25 @@ DOF_VELOCITY_ACCELERATION_WEIGHT = 1.0
 DOF_POSITION_LIMITS_WEIGHT = -5.0
 HUMANLY_DOF_LIMIT_WEIGHT = -1.0
 UPRIGHT_PENALTY_WEIGHT = -1.0
-STAGE_PROGRESS_WEIGHT = 4.0
+#STAGE_PROGRESS_WEIGHT = 4.0
+CONTINUOUS_REWARD_WEIGHT= 5.0
+
 #stage 0
-WALK_TO_CHAIR_REWARD_WEIGHT = 3.0
-FACE_CHAIR_REWARD_WEIGHT = -2.0
+WALK_TO_CHAIR_REWARD_WEIGHT = 5.0
+FACE_CHAIR_REWARD_WEIGHT = -1.0
 #stage 1
-REACH_CHAIR_REWARD_WEIGHT = 3.0
-REACH_ORIENTATION_REWARD_WEIGHT = 2.0
-STAND_STILL_PENALTY_WEIGHT = -6.0
-OPEN_GRASP_REWARD_WEIGHT = 1.5
+REACH_CHAIR_REWARD_WEIGHT = 2.5
+REACH_ORIENTATION_REWARD_WEIGHT = 1.5
+STAND_STILL_PENALTY_WEIGHT = -1.0
+OPEN_GRASP_REWARD_WEIGHT = 1.0
+#stage 2
 CLOSE_GRASP_REWARD_WEIGHT = 3.0
 FORCE_GRASP_REWARD_WEIGHT = 3.0
 PULL_CHAIR_DISTANCE_WEIGHT = 5.0
 PULL_ROBOT_VELOCITY_WEIGHT = 4.0
 KEEP_CHAIR_STILL_PENALTY_WEIGHT = -5.0
 ARM_RESTING_POSE_PENALTY_WEIGHT = -2.0
+
 @configclass
 class ChairmanCfg(HumanoidTaskCfg):
     """Chair task for humanoid robots."""
@@ -1277,9 +1307,9 @@ class ChairmanCfg(HumanoidTaskCfg):
         DOF_POSITION_LIMITS_WEIGHT,
         HUMANLY_DOF_LIMIT_WEIGHT,
         UPRIGHT_PENALTY_WEIGHT,
-        STAGE_PROGRESS_WEIGHT,
+        #STAGE_PROGRESS_WEIGHT,
         WALK_TO_CHAIR_REWARD_WEIGHT,
-        FACE_CHAIR_REWARD_WEIGHT,
+        #FACE_CHAIR_REWARD_WEIGHT,
         REACH_CHAIR_REWARD_WEIGHT,
         REACH_ORIENTATION_REWARD_WEIGHT,
         STAND_STILL_PENALTY_WEIGHT,
@@ -1289,7 +1319,8 @@ class ChairmanCfg(HumanoidTaskCfg):
         PULL_CHAIR_DISTANCE_WEIGHT,
         PULL_ROBOT_VELOCITY_WEIGHT,
         KEEP_CHAIR_STILL_PENALTY_WEIGHT,
-        ARM_RESTING_POSE_PENALTY_WEIGHT
+        ARM_RESTING_POSE_PENALTY_WEIGHT,
+        CONTINUOUS_REWARD_WEIGHT
     ]
     #function_index_success_save_time = 10 #TODO hloupé řešení ale budiž to tak (potřeba opravit)
     reward_functions = [TerminationCfg(),
@@ -1298,9 +1329,9 @@ class ChairmanCfg(HumanoidTaskCfg):
                         DofPositionLimitsCfg(),
                         HumanlyDofLimitCfg(),
                         UprightPenaltyCfg(),
-                        StageProgressCfg(),
+                        #StageProgressCfg(),
                         WalkToChairReward(),
-                        FaceChairReward(),
+                        #FaceChairReward(),
                         ReachChairReward(),
                         HandOrientationReward(),
                         StandStillPenalty(),
@@ -1310,7 +1341,8 @@ class ChairmanCfg(HumanoidTaskCfg):
                         PullChairDistanceReward(),
                         PullRobotVelocityReward(),
                         KeepChairStillPenalty(),
-                        ArmRestingPosePenaltyCfg()
+                        ArmRestingPosePenaltyCfg(),
+                        ContinuousStageReward()
                         ]
     def extra_spec(self):
         """This task does not require any extra observations."""
