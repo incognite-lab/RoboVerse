@@ -679,8 +679,9 @@ class ArmRestingPosePenaltyCfg(HumanoidBaseReward):
 #         return total_reward * stage_mask.float()
 class ReachChairReward(HumanoidBaseReward):
     """
-    Stage 1: Reach chair (Slider verze - Extrémní přesnost)
-    Přidává exponenciální špičku těsně u cíle, aby robot poznal, že 2 cm jsou jackpot.
+    Stage 1: Reach chair (Distance & Retreat Penalty)
+    Odměňuje robota výhradně za zkracování vzdálenosti k cíli a tvrdě penalizuje,
+    pokud ruce pohybují směrem od cíle.
     """
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
@@ -689,6 +690,9 @@ class ReachChairReward(HumanoidBaseReward):
         self.robot_right_hand = "endeffector"
         self.chair_target_left = "target_hand_left"
         self.chair_target_right = "target_hand_right"
+
+        # Váha trestu za to, že ruka letí pryč od cíle (čím větší číslo, tím tvrdší trest)
+        self.retreat_penalty_weight = 5.0
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -703,37 +707,58 @@ class ReachChairReward(HumanoidBaseReward):
         try:
             r_left_idx = robot.body_names.index(self.robot_left_hand)
             r_right_idx = robot.body_names.index(self.robot_right_hand)
+
+            # 1. Získání 3D POZIC rukou
             p_hand_left = robot.body_state[:, r_left_idx, :3]
             p_hand_right = robot.body_state[:, r_right_idx, :3]
 
+            # 2. Získání lineárních RYCHLOSTÍ rukou (pro trest za oddalování)
+            v_hand_left = robot.body_state[:, r_left_idx, 7:10]
+            v_hand_right = robot.body_state[:, r_right_idx, 7:10]
+
             c_left_idx = chair.body_names.index(self.chair_target_left)
             c_right_idx = chair.body_names.index(self.chair_target_right)
+
+            # Získání POZIC cílů
             p_target_left = chair.body_state[:, c_left_idx, :3]
             p_target_right = chair.body_state[:, c_right_idx, :3]
+
         except ValueError:
             return torch.zeros(num_envs, device=device)
 
-        dist_left = torch.norm(p_hand_left - p_target_left, dim=-1)
-        dist_right = torch.norm(p_hand_right - p_target_right, dim=-1)
+        # --- VÝPOČET PRO LEVOU RUKU ---
+        # Vektor od ruky k madlu
+        vec_left = p_target_left - p_hand_left
+        dist_left = torch.norm(vec_left, dim=-1)
+        dir_left = vec_left / (dist_left.unsqueeze(-1) + 1e-6) # Normalizovaný směr
 
-        # 1. Hrubé navádění z dálky (Lineární magnet, 0.0 až 1.0)
-        dense_left = torch.clamp(1.0 - dist_left, min=0.0, max=1.0)
-        dense_right = torch.clamp(1.0 - dist_right, min=0.0, max=1.0)
+        # A) Odměna za vzdálenost (1 / (1 + 10 * dist))
+        # Vzdálenost 1m = 0.09 bodů | 10cm = 0.5 bodů | 2cm = 0.83 bodů | 0cm = 1.0 bodů
+        rew_dist_left = 1.0 / (1.0 + 10.0 * dist_left)
 
-        # 2. Jemná motorika (Rozšířený Gaussian pro okruh ~10 cm)
-        gauss_left = torch.exp(-torch.square(dist_left) / (2 * 0.15**2))
-        gauss_right = torch.exp(-torch.square(dist_right) / (2 * 0.15**2))
+        # B) Penalizace za ucuknutí rukou (záporná projekce rychlosti)
+        vel_proj_left = torch.sum(v_hand_left * dir_left, dim=-1)
+        # Bereme pouze situace, kdy je rychlost k cíli záporná (tj. ruka se vzdaluje)
+        retreat_left = torch.clamp(vel_proj_left, max=0.0)
+        penalty_left = retreat_left * self.retreat_penalty_weight
 
-        # 3. EXTRA ŠPIČKA PRO 2 CM! (Pokud je pod 4 cm, dostane masivní boost)
-        # Toto PPO algoritmu jasně ukáže, co po něm přesně chcete.
-        spike_left = torch.exp(-torch.square(dist_left) / (2 * 0.02**2))
-        spike_right = torch.exp(-torch.square(dist_right) / (2 * 0.02**2))
+        # --- VÝPOČET PRO PRAVOU RUKU ---
+        vec_right = p_target_right - p_hand_right
+        dist_right = torch.norm(vec_right, dim=-1)
+        dir_right = vec_right / (dist_right.unsqueeze(-1) + 1e-6)
 
-        # Poskládání dohromady: Z dálky ho vede Dense, blíž Gauss, u cíle Spike
-        rew_left = (0.2 * dense_left) + (0.4 * gauss_left) + (0.4 * spike_left)
-        rew_right = (0.2 * dense_right) + (0.4 * gauss_right) + (0.4 * spike_right)
+        rew_dist_right = 1.0 / (1.0 + 10.0 * dist_right)
 
-        total_reward = (rew_left + rew_right) / 2.0
+        vel_proj_right = torch.sum(v_hand_right * dir_right, dim=-1)
+        retreat_right = torch.clamp(vel_proj_right, max=0.0)
+        penalty_right = retreat_right * self.retreat_penalty_weight
+
+        # --- CELKOVÉ SKÓRE ---
+        # Poskládání dohromady: Ruka je tažena magnetem (rew_dist), ale kope ho proud, když cukne pryč (penalty)
+        total_left = rew_dist_left + penalty_left
+        total_right = rew_dist_right + penalty_right
+
+        total_reward = (total_left + total_right) / 2.0
 
         return total_reward * stage_mask.float()
 class HandOrientationReward(HumanoidBaseReward):
