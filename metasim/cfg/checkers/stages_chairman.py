@@ -18,7 +18,7 @@ try:
     from metasim.sim import BaseSimHandler
 except:
     pass
-VELOCITY_THRESHOLD = 0.1
+VELOCITY_THRESHOLD = 0.02
 HEIGHT_THRESHOLD = 0.4
 DISTANCE_TO_CHAIR_X_THRESHOLD = 0.8
 DISTANCE_TO_CHAIR_Y_THRESHOLD = 0.2
@@ -290,10 +290,6 @@ def stege1_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
         return terminated, success
 
     term_common = common_chairman_checker(states, handler, idx) | check_movement_chair(states, handler, idx)
-    if term_common.any():
-        print(f"Stage 1 - Termination due to fall or movement: {term_common.sum().item()} / {len(idx)}")
-        print(f"Stage 1 - Masked indices: {idx}")
-        print(f"stage 1 - chair pos: {states.objects['chair'].body_state[idx, states.objects['chair'].body_names.index('base_link'), :3]}")
     right_ee_pos = right_palm_position(states, handler.robot.name, ee_name="endeffector")[idx]
     right_ee_ori = right_palm_orientation(states, handler.robot.name, ee_name="endeffector")[idx]
     left_ee_pos = right_palm_position(states, handler.robot.name, ee_name="left_endeffector")[idx]
@@ -567,6 +563,7 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
 
     for env in env_ids:
         new_stage = random.randint(0, max_available_stage)
+        #new_stage = 1  # PRO TESTOVÁNÍ - vždy začínáme Stage 1, aby bylo vidět, že načítání z RAM funguje
         for i in range(len(handler.task.reward_functions)):
             handler.task.reward_functions[i].actual_stage[env] = new_stage
             handler.task.reward_functions[i].completed_stages[env] = 0

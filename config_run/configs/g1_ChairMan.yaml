@@ -7,11 +7,11 @@ robots: [g1_slider]
 fix_base_link: true
 task: chairman
 decimation: 5
-num_envs: 9
-headless: false
+num_envs: 9000
+headless: true
 add_table: true
 env_spacing: 4.0
-train_or_eval: eval_video #load_and_train #train_dagger #eval_video
+train_or_eval: train #load_and_train #train_dagger #eval_video
 
 
 
@@ -19,15 +19,15 @@ train_or_eval: eval_video #load_and_train #train_dagger #eval_video
 #---------------------------------------
 #(Pro evaluaci je potřeba odkomentovat)
 #---------------------------------------
-cameras:
-   camera1:
-     type: PinholeCameraCfg
-     params:
-       name: camera0
-       pos: [3.0, -3.0, 3.0]
-       look_at: [0.0, 0.0, 0.0]
-       width: 640
-       height: 360
+# cameras:
+#    camera1:
+#      type: PinholeCameraCfg
+#      params:
+#        name: camera0
+#        pos: [3.0, -3.0, 3.0]
+#        look_at: [0.0, 0.0, 0.0]
+#        width: 640
+#        height: 360
       #  mount_to: g1_slider
       #  mount_link: head_link
       #  mount_pos: [0.09, 0.0, 0.5]
@@ -41,8 +41,8 @@ force: false
 #Eveluation settings
 #------------------------------------------
 #load_model_path: ./my_env/output/ppo_models/run_2025-10-16_13-59-07/model_80003072
-#load_model_path: ./config_run/output/ppo_model/run_2026-03-02_14_chairman/
-load_model_path: ./config_run/output/ppo_model_cluster/run_2026-03-11_12_chairman/model_40032000
+#load_model_path: ./config_run/output/ppo_model/run_2026-03-11_15_chairman/model_390312000
+load_model_path: ./config_run/output/ppo_model_cluster/run_2026-03-11_22_chairman/model_380304000
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-02-26_18_chairman/
 video_save_path: ./config_run/output/eval_videos/chair_man_5.mp4
 eval_episodes: 2
@@ -51,7 +51,7 @@ eval_max_steps: 1000
 
 # PPO training settings
 #-------------------------------------------
-total_timesteps: 400_000_000
+total_timesteps: 405_000_000
 model_save_path: ./config_run/output/ppo_model
 model_save_freq: 10_000_000
 tensorboard_log: ./config_run/output/tensorboard

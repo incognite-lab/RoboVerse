@@ -386,7 +386,7 @@ class WalkToChairReward(HumanoidBaseReward):
     Stage 0: Walk to chair
     Kombinuje velocity tracking (pro plynulou chůzi) a penalizaci za couvání.
     """
-    def __init__(self, robot_name="g1_slider", target_speed=0.6):
+    def __init__(self, robot_name="g1_slider", target_speed=1.0):
         super().__init__(robot_name)
         self.sigma = 0.15
         self.target_speed = target_speed
@@ -396,7 +396,7 @@ class WalkToChairReward(HumanoidBaseReward):
 
         # Váha trestu za couvání. Musí být dost velká, aby přebila zisk z následného pohybu vpřed.
         # Pokud je 5.0, tak za každý 1 m/s rychlosti dozadu dostane -5 bodů.
-        self.backward_penalty_weight = 6.0
+        self.backward_penalty_weight = 50.0
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -440,20 +440,21 @@ class WalkToChairReward(HumanoidBaseReward):
         # --- ČÁST 2: Penalizace za couvání (Backward Penalty) ---
         # Spočítáme projekci rychlosti robota do směru k židli
         # Kladné číslo = jde k židli, Záporné číslo = couvá
-        #velocity_projection = torch.sum(root_vel * dir_to_chair, dim=-1)
+        velocity_projection = torch.sum(root_vel * dir_to_chair, dim=-1)
 
         # Vezmeme jen záporné hodnoty (couvání) a ořízneme kladné na 0
-        #backward_movement = torch.clamp(velocity_projection, max=0.0)
+        backward_movement = torch.clamp(velocity_projection, max=0.0)
 
         # Vynásobíme velkou vahou (např. 5.0).
         # Výsledek bude záporné číslo (např. -0.5 m/s * 5.0 = -2.5 reward)
-        #backward_penalty = backward_movement * self.backward_penalty_weight
+        backward_penalty = backward_movement * self.backward_penalty_weight
 
         # --- Celkový reward ---
         # Pokud couvá, dostane (malý vel_reward) + (velký záporný penalty)
-        total_reward = (1.0 * vel_reward) #+ backward_penalty
+        total_reward = (1.0 * vel_reward) + backward_penalty
 
         return total_reward * stage_mask.float()
+
 class FaceChairReward(HumanoidBaseReward):
     """
     Face chair: Penalizace za to, že se hlava robota nedívá přímo na židli ve 3D.
@@ -619,16 +620,71 @@ class ArmRestingPosePenaltyCfg(HumanoidBaseReward):
 
 #---------------------stage 1----------------------
 
+# class ReachChairReward(HumanoidBaseReward):
+#     """
+#     Stage 1: Reach chair (Dual Arm)
+#     Kombinuje 'Dense' (lineární) odměnu pro navádění z dálky a 'Gaussian' odměnu pro přesnost zblízka.
+#     """
+#     def __init__(self, robot_name="g1_slider"):
+#         super().__init__(robot_name)
+#         self.sigma = 0.2  # Mírně zvětšeno pro lepší toleranci
+#         self.active_stages = [1]
+
+#         self.robot_left_hand = "left_endeffector"
+#         self.robot_right_hand = "endeffector"
+#         self.chair_target_left = "target_hand_left"
+#         self.chair_target_right = "target_hand_right"
+
+#     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+#         robot = states.robots[robot_name]
+#         chair = states.objects["chair"]
+#         device = robot.joint_pos.device
+#         num_envs = robot.joint_pos.shape[0]
+
+#         if self.actual_stage is None: return torch.zeros(num_envs, device=device)
+#         stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+#         if not stage_mask.any(): return torch.zeros(num_envs, device=device)
+
+#         try:
+#             r_left_idx = robot.body_names.index(self.robot_left_hand)
+#             r_right_idx = robot.body_names.index(self.robot_right_hand)
+#             p_hand_left = robot.body_state[:, r_left_idx, :3]
+#             p_hand_right = robot.body_state[:, r_right_idx, :3]
+
+#             c_left_idx = chair.body_names.index(self.chair_target_left)
+#             c_right_idx = chair.body_names.index(self.chair_target_right)
+#             p_target_left = chair.body_state[:, c_left_idx, :3]
+#             p_target_right = chair.body_state[:, c_right_idx, :3]
+#         except ValueError:
+#             return torch.zeros(num_envs, device=device)
+
+#         # Výpočet vzdáleností
+#         dist_left = torch.norm(p_hand_left - p_target_left, dim=-1)
+#         dist_right = torch.norm(p_hand_right - p_target_right, dim=-1)
+
+#         # 1. Lineární (Dense) složka: Tlačí ruce k cíli už z dálky (např. 1 metr -> 0 reward, 0 metrů -> 1.0 reward)
+#         dense_left = torch.clamp(1.0 - dist_left, min=0.0, max=1.0)
+#         dense_right = torch.clamp(1.0 - dist_right, min=0.0, max=1.0)
+
+#         # 2. Gaussovská složka: Jemné doladění těsně u cíle
+#         gauss_left = torch.exp(-torch.square(dist_left) / (2 * self.sigma**2))
+#         gauss_right = torch.exp(-torch.square(dist_right) / (2 * self.sigma**2))
+
+#         # Složení (50% z dálky, 50% jemná motorika)
+#         rew_left = (0.5 * dense_left) + (0.5 * gauss_left)
+#         rew_right = (0.5 * dense_right) + (0.5 * gauss_right)
+
+#         total_reward = (rew_left + rew_right) / 2.0
+
+#         return total_reward * stage_mask.float()
 class ReachChairReward(HumanoidBaseReward):
     """
-    Stage 1: Reach chair (Dual Arm)
-    Kombinuje 'Dense' (lineární) odměnu pro navádění z dálky a 'Gaussian' odměnu pro přesnost zblízka.
+    Stage 1: Reach chair (Slider verze - Extrémní přesnost)
+    Přidává exponenciální špičku těsně u cíle, aby robot poznal, že 2 cm jsou jackpot.
     """
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
-        self.sigma = 0.2  # Mírně zvětšeno pro lepší toleranci
         self.active_stages = [1]
-
         self.robot_left_hand = "left_endeffector"
         self.robot_right_hand = "endeffector"
         self.chair_target_left = "target_hand_left"
@@ -657,21 +713,25 @@ class ReachChairReward(HumanoidBaseReward):
         except ValueError:
             return torch.zeros(num_envs, device=device)
 
-        # Výpočet vzdáleností
         dist_left = torch.norm(p_hand_left - p_target_left, dim=-1)
         dist_right = torch.norm(p_hand_right - p_target_right, dim=-1)
 
-        # 1. Lineární (Dense) složka: Tlačí ruce k cíli už z dálky (např. 1 metr -> 0 reward, 0 metrů -> 1.0 reward)
+        # 1. Hrubé navádění z dálky (Lineární magnet, 0.0 až 1.0)
         dense_left = torch.clamp(1.0 - dist_left, min=0.0, max=1.0)
         dense_right = torch.clamp(1.0 - dist_right, min=0.0, max=1.0)
 
-        # 2. Gaussovská složka: Jemné doladění těsně u cíle
-        gauss_left = torch.exp(-torch.square(dist_left) / (2 * self.sigma**2))
-        gauss_right = torch.exp(-torch.square(dist_right) / (2 * self.sigma**2))
+        # 2. Jemná motorika (Rozšířený Gaussian pro okruh ~10 cm)
+        gauss_left = torch.exp(-torch.square(dist_left) / (2 * 0.15**2))
+        gauss_right = torch.exp(-torch.square(dist_right) / (2 * 0.15**2))
 
-        # Složení (50% z dálky, 50% jemná motorika)
-        rew_left = (0.5 * dense_left) + (0.5 * gauss_left)
-        rew_right = (0.5 * dense_right) + (0.5 * gauss_right)
+        # 3. EXTRA ŠPIČKA PRO 2 CM! (Pokud je pod 4 cm, dostane masivní boost)
+        # Toto PPO algoritmu jasně ukáže, co po něm přesně chcete.
+        spike_left = torch.exp(-torch.square(dist_left) / (2 * 0.02**2))
+        spike_right = torch.exp(-torch.square(dist_right) / (2 * 0.02**2))
+
+        # Poskládání dohromady: Z dálky ho vede Dense, blíž Gauss, u cíle Spike
+        rew_left = (0.2 * dense_left) + (0.4 * gauss_left) + (0.4 * spike_left)
+        rew_right = (0.2 * dense_right) + (0.4 * gauss_right) + (0.4 * spike_right)
 
         total_reward = (rew_left + rew_right) / 2.0
 
@@ -1264,7 +1324,7 @@ UPRIGHT_PENALTY_WEIGHT = -1.0
 CONTINUOUS_REWARD_WEIGHT= 5.0
 
 #stage 0
-WALK_TO_CHAIR_REWARD_WEIGHT = 5.0
+WALK_TO_CHAIR_REWARD_WEIGHT = 4.0
 FACE_CHAIR_REWARD_WEIGHT = -1.0
 #stage 1
 REACH_CHAIR_REWARD_WEIGHT = 2.5
