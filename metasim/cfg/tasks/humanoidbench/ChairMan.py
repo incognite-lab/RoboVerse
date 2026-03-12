@@ -754,7 +754,7 @@ class ReachChairReward(HumanoidBaseReward):
         penalty_right = retreat_right * self.retreat_penalty_weight
 
         # --- CELKOVÉ SKÓRE ---
-        # Poskládání dohromady: Ruka je tažena magnetem (rew_dist), ale kope ho proud, když cukne pryč (penalty)
+        # Poskládání dohromady: Ruka je tažena magnetem (rew_dist), ale kope ho proud, když cukne pryč (penalty) XD
         total_left = rew_dist_left + penalty_left
         total_right = rew_dist_right + penalty_right
 
@@ -1349,7 +1349,7 @@ UPRIGHT_PENALTY_WEIGHT = -1.0
 CONTINUOUS_REWARD_WEIGHT= 5.0
 
 #stage 0
-WALK_TO_CHAIR_REWARD_WEIGHT = 4.0
+WALK_TO_CHAIR_REWARD_WEIGHT = 3.5
 FACE_CHAIR_REWARD_WEIGHT = -1.0
 #stage 1
 REACH_CHAIR_REWARD_WEIGHT = 2.5

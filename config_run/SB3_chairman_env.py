@@ -96,8 +96,10 @@ class StableBaseline3VecEnv(VecEnv):
         # Vybere pozici a orientaci (prvních 7 hodnot) pro všechny linky.
         # Shape: (num_envs, num_bodies, 7) -> po reshape: (num_envs, num_bodies * 7)
 
-        robot_body_states = states.robots[robot_name].body_state[:, self.indexes, :7].reshape(self.num_envs, -1).cpu().numpy()
+        robot_body_states = states.robots[robot_name].body_state[:, self.indexes, :7].reshape(self.num_envs, -1).cpu().numpy()#TODO přidat i rychlost
         # 2. Získání indexů a stavů pro cílové body na židli
+        pelvis_idx = chair.body_names.index("pelvis")
+        velocity_pelvis = chair.body_state[:, pelvis_idx, 7:14].cpu().numpy() #TODO debug - rychlost pélvisu
         target_left_idx = chair.body_names.index("target_hand_left")
         target_right_idx = chair.body_names.index("target_hand_right")
 
@@ -105,7 +107,7 @@ class StableBaseline3VecEnv(VecEnv):
         target_right_pos_ori = chair.body_state[:, target_right_idx, :7].cpu().numpy()
 
         # 3. Sloučení extra dat
-        other_pos = np.concatenate([robot_body_states, target_left_pos_ori, target_right_pos_ori], axis=1)
+        other_pos = np.concatenate([robot_body_states, velocity_pelvis, target_left_pos_ori, target_right_pos_ori], axis=1)
 
         # Zajištění správného rozměru původního obs (klouby)
         obs = obs.reshape(self.num_envs, -1)

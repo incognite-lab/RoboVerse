@@ -89,8 +89,8 @@ class G1SliderCfg(BaseRobotCfg):
     }
     joint_limits: dict[str, tuple[float, float]] = {
 
-        "baseslide_joint": (-5.5, 5.5),  # Example limits for the first prismatic joint
-        "baseslide_joint2": (-5.5, 5.5),
+        "baseslide_joint": (-2.0, 1.0),  # Example limits for the first prismatic joint
+        "baseslide_joint2": (-2.0, 0.5),
         "baserot_joint": (-2.618, 2.618),
 
         "waist_yaw_joint": (-2.618, 2.618),

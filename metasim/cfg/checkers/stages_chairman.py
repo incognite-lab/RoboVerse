@@ -18,7 +18,7 @@ try:
     from metasim.sim import BaseSimHandler
 except:
     pass
-VELOCITY_THRESHOLD = 0.02
+VELOCITY_THRESHOLD = 0.05
 HEIGHT_THRESHOLD = 0.4
 DISTANCE_TO_CHAIR_X_THRESHOLD = 0.8
 DISTANCE_TO_CHAIR_Y_THRESHOLD = 0.2
@@ -40,7 +40,7 @@ MAX_SNAPSHOTS = 100
 RAM_SNAPSHOT_BUFFER = {1: [], 2: [], 3: [], 4: [], 5: []}
 BUFFER_INITIALIZED = False
 UNSAVED_COUNT = 0
-SYNC_THRESHOLD = 90  # Každých 50 uložených snapshotů se jeden zapíše trvale na disk
+SYNC_THRESHOLD = 20  # Každých 50 uložených snapshotů se jeden zapíše trvale na disk
 LOCK = threading.Lock()
 
 def init_ram_buffer():
