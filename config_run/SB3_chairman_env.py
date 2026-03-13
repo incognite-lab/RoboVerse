@@ -71,7 +71,7 @@ class StableBaseline3VecEnv(VecEnv):
         self.indexes = [states.robots[robot_name].body_names.index(link) for link in self.main_robot_link_names]
 
         num_robot_bodies = len(self.main_robot_link_names)  # pozice (3) + orientace (4) pro každý link
-        obs_shape = num_joints + (num_robot_bodies * 7) + 7 + 7
+        obs_shape = num_joints + (num_robot_bodies * 7) + 7 + 7 + 6
 
         self.observation_space = spaces.Box(
             low=-np.inf,
@@ -98,8 +98,8 @@ class StableBaseline3VecEnv(VecEnv):
 
         robot_body_states = states.robots[robot_name].body_state[:, self.indexes, :7].reshape(self.num_envs, -1).cpu().numpy()#TODO přidat i rychlost
         # 2. Získání indexů a stavů pro cílové body na židli
-        pelvis_idx = chair.body_names.index("pelvis")
-        velocity_pelvis = chair.body_state[:, pelvis_idx, 7:14].cpu().numpy() #TODO debug - rychlost pélvisu
+        pelvis_idx = states.robots[robot_name].body_names.index("pelvis")
+        velocity_pelvis = states.robots[robot_name].body_state[:, pelvis_idx, 7:14].cpu().numpy() #TODO debug - rychlost pélvisu
         target_left_idx = chair.body_names.index("target_hand_left")
         target_right_idx = chair.body_names.index("target_hand_right")
 

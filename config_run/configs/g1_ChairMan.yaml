@@ -11,7 +11,7 @@ num_envs: 9000
 headless: true
 add_table: true
 env_spacing: 4.0
-train_or_eval: train #load_and_train #train_dagger #eval_video
+train_or_eval: load_and_train #load_and_train #train_dagger #eval_video
 
 
 
@@ -42,9 +42,9 @@ force: false
 #------------------------------------------
 #load_model_path: ./my_env/output/ppo_models/run_2025-10-16_13-59-07/model_80003072
 #load_model_path: ./config_run/output/ppo_model/run_2026-03-11_15_chairman/model_390312000
-load_model_path: ./config_run/output/ppo_model_cluster/run_2026-03-11_22_chairman/model_380304000
+load_model_path: ./config_run/output/ppo_model/run_2026-03-12_18_chairman/model_390312000
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-02-26_18_chairman/
-video_save_path: ./config_run/output/eval_videos/chair_man_5.mp4
+video_save_path: ./config_run/output/eval_videos/chair_man_6.mp4
 eval_episodes: 2
 eval_max_steps: 1000
 

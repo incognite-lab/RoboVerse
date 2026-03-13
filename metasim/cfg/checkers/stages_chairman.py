@@ -18,12 +18,12 @@ try:
     from metasim.sim import BaseSimHandler
 except:
     pass
-VELOCITY_THRESHOLD = 0.05
+VELOCITY_THRESHOLD = 0.07
 HEIGHT_THRESHOLD = 0.4
 DISTANCE_TO_CHAIR_X_THRESHOLD = 0.8
 DISTANCE_TO_CHAIR_Y_THRESHOLD = 0.2
 
-DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.02
+DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.035
 ORIENTATION_DISTANCE_HANDLE_THRESHOLD = 0.03
 GRASP_DRIFT_THRESHOLD = 0.06
 GRASP_FORCE_THRESHOLD = 2.0
@@ -268,7 +268,7 @@ def stege0_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     # Podmínka úspěchu: Vzdálenost je OK a ZÁROVEŇ robot téměř stojí
     success_cond = (
         (distance_x <= DISTANCE_TO_CHAIR_X_THRESHOLD) &
-        (distance_x >= DISTANCE_TO_CHAIR_X_THRESHOLD - 0.1) &
+        (distance_x >= DISTANCE_TO_CHAIR_X_THRESHOLD - 0.15) &
         (distance_y < DISTANCE_TO_CHAIR_Y_THRESHOLD) &
         (vel_norm < VELOCITY_THRESHOLD)
     )
