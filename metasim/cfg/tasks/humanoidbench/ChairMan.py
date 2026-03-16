@@ -695,7 +695,7 @@ class ReachChairReward(HumanoidBaseReward):
     """
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
-        self.active_stages = [1]
+        self.active_stages = [1,2]
         self.robot_left_hand = "left_endeffector"
         self.robot_right_hand = "endeffector"
         self.chair_target_left = "target_hand_left"
@@ -1356,7 +1356,7 @@ DOF_POSITION_LIMITS_WEIGHT = -5.0
 HUMANLY_DOF_LIMIT_WEIGHT = -1.0
 UPRIGHT_PENALTY_WEIGHT = -1.0
 #STAGE_PROGRESS_WEIGHT = 4.0
-CONTINUOUS_REWARD_WEIGHT= 5.0
+CONTINUOUS_REWARD_WEIGHT= 6.0
 
 #stage 0
 WALK_TO_CHAIR_REWARD_WEIGHT = 3.5
@@ -1364,11 +1364,12 @@ FACE_CHAIR_REWARD_WEIGHT = 1.0
 #stage 1
 REACH_CHAIR_REWARD_WEIGHT = 2.5
 REACH_ORIENTATION_REWARD_WEIGHT = 1.5
-STAND_STILL_PENALTY_WEIGHT = -1.5
+STAND_STILL_PENALTY_WEIGHT = -1.0
 OPEN_GRASP_REWARD_WEIGHT = 1.0
 #stage 2
-CLOSE_GRASP_REWARD_WEIGHT = 3.0
-FORCE_GRASP_REWARD_WEIGHT = 3.0
+CLOSE_GRASP_REWARD_WEIGHT = 2.5
+FORCE_GRASP_REWARD_WEIGHT = 1.0
+
 PULL_CHAIR_DISTANCE_WEIGHT = 5.0
 PULL_ROBOT_VELOCITY_WEIGHT = 4.0
 KEEP_CHAIR_STILL_PENALTY_WEIGHT = -5.0
