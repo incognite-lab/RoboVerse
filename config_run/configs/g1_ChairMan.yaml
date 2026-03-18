@@ -42,7 +42,7 @@ force: false
 #------------------------------------------
 #load_model_path: ./my_env/output/ppo_models/run_2025-10-16_13-59-07/model_80003072
 #load_model_path: ./config_run/output/ppo_model/run_2026-03-13_15_chairman/model_760608000
-load_model_path: ./config_run/output/ppo_model_cluster/run_2026-03-13_14_chairman/model_220077000
+load_model_path: ./config_run/output/ppo_model_cluster/run_2026-03-16_11_chairman/model_660528000
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-02-26_18_chairman/
 video_save_path: ./config_run/output/eval_videos/chair_man_6.mp4
 eval_episodes: 2

@@ -629,21 +629,22 @@ class ArmRestingPosePenaltyCfg(HumanoidBaseReward):
 
 
 #---------------------stage 1----------------------
-
 # class ReachChairReward(HumanoidBaseReward):
 #     """
-#     Stage 1: Reach chair (Dual Arm)
-#     Kombinuje 'Dense' (lineární) odměnu pro navádění z dálky a 'Gaussian' odměnu pro přesnost zblízka.
+#     Stage 1: Reach chair (Distance & Retreat Penalty)
+#     Odměňuje robota výhradně za zkracování vzdálenosti k cíli a tvrdě penalizuje,
+#     pokud ruce pohybují směrem od cíle.
 #     """
 #     def __init__(self, robot_name="g1_slider"):
 #         super().__init__(robot_name)
-#         self.sigma = 0.2  # Mírně zvětšeno pro lepší toleranci
-#         self.active_stages = [1]
-
+#         self.active_stages = [1,2]
 #         self.robot_left_hand = "left_endeffector"
 #         self.robot_right_hand = "endeffector"
 #         self.chair_target_left = "target_hand_left"
 #         self.chair_target_right = "target_hand_right"
+
+#         # Váha trestu za to, že ruka letí pryč od cíle (čím větší číslo, tím tvrdší trest)
+#         self.retreat_penalty_weight = 5.0
 
 #     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
 #         robot = states.robots[robot_name]
@@ -658,40 +659,65 @@ class ArmRestingPosePenaltyCfg(HumanoidBaseReward):
 #         try:
 #             r_left_idx = robot.body_names.index(self.robot_left_hand)
 #             r_right_idx = robot.body_names.index(self.robot_right_hand)
+
+#             # 1. Získání 3D POZIC rukou
 #             p_hand_left = robot.body_state[:, r_left_idx, :3]
 #             p_hand_right = robot.body_state[:, r_right_idx, :3]
 
+#             # 2. Získání lineárních RYCHLOSTÍ rukou (pro trest za oddalování)
+#             v_hand_left = robot.body_state[:, r_left_idx, 7:10]
+#             v_hand_right = robot.body_state[:, r_right_idx, 7:10]
+
 #             c_left_idx = chair.body_names.index(self.chair_target_left)
 #             c_right_idx = chair.body_names.index(self.chair_target_right)
+
+#             # Získání POZIC cílů
 #             p_target_left = chair.body_state[:, c_left_idx, :3]
 #             p_target_right = chair.body_state[:, c_right_idx, :3]
+
 #         except ValueError:
 #             return torch.zeros(num_envs, device=device)
 
-#         # Výpočet vzdáleností
-#         dist_left = torch.norm(p_hand_left - p_target_left, dim=-1)
-#         dist_right = torch.norm(p_hand_right - p_target_right, dim=-1)
+#         # --- VÝPOČET PRO LEVOU RUKU ---
+#         # Vektor od ruky k madlu
+#         vec_left = p_target_left - p_hand_left
+#         dist_left = torch.norm(vec_left, dim=-1)
+#         dir_left = vec_left / (dist_left.unsqueeze(-1) + 1e-6) # Normalizovaný směr
 
-#         # 1. Lineární (Dense) složka: Tlačí ruce k cíli už z dálky (např. 1 metr -> 0 reward, 0 metrů -> 1.0 reward)
-#         dense_left = torch.clamp(1.0 - dist_left, min=0.0, max=1.0)
-#         dense_right = torch.clamp(1.0 - dist_right, min=0.0, max=1.0)
+#         # A) Odměna za vzdálenost (1 / (1 + 10 * dist))
+#         # Vzdálenost 1m = 0.09 bodů | 10cm = 0.5 bodů | 2cm = 0.83 bodů | 0cm = 1.0 bodů
+#         rew_dist_left = 1.0 / (1.0 + 10.0 * dist_left)
 
-#         # 2. Gaussovská složka: Jemné doladění těsně u cíle
-#         gauss_left = torch.exp(-torch.square(dist_left) / (2 * self.sigma**2))
-#         gauss_right = torch.exp(-torch.square(dist_right) / (2 * self.sigma**2))
+#         # B) Penalizace za ucuknutí rukou (záporná projekce rychlosti)
+#         vel_proj_left = torch.sum(v_hand_left * dir_left, dim=-1)
+#         # Bereme pouze situace, kdy je rychlost k cíli záporná (tj. ruka se vzdaluje)
+#         retreat_left = torch.clamp(vel_proj_left, max=0.0)
+#         penalty_left = retreat_left * self.retreat_penalty_weight
 
-#         # Složení (50% z dálky, 50% jemná motorika)
-#         rew_left = (0.5 * dense_left) + (0.5 * gauss_left)
-#         rew_right = (0.5 * dense_right) + (0.5 * gauss_right)
+#         # --- VÝPOČET PRO PRAVOU RUKU ---
+#         vec_right = p_target_right - p_hand_right
+#         dist_right = torch.norm(vec_right, dim=-1)
+#         dir_right = vec_right / (dist_right.unsqueeze(-1) + 1e-6)
 
-#         total_reward = (rew_left + rew_right) / 2.0
+#         rew_dist_right = 1.0 / (1.0 + 10.0 * dist_right)
+
+#         vel_proj_right = torch.sum(v_hand_right * dir_right, dim=-1)
+#         retreat_right = torch.clamp(vel_proj_right, max=0.0)
+#         penalty_right = retreat_right * self.retreat_penalty_weight
+
+#         # --- CELKOVÉ SKÓRE ---
+#         # Poskládání dohromady: Ruka je tažena magnetem (rew_dist), ale kope ho proud, když cukne pryč (penalty) XD
+#         total_left = rew_dist_left + penalty_left
+#         total_right = rew_dist_right + penalty_right
+
+#         total_reward = (total_left + total_right) / 2.0
 
 #         return total_reward * stage_mask.float()
 class ReachChairReward(HumanoidBaseReward):
     """
-    Stage 1: Reach chair (Distance & Retreat Penalty)
-    Odměňuje robota výhradně za zkracování vzdálenosti k cíli a tvrdě penalizuje,
-    pokud ruce pohybují směrem od cíle.
+    Stage 1: Reach chair (Bottleneck Distance & Retreat Penalty)
+    Odměňuje robota za zkracování vzdálenosti, ale odměna je limitována
+    tou rukou, která je dál od cíle. Tvrdě penalizuje oddalování.
     """
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
@@ -701,7 +727,7 @@ class ReachChairReward(HumanoidBaseReward):
         self.chair_target_left = "target_hand_left"
         self.chair_target_right = "target_hand_right"
 
-        # Váha trestu za to, že ruka letí pryč od cíle (čím větší číslo, tím tvrdší trest)
+        # Váha trestu za to, že ruka letí pryč od cíle
         self.retreat_penalty_weight = 5.0
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
@@ -737,18 +763,13 @@ class ReachChairReward(HumanoidBaseReward):
             return torch.zeros(num_envs, device=device)
 
         # --- VÝPOČET PRO LEVOU RUKU ---
-        # Vektor od ruky k madlu
         vec_left = p_target_left - p_hand_left
         dist_left = torch.norm(vec_left, dim=-1)
-        dir_left = vec_left / (dist_left.unsqueeze(-1) + 1e-6) # Normalizovaný směr
+        dir_left = vec_left / (dist_left.unsqueeze(-1) + 1e-6)
 
-        # A) Odměna za vzdálenost (1 / (1 + 10 * dist))
-        # Vzdálenost 1m = 0.09 bodů | 10cm = 0.5 bodů | 2cm = 0.83 bodů | 0cm = 1.0 bodů
         rew_dist_left = 1.0 / (1.0 + 10.0 * dist_left)
 
-        # B) Penalizace za ucuknutí rukou (záporná projekce rychlosti)
         vel_proj_left = torch.sum(v_hand_left * dir_left, dim=-1)
-        # Bereme pouze situace, kdy je rychlost k cíli záporná (tj. ruka se vzdaluje)
         retreat_left = torch.clamp(vel_proj_left, max=0.0)
         penalty_left = retreat_left * self.retreat_penalty_weight
 
@@ -763,14 +784,18 @@ class ReachChairReward(HumanoidBaseReward):
         retreat_right = torch.clamp(vel_proj_right, max=0.0)
         penalty_right = retreat_right * self.retreat_penalty_weight
 
-        # --- CELKOVÉ SKÓRE ---
-        # Poskládání dohromady: Ruka je tažena magnetem (rew_dist), ale kope ho proud, když cukne pryč (penalty) XD
-        total_left = rew_dist_left + penalty_left
-        total_right = rew_dist_right + penalty_right
+        # --- CELKOVÉ SKÓRE (BOTTLENECK LOGIKA) ---
+        # 1. Odměna je dána tou rukou, která je na tom hůře (je dál)
+        bottleneck_dist_reward = torch.min(rew_dist_left, rew_dist_right)
 
-        total_reward = (total_left + total_right) / 2.0
+        # 2. Tresty se sčítají (nesmí ucuknout ani jedna ruka)
+        total_penalty = penalty_left + penalty_right
+
+        # 3. Sečtení dohromady
+        total_reward = bottleneck_dist_reward + total_penalty
 
         return total_reward * stage_mask.float()
+
 class HandOrientationReward(HumanoidBaseReward):
     """
     Stage 1: Hand Orientation
@@ -1128,6 +1153,14 @@ class GraspForceReward(HumanoidBaseReward):
 
         # 2. RYCHLÉ TENZOROVÉ OPERACE
         link_a = contact_data['link_a'] # [num_envs, max_contacts]
+
+        # --- OPRAVA: Kontrola, zda existují vůbec nějaké kontakty ---
+        # Pokud je max_contacts == 0, okamžitě vracíme nuly, abychom
+        # zabránili pádu funkce torch.max() o pár řádků níže.
+        if link_a.shape[1] == 0:
+            return torch.zeros(num_envs, device=device)
+        # -------------------------------------------------------------
+
         link_b = contact_data['link_b']
         valid_mask = contact_data['valid_mask']
 
@@ -1154,7 +1187,10 @@ class GraspForceReward(HumanoidBaseReward):
         for cat_id in range(len(self.finger_categories)):
             cat_mask = valid_interaction & (contact_cat == cat_id)
             cat_forces = force_mags * cat_mask.float()
+
+            # Bez "early exitu" výše by tento řádek spadnul na prázdných tenzorech
             max_f, _ = torch.max(cat_forces, dim=1)
+
             finger_forces[:, cat_id] = max_f
 
         # 3. VÝPOČET ODMĚNY
@@ -1355,15 +1391,15 @@ DOF_VELOCITY_ACCELERATION_WEIGHT = 1.0
 DOF_POSITION_LIMITS_WEIGHT = -5.0
 HUMANLY_DOF_LIMIT_WEIGHT = -1.0
 UPRIGHT_PENALTY_WEIGHT = -1.0
-#STAGE_PROGRESS_WEIGHT = 4.0
-CONTINUOUS_REWARD_WEIGHT= 6.0
+STAGE_PROGRESS_WEIGHT = 20.0
+CONTINUOUS_REWARD_WEIGHT= 7.0
 
 #stage 0
 WALK_TO_CHAIR_REWARD_WEIGHT = 3.5
 FACE_CHAIR_REWARD_WEIGHT = 1.0
 #stage 1
-REACH_CHAIR_REWARD_WEIGHT = 2.5
-REACH_ORIENTATION_REWARD_WEIGHT = 1.5
+REACH_CHAIR_REWARD_WEIGHT = 2.0
+REACH_ORIENTATION_REWARD_WEIGHT = 2.0
 STAND_STILL_PENALTY_WEIGHT = -1.0
 OPEN_GRASP_REWARD_WEIGHT = 1.0
 #stage 2
@@ -1372,8 +1408,8 @@ FORCE_GRASP_REWARD_WEIGHT = 1.0
 
 PULL_CHAIR_DISTANCE_WEIGHT = 5.0
 PULL_ROBOT_VELOCITY_WEIGHT = 4.0
-KEEP_CHAIR_STILL_PENALTY_WEIGHT = -5.0
-ARM_RESTING_POSE_PENALTY_WEIGHT = -2.0
+KEEP_CHAIR_STILL_PENALTY_WEIGHT = -2.0
+ARM_RESTING_POSE_PENALTY_WEIGHT = -0.5
 
 @configclass
 class ChairmanCfg(HumanoidTaskCfg):
@@ -1403,7 +1439,7 @@ class ChairmanCfg(HumanoidTaskCfg):
         DOF_POSITION_LIMITS_WEIGHT,
         HUMANLY_DOF_LIMIT_WEIGHT,
         UPRIGHT_PENALTY_WEIGHT,
-        #STAGE_PROGRESS_WEIGHT,
+        STAGE_PROGRESS_WEIGHT,
         WALK_TO_CHAIR_REWARD_WEIGHT,
         #FACE_CHAIR_REWARD_WEIGHT,
         REACH_CHAIR_REWARD_WEIGHT,
@@ -1425,7 +1461,7 @@ class ChairmanCfg(HumanoidTaskCfg):
                         DofPositionLimitsCfg(),
                         HumanlyDofLimitCfg(),
                         UprightPenaltyCfg(),
-                        #StageProgressCfg(),
+                        StageProgressCfg(),
                         WalkToChairReward(),
                         #FaceChairReward(),
                         ReachChairReward(),

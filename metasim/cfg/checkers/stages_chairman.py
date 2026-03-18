@@ -23,12 +23,14 @@ HEIGHT_THRESHOLD = 0.4
 DISTANCE_TO_CHAIR_X_THRESHOLD = 0.8
 DISTANCE_TO_CHAIR_Y_THRESHOLD = 0.2
 
+HAND_VELOCITY_THRESHOLD = 0.15
+
 DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.035
 ORIENTATION_DISTANCE_HANDLE_THRESHOLD = 0.03
 GRASP_DRIFT_THRESHOLD = 0.06
 GRASP_FORCE_THRESHOLD = 2.0
 
-POS_THRESHOLD = 0.4
+POS_THRESHOLD = 0.5
 ORI_DOT_PRODUCT_THRESHOLD = 0.9
 CHAIR_PULL_DISTANCE_THRESHOLD = 1.0
 
@@ -280,6 +282,45 @@ def stege0_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
 
     return terminated, success
 
+# def stege1_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.BoolTensor) -> tuple[torch.BoolTensor, torch.BoolTensor]:
+#     num_envs = mask.shape[0]
+#     terminated = torch.zeros(num_envs, dtype=torch.bool, device=mask.device)
+#     success = torch.zeros(num_envs, dtype=torch.bool, device=mask.device)
+
+#     idx = mask.nonzero(as_tuple=True)[0]
+#     if idx.numel() == 0:
+#         return terminated, success
+
+#     term_common = common_chairman_checker(states, handler, idx) | check_movement_chair(states, handler, idx)
+#     right_ee_pos = right_palm_position(states, handler.robot.name, ee_name="endeffector")[idx]
+#     right_ee_ori = right_palm_orientation(states, handler.robot.name, ee_name="endeffector")[idx]
+#     left_ee_pos = right_palm_position(states, handler.robot.name, ee_name="left_endeffector")[idx]
+#     left_ee_ori = right_palm_orientation(states, handler.robot.name, ee_name="left_endeffector")[idx]
+
+#     chair = states.objects["chair"]
+#     r_idx = chair.body_names.index("target_hand_right")
+#     l_idx = chair.body_names.index("target_hand_left")
+
+#     r_handle_pos, r_handle_ori = chair.body_state[idx, r_idx, :3], chair.body_state[idx, r_idx, 3:7]
+#     l_handle_pos, l_handle_ori = chair.body_state[idx, l_idx, :3], chair.body_state[idx, l_idx, 3:7]
+
+#     left_dist = torch.norm(left_ee_pos - l_handle_pos, dim=-1)
+#     right_dist = torch.norm(right_ee_pos - r_handle_pos, dim=-1)
+
+#     left_dot = torch.abs(torch.sum(l_handle_ori * left_ee_ori, dim=-1))
+#     right_dot = torch.abs(torch.sum(r_handle_ori * right_ee_ori, dim=-1))
+
+#     l_ori_dist = 1.0 - left_dot
+#     r_ori_dist = 1.0 - right_dot
+
+#     success_cond = (left_dist < DISTANCE_TO_CHAIR_HANDLE_THRESHOLD) & \
+#                    (right_dist < DISTANCE_TO_CHAIR_HANDLE_THRESHOLD) & \
+#                    (l_ori_dist < ORIENTATION_DISTANCE_HANDLE_THRESHOLD) & \
+#                    (r_ori_dist < ORIENTATION_DISTANCE_HANDLE_THRESHOLD)
+
+#     terminated[idx] = term_common | success_cond
+#     success[idx] = success_cond & (~term_common)
+#     return terminated, success
 def stege1_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.BoolTensor) -> tuple[torch.BoolTensor, torch.BoolTensor]:
     num_envs = mask.shape[0]
     terminated = torch.zeros(num_envs, dtype=torch.bool, device=mask.device)
@@ -290,10 +331,26 @@ def stege1_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
         return terminated, success
 
     term_common = common_chairman_checker(states, handler, idx) | check_movement_chair(states, handler, idx)
+
+    # --- POZICE A ORIENTACE RUKOU ---
     right_ee_pos = right_palm_position(states, handler.robot.name, ee_name="endeffector")[idx]
     right_ee_ori = right_palm_orientation(states, handler.robot.name, ee_name="endeffector")[idx]
     left_ee_pos = right_palm_position(states, handler.robot.name, ee_name="left_endeffector")[idx]
     left_ee_ori = right_palm_orientation(states, handler.robot.name, ee_name="left_endeffector")[idx]
+
+    # --- NOVÉ: ZÍSKÁNÍ RYCHLOSTI RUKOU ---
+    robot_state = states.robots[handler.robot.name]
+    l_ee_idx = robot_state.body_names.index("left_endeffector")
+    r_ee_idx = robot_state.body_names.index("endeffector")
+
+    # Indexy 7:10 v body_state obsahují lineární rychlost [x, y, z]
+    left_ee_vel = robot_state.body_state[idx, l_ee_idx, 7:10]
+    right_ee_vel = robot_state.body_state[idx, r_ee_idx, 7:10]
+
+    # Vypočítáme velikost rychlosti v m/s
+    left_vel_norm = torch.norm(left_ee_vel, dim=-1)
+    right_vel_norm = torch.norm(right_ee_vel, dim=-1)
+    # -------------------------------------
 
     chair = states.objects["chair"]
     r_idx = chair.body_names.index("target_hand_right")
@@ -311,15 +368,21 @@ def stege1_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     l_ori_dist = 1.0 - left_dot
     r_ori_dist = 1.0 - right_dot
 
+    # Předpokládáme, že máte nadefinováno HAND_VELOCITY_THRESHOLD (např. 0.1 nebo 0.05)
+    # Můžete zde použít i váš stávající VELOCITY_THRESHOLD
+
+
+    # --- PŘIDÁNA PODMÍNKA RYCHLOSTI ---
     success_cond = (left_dist < DISTANCE_TO_CHAIR_HANDLE_THRESHOLD) & \
                    (right_dist < DISTANCE_TO_CHAIR_HANDLE_THRESHOLD) & \
                    (l_ori_dist < ORIENTATION_DISTANCE_HANDLE_THRESHOLD) & \
-                   (r_ori_dist < ORIENTATION_DISTANCE_HANDLE_THRESHOLD)
+                   (r_ori_dist < ORIENTATION_DISTANCE_HANDLE_THRESHOLD) & \
+                   (left_vel_norm < HAND_VELOCITY_THRESHOLD) & \
+                   (right_vel_norm < HAND_VELOCITY_THRESHOLD)
 
     terminated[idx] = term_common | success_cond
     success[idx] = success_cond & (~term_common)
     return terminated, success
-
 def stege2_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.BoolTensor) -> tuple[torch.BoolTensor, torch.BoolTensor]:
     num_envs = mask.shape[0]
     terminated = torch.zeros(num_envs, dtype=torch.bool, device=mask.device)
@@ -560,10 +623,9 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
             max_available_stage = i
         else:
             break
-
     for env in env_ids:
         new_stage = random.randint(0, max_available_stage)
-        #new_stage = 1  # PRO TESTOVÁNÍ - vždy začínáme Stage 1, aby bylo vidět, že načítání z RAM funguje
+        new_stage = 0  # PRO TESTOVÁNÍ - vždy začínáme Stage 1, aby bylo vidět, že načítání z RAM funguje
         for i in range(len(handler.task.reward_functions)):
             handler.task.reward_functions[i].actual_stage[env] = new_stage
             handler.task.reward_functions[i].completed_stages[env] = 0
