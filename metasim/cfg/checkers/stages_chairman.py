@@ -25,7 +25,7 @@ DISTANCE_TO_CHAIR_Y_THRESHOLD = 0.2
 
 HAND_VELOCITY_THRESHOLD = 0.15
 
-DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.035
+DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.034
 ORIENTATION_DISTANCE_HANDLE_THRESHOLD = 0.03
 GRASP_DRIFT_THRESHOLD = 0.06
 GRASP_FORCE_THRESHOLD = 2.0
@@ -625,7 +625,7 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
             break
     for env in env_ids:
         new_stage = random.randint(0, max_available_stage)
-        new_stage = 0  # PRO TESTOVÁNÍ - vždy začínáme Stage 1, aby bylo vidět, že načítání z RAM funguje
+        #new_stage = 2  # PRO TESTOVÁNÍ - vždy začínáme Stage 1, aby bylo vidět, že načítání z RAM funguje
         for i in range(len(handler.task.reward_functions)):
             handler.task.reward_functions[i].actual_stage[env] = new_stage
             handler.task.reward_functions[i].completed_stages[env] = 0
