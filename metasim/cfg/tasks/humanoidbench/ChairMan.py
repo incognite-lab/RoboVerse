@@ -381,10 +381,83 @@ class ContinuousStageReward(HumanoidBaseReward):
 
 #---------------------stage 0----------------------
 
+# class WalkToChairReward(HumanoidBaseReward):
+#     """
+#     Stage 0: Walk to chair
+#     Kombinuje velocity tracking (pro plynulou chůzi) a penalizaci za couvání.
+#     """
+#     def __init__(self, robot_name="g1_slider", target_speed=0.8):
+#         super().__init__(robot_name)
+#         self.sigma = 0.15
+#         self.target_speed = target_speed
+#         self.active_stages = [0,1,2]
+#         self.stop_distance = 0.76
+#         self.braking_distance = 0.5
+
+#         # Váha trestu za couvání. Musí být dost velká, aby přebila zisk z následného pohybu vpřed.
+#         # Pokud je 5.0, tak za každý 1 m/s rychlosti dozadu dostane -5 bodů.
+#         self.backward_penalty_weight = 50.0
+
+#     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+#         robot = states.robots[robot_name]
+#         chair = states.objects["chair"]
+#         device = robot.joint_pos.device
+#         num_envs = robot.joint_pos.shape[0]
+
+#         if self.actual_stage is None: return torch.zeros(num_envs, device=device)
+#         stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+#         if not stage_mask.any(): return torch.zeros(num_envs, device=device)
+
+#         base_link_idx = robot.body_names.index("pelvis")
+#         root_pos = robot.body_state[:, base_link_idx, :3]
+#         root_vel = robot.body_state[:, base_link_idx, 7:10]
+
+#         chair_base_link_idx = chair.body_names.index("base_link")
+#         target_pos = chair.body_state[:, chair_base_link_idx, :3]
+
+#         vec_to_chair = target_pos - root_pos
+#         vec_to_chair[:, 2] = 0.0
+
+#         # Vypočítáme vzdálenost [N]
+#         dist = torch.norm(vec_to_chair, dim=-1)
+#         # Normalizovaný směr k židli [N, 3]
+#         dir_to_chair = vec_to_chair / (dist.unsqueeze(-1) + 1e-6)
+
+#         # --- ČÁST 1: Cílová rychlost (Gaussian Reward) ---
+#         dist_to_stop = dist - self.stop_distance
+#         speed_factor = torch.clamp(dist_to_stop / self.braking_distance, min=0.0, max=1.0)
+#         dynamic_speed = self.target_speed * speed_factor
+
+#         target_vel_vec = dynamic_speed.unsqueeze(-1) * dir_to_chair
+#         vel_error_sq = torch.sum(torch.square(root_vel - target_vel_vec), dim=-1)
+
+#         # Kladná odměna za správný pohyb (0 až 1)
+#         vel_reward = torch.exp(-vel_error_sq / (2 * self.sigma**2))
+
+#         # --- ČÁST 2: Penalizace za couvání (Backward Penalty) ---
+#         # Spočítáme projekci rychlosti robota do směru k židli
+#         # Kladné číslo = jde k židli, Záporné číslo = couvá
+#         velocity_projection = torch.sum(root_vel * dir_to_chair, dim=-1)
+
+#         # Vezmeme jen záporné hodnoty (couvání) a ořízneme kladné na 0
+#         backward_movement = torch.clamp(velocity_projection, max=0.0)
+
+#         # Vynásobíme velkou vahou (např. 5.0).
+#         # Výsledek bude záporné číslo (např. -0.5 m/s * 5.0 = -2.5 reward)
+#         backward_penalty = backward_movement * self.backward_penalty_weight
+
+#         # --- Celkový reward ---
+#         # Pokud couvá, dostane (malý vel_reward) + (velký záporný penalty)
+#         total_reward = (1.0 * vel_reward) + backward_penalty
+
+#         return total_reward * stage_mask.float()
+import torch
+
 class WalkToChairReward(HumanoidBaseReward):
     """
     Stage 0: Walk to chair
     Kombinuje velocity tracking (pro plynulou chůzi) a penalizaci za couvání.
+    Cílová pozice židle je zafixována na začátku epizody.
     """
     def __init__(self, robot_name="g1_slider", target_speed=0.8):
         super().__init__(robot_name)
@@ -393,12 +466,29 @@ class WalkToChairReward(HumanoidBaseReward):
         self.active_stages = [0,1,2]
         self.stop_distance = 0.76
         self.braking_distance = 0.5
-
-        # Váha trestu za couvání. Musí být dost velká, aby přebila zisk z následného pohybu vpřed.
-        # Pokud je 5.0, tak za každý 1 m/s rychlosti dozadu dostane -5 bodů.
         self.backward_penalty_weight = 50.0
+        self.overshoot_margin = 0.05        # 5 cm tolerance (přiblížení pod 0.71m)
+        self.overshoot_penalty_value = -1.0 # Hodnota trestu za přejetí
+        # --- NOVÉ: Buffer pro statickou pozici židle ---
+        self.saved_chair_pos = None
 
-    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+    def reset(self, env_ids: torch.Tensor, states: list['EnvState']):
+        """
+        Tato metoda se volá při resetu prostředí (konec epizody).
+        Aktualizuje zafixovanou pozici židle pouze pro ta prostředí, která se právě resetují.
+        """
+        if self.saved_chair_pos is not None:
+            chair = states.objects["chair"]
+            chair_base_link_idx = chair.body_names.index("base_link")
+
+            # Přepíšeme uloženou pozici novou pozicí židle jen pro resetovaná prostředí
+            self.saved_chair_pos[env_ids] = chair.body_state[env_ids, chair_base_link_idx, :3].clone()
+
+        # Pokud parent třída (HumanoidBaseReward) má svůj reset, zavoláme ho
+        if hasattr(super(), 'reset'):
+            super().reset(env_ids, states)
+
+    def __call__(self, states: list['EnvState'], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
         chair = states.objects["chair"]
         device = robot.joint_pos.device
@@ -413,7 +503,15 @@ class WalkToChairReward(HumanoidBaseReward):
         root_vel = robot.body_state[:, base_link_idx, 7:10]
 
         chair_base_link_idx = chair.body_names.index("base_link")
-        target_pos = chair.body_state[:, chair_base_link_idx, :3]
+
+        # --- NOVÉ: Zafixování cíle ---
+        # Pokud jsme v úplně prvním kroku po inicializaci třídy, vytvoříme buffer
+        if self.saved_chair_pos is None:
+            self.saved_chair_pos = chair.body_state[:, chair_base_link_idx, :3].clone()
+
+        # Jako target už nebereme aktuální pozici židle, ale tu uloženou!
+        target_pos = self.saved_chair_pos
+        # -----------------------------
 
         vec_to_chair = target_pos - root_pos
         vec_to_chair[:, 2] = 0.0
@@ -431,24 +529,20 @@ class WalkToChairReward(HumanoidBaseReward):
         target_vel_vec = dynamic_speed.unsqueeze(-1) * dir_to_chair
         vel_error_sq = torch.sum(torch.square(root_vel - target_vel_vec), dim=-1)
 
-        # Kladná odměna za správný pohyb (0 až 1)
         vel_reward = torch.exp(-vel_error_sq / (2 * self.sigma**2))
 
         # --- ČÁST 2: Penalizace za couvání (Backward Penalty) ---
-        # Spočítáme projekci rychlosti robota do směru k židli
-        # Kladné číslo = jde k židli, Záporné číslo = couvá
         velocity_projection = torch.sum(root_vel * dir_to_chair, dim=-1)
-
-        # Vezmeme jen záporné hodnoty (couvání) a ořízneme kladné na 0
         backward_movement = torch.clamp(velocity_projection, max=0.0)
-
-        # Vynásobíme velkou vahou (např. 5.0).
-        # Výsledek bude záporné číslo (např. -0.5 m/s * 5.0 = -2.5 reward)
         backward_penalty = backward_movement * self.backward_penalty_weight
+        # --- ČÁST 3: Penalizace za přejetí (Overshoot Penalty) ---
+        # Zjištění, zda je vzdálenost menší než (stop_distance - 0.05)
+        overshoot_mask = dist < (self.stop_distance - self.overshoot_margin)
 
-        # --- Celkový reward ---
-        # Pokud couvá, dostane (malý vel_reward) + (velký záporný penalty)
-        total_reward = (1.0 * vel_reward) + backward_penalty
+        # Varianta A: Pevná (skoková) penalizace, jak jste žádal (Dostane rovnou -4)
+        overshoot_penalty = overshoot_mask.float() * self.overshoot_penalty_value
+
+        total_reward = (1.0 * vel_reward) + backward_penalty + overshoot_penalty
 
         return total_reward * stage_mask.float()
 
@@ -1343,7 +1437,13 @@ class ChairmanCfg(HumanoidTaskCfg):
             fix_base_link=True,
             colapse_fixed_joints=False,
             batch_fixed_verts=True
-        )
+        )#,
+        # RigidObjCfg(
+        #     name="room",
+        #     urdf_path="/home/roboversepc/Documents/57-estancia_comedor_obj/room.urdf",
+        #     default_position= [0.0, 0.0, 0.0],
+        #     fix_base_link=True
+        # )
     ]
     traj_filepath = "roboverse_data/trajs/humanoidbench/chair/initial_state_v2.json"
     checker = _ChairManChecker()

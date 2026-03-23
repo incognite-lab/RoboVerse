@@ -1037,6 +1037,7 @@ class _ChairManChecker(BaseChecker):
         from metasim.cfg.checkers.stages_chairman import reset_chairman
         import time
         reset_chairman(handler, env_ids)
+
         #print("reset chairman checker")
 
 

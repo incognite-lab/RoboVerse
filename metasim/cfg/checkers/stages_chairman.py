@@ -645,9 +645,9 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
             states = [state] * handler.num_envs
         else:
             states[env] = state
-
     handler.set_states(states=states, env_ids=env_ids)
-
+    states2 = handler.get_states()
+    handler.task.reward_functions[6].reset(env_ids=env_ids,states=states2)
 
 def save_snapshot_chairman(handler: BaseSimHandler, env_id: int, stage: int) -> None:
     global UNSAVED_COUNT
@@ -673,6 +673,11 @@ def save_snapshot_chairman(handler: BaseSimHandler, env_id: int, stage: int) -> 
     }
 
     for obj_name, obj_state in full_states.objects.items():
+        if obj_name == "room":
+            snapshot_data["objects"][obj_name] = {
+                "pos": obj_state.root_state[env_id, :3].detach().cpu().clone(),
+                "rot": obj_state.root_state[env_id, 3:7].detach().cpu().clone(),
+            }
         obj_joint_names = obj_state.joint_names.tolist()
         obj_joint_pos = obj_state.joint_pos[env_id].detach().cpu().numpy()
         obj_joint_vel = obj_state.joint_vel[env_id].detach().cpu().numpy()
@@ -1005,7 +1010,20 @@ def stage0_init(robot_name: str):
 
                         }
 
-                    }
+                    },
+                "room": {
+                        "pos": torch.tensor([
+                            0.0,
+                            0.0,
+                            0.1
+                        ]),
+                        "rot": torch.tensor([
+                            0.0,
+                            0.0,
+                            0.0,
+                            1.0
+                        ])
+                }
             }
         }
     elif robot_name == "g1_with_hands":
