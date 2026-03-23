@@ -390,7 +390,7 @@ class WalkToChairReward(HumanoidBaseReward):
         super().__init__(robot_name)
         self.sigma = 0.15
         self.target_speed = target_speed
-
+        self.active_stages = [0,1,2]
         self.stop_distance = 0.76
         self.braking_distance = 0.5
 
@@ -404,12 +404,9 @@ class WalkToChairReward(HumanoidBaseReward):
         device = robot.joint_pos.device
         num_envs = robot.joint_pos.shape[0]
 
-        if self.actual_stage is None:
-            return torch.zeros(num_envs, device=device)
-
-        stage_mask = (self.actual_stage == 0)
-        if not stage_mask.any():
-            return torch.zeros(num_envs, device=device)
+        if self.actual_stage is None: return torch.zeros(num_envs, device=device)
+        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        if not stage_mask.any(): return torch.zeros(num_envs, device=device)
 
         base_link_idx = robot.body_names.index("pelvis")
         root_pos = robot.body_state[:, base_link_idx, :3]
@@ -637,7 +634,7 @@ class ReachChairReward(HumanoidBaseReward):
     """
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
-        self.active_stages = [1,2]
+        self.active_stages = [1,2,3]
         self.robot_left_hand = "left_endeffector"
         self.robot_right_hand = "endeffector"
         self.chair_target_left = "target_hand_left"
@@ -725,7 +722,7 @@ class HandOrientationReward(HumanoidBaseReward):
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
         self.sigma = 0.6 # Looser sigma for orientation as per paper
-        self.active_stages = [1]
+        self.active_stages = [1,2,3]
 
         self.robot_left_hand = "left_endeffector"
         self.robot_right_hand = "endeffector"
@@ -1022,7 +1019,7 @@ class GraspForceReward(HumanoidBaseReward):
     """
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
-        self.active_stages = [2]
+        self.active_stages = [2,3]
 
         self.finger_categories = {
             "left_hand_thumb": 0, "left_hand_index": 1, "left_hand_middle": 2,
@@ -1221,7 +1218,7 @@ class KeepChairStillPenalty(HumanoidBaseReward):
     """
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
-        self.active_stages = [0,1,4,5]
+        self.active_stages = [0,1,3,5]
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -1310,7 +1307,7 @@ DOF_POSITION_LIMITS_WEIGHT = -5.0
 HUMANLY_DOF_LIMIT_WEIGHT = -1.0
 UPRIGHT_PENALTY_WEIGHT = -1.0
 #STAGE_PROGRESS_WEIGHT = 4.0
-CONTINUOUS_REWARD_WEIGHT= 6.0
+CONTINUOUS_REWARD_WEIGHT= 1.0
 
 #stage 0
 WALK_TO_CHAIR_REWARD_WEIGHT = 3.5
@@ -1326,7 +1323,7 @@ FORCE_GRASP_REWARD_WEIGHT = 1.0
 
 PULL_CHAIR_DISTANCE_WEIGHT = 5.0
 PULL_ROBOT_VELOCITY_WEIGHT = 4.0
-KEEP_CHAIR_STILL_PENALTY_WEIGHT = -5.0
+KEEP_CHAIR_STILL_PENALTY_WEIGHT = -1.0
 ARM_RESTING_POSE_PENALTY_WEIGHT = -0.01
 
 @configclass
@@ -1362,7 +1359,7 @@ class ChairmanCfg(HumanoidTaskCfg):
         #FACE_CHAIR_REWARD_WEIGHT,
         REACH_CHAIR_REWARD_WEIGHT,
         REACH_ORIENTATION_REWARD_WEIGHT,
-        STAND_STILL_PENALTY_WEIGHT,
+        #STAND_STILL_PENALTY_WEIGHT,
         OPEN_GRASP_REWARD_WEIGHT,
         CLOSE_GRASP_REWARD_WEIGHT,
         FORCE_GRASP_REWARD_WEIGHT,
@@ -1370,7 +1367,7 @@ class ChairmanCfg(HumanoidTaskCfg):
         PULL_ROBOT_VELOCITY_WEIGHT,
         KEEP_CHAIR_STILL_PENALTY_WEIGHT,
         ARM_RESTING_POSE_PENALTY_WEIGHT,
-        CONTINUOUS_REWARD_WEIGHT
+        #CONTINUOUS_REWARD_WEIGHT
     ]
     #function_index_success_save_time = 10 #TODO hloupé řešení ale budiž to tak (potřeba opravit)
     reward_functions = [TerminationCfg(),
@@ -1384,7 +1381,7 @@ class ChairmanCfg(HumanoidTaskCfg):
                         #FaceChairReward(),
                         ReachChairReward(),
                         HandOrientationReward(),
-                        StandStillPenalty(),
+                        #StandStillPenalty(),
                         OpenGraspReward(),
                         CloseGraspReward(),
                         GraspForceReward(),
@@ -1392,7 +1389,7 @@ class ChairmanCfg(HumanoidTaskCfg):
                         PullRobotVelocityReward(),
                         KeepChairStillPenalty(),
                         ArmRestingPosePenaltyCfg(),
-                        ContinuousStageReward()
+                        #ContinuousStageReward()
                         ]
     def extra_spec(self):
         """This task does not require any extra observations."""
