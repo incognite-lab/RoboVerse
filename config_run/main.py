@@ -15,7 +15,7 @@ from metasim.wrapper.gym_vec_env import MetaSimVecEnv
 from stable_baselines3 import PPO
 from callbacks import TensorboardMetricsCallback, SaveModelCallback,RewardPlotCallback,EvalCallback
 import numpy as np
-
+from metasim.cfg.lights import DistantLightCfg, CylinderLightCfg
 
 from utils import ObsSaver
 import time
@@ -39,7 +39,35 @@ def load_config_from_yaml(config_name: str) -> dict:
         config = yaml.safe_load(f)
 
     return config
+def get_lights_from_config(lights_config: dict):
+    lights = []
+    for light_config in lights_config.values():
+        light_type = light_config.get("type")
+        params = light_config.get("params", {})
 
+        if light_type == "DistantLightCfg":
+            if "direction" in params and isinstance(params["direction"], str):
+                params["direction"] = tuple(map(float, params["direction"].strip("()[]").split(",")))
+            if "color" in params and isinstance(params["color"], str):
+                params["color"] = tuple(map(float, params["color"].strip("()[]").split(",")))
+            light = DistantLightCfg(**params)
+
+        elif light_type == "CylinderLightCfg":
+            # Parsování specifických parametrů pro CylinderLightCfg
+            if "pos" in params and isinstance(params["pos"], str):
+                params["pos"] = tuple(map(float, params["pos"].strip("()[]").split(",")))
+            if "rot" in params and isinstance(params["rot"], str):
+                params["rot"] = tuple(map(float, params["rot"].strip("()[]").split(",")))
+            if "color" in params and isinstance(params["color"], str):
+                params["color"] = tuple(map(float, params["color"].strip("()[]").split(",")))
+            light = CylinderLightCfg(**params)
+
+        else:
+            log.warning(f"Unknown light type: {light_type}, skipping...")
+            continue
+
+        lights.append(light)
+    return lights
 def get_sensors_from_config(sensors_config: dict):
     sensors = []
     #sensor_config = {'type': 'GyroSensorCfg', 'params': {'name': 'gyro0', 'pos': '(0.0, 0.0, 0.0)', 'mount_to': 'g1_with_hands', 'mount_link': 'torso_link'}}
@@ -109,6 +137,7 @@ def main():
         headless=config.get("headless", False),
         sensors = get_sensors_from_config(config.get("sensors", {})),
         cameras= get_cameras_from_config(config.get("cameras", {})),
+        #lights = get_lights_from_config(config.get("lights", {})),
         force = config.get("force", False),
         force_x_min = config.get("force_x_min", 0.0),
         force_x_max = config.get("force_x_max", 0.0),

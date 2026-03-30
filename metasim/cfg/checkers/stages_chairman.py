@@ -18,6 +18,15 @@ try:
     from metasim.sim import BaseSimHandler
 except:
     pass
+
+STAGE_TIMEOUTS = {
+    0: 500,  # Dojít k židli
+    1: 300,  # Reach (150 kroků by mělo stačit na natažení)
+    2: 100,  # Zavření prstů
+    3: 200,  # Zatažení za židli
+    4: 100,  # Zastavení židle
+    5: 100   # Svěšení rukou
+}
 VELOCITY_THRESHOLD = 0.06
 HEIGHT_THRESHOLD = 0.4
 DISTANCE_TO_CHAIR_X_THRESHOLD = 0.8
@@ -27,10 +36,10 @@ HAND_VELOCITY_THRESHOLD = 0.15
 
 DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.034
 ORIENTATION_DISTANCE_HANDLE_THRESHOLD = 0.03
-GRASP_DRIFT_THRESHOLD = 0.06
+GRASP_DRIFT_THRESHOLD = 0.1
 GRASP_FORCE_THRESHOLD = 2.0
 
-POS_THRESHOLD = 0.5
+POS_THRESHOLD = 1.0
 ORI_DOT_PRODUCT_THRESHOLD = 0.9
 CHAIR_PULL_DISTANCE_THRESHOLD = 1.0
 
@@ -42,7 +51,7 @@ MAX_SNAPSHOTS = 100
 RAM_SNAPSHOT_BUFFER = {1: [], 2: [], 3: [], 4: [], 5: []}
 BUFFER_INITIALIZED = False
 UNSAVED_COUNT = 0
-SYNC_THRESHOLD = 20  # Každých 50 uložených snapshotů se jeden zapíše trvale na disk
+SYNC_THRESHOLD = 30  # Každých 50 uložených snapshotů se jeden zapíše trvale na disk
 LOCK = threading.Lock()
 
 def init_ram_buffer():
@@ -98,10 +107,40 @@ def check_movement_chair(states: list[EnvState], handler: BaseSimHandler, idx: t
 
     return (pos_diff > POS_THRESHOLD) #| (dot_product < ORI_DOT_PRODUCT_THRESHOLD)
 
-def common_chairman_checker(states: list[EnvState], handler: BaseSimHandler, idx: torch.Tensor) -> torch.BoolTensor:
-    """Kontroluje pád robota POUZE pro aktivní indexy."""
+def common_chairman_checker(states: list[EnvState], handler: BaseSimHandler, idx: torch.Tensor, stage_id: int) -> torch.BoolTensor:
+    """Kontroluje pád robota a nově i časový limit (timeout) pro danou stage."""
+    num_envs = states.robots[handler.robot.name].joint_pos.shape[0]
+    device = idx.device
+
+    # Inicializace paměti pro kroky (proběhne jen při prvním průchodu)
+    if not hasattr(handler.task, "stage_steps"):
+        handler.task.stage_steps = torch.zeros(num_envs, dtype=torch.long, device=device)
+        # -1 znamená, že prostředí ještě nemá zapsanou žádnou stage
+        handler.task.recorded_stage = torch.full((num_envs,), -1, dtype=torch.long, device=device)
+
+    # Zjistíme, jestli některé prostředí nepřešlo do nové stage od posledního kroku
+    changed_mask = handler.task.recorded_stage[idx] != stage_id
+
+    # Pokud ano, VYNULUJEME mu počítadlo času (dostává nový čas na novou stage)
+    reset_idx = idx[changed_mask]
+    if len(reset_idx) > 0:
+        handler.task.stage_steps[reset_idx] = 0
+
+    # Zapíšeme si aktuální stage
+    handler.task.recorded_stage[idx] = stage_id
+
+    # Inkrementujeme odpracovaný krok (o 1)
+    handler.task.stage_steps[idx] += 1
+
+    # --- 1. PODMÍNKA PÁDU ---
     is_fallen = neck_height_tensor(states, handler.robot.name)[idx] < HEIGHT_THRESHOLD
-    return is_fallen
+
+    # --- 2. PODMÍNKA TIMEOUTU ---
+    limit = STAGE_TIMEOUTS.get(stage_id, 9999)
+    is_timeout = handler.task.stage_steps[idx] > limit
+
+    # Výsledek: Epizoda skončí, pokud robot spadne NEBO pokud mu vyprší čas
+    return is_fallen | is_timeout
 
 def get_batch_grasp_status(states: list[EnvState], handler: BaseSimHandler, force_threshold: float, idx: torch.Tensor) -> torch.Tensor:
     """Kontrola kontaktů POUZE pro indexy robotů ve Stage 2."""
@@ -251,8 +290,7 @@ def stege0_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     if idx.numel() == 0:
         return terminated, success
 
-    term_common = common_chairman_checker(states, handler, idx) | check_movement_chair(states, handler, idx)
-
+    term_common = common_chairman_checker(states, handler, idx, stage_id=0) | check_movement_chair(states, handler, idx)
     # Výpočet pozic jen pro aktivní indexy
     robot_pos = robot_position_tensor(states, handler.robot.name)[idx]
     chair_base_idx = states.objects["chair"].body_names.index("base_link")
@@ -330,7 +368,7 @@ def stege1_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     if idx.numel() == 0:
         return terminated, success
 
-    term_common = common_chairman_checker(states, handler, idx) | check_movement_chair(states, handler, idx)
+    term_common = common_chairman_checker(states, handler, idx, stage_id=1) | check_movement_chair(states, handler, idx)
 
     # --- POZICE A ORIENTACE RUKOU ---
     right_ee_pos = right_palm_position(states, handler.robot.name, ee_name="endeffector")[idx]
@@ -392,7 +430,7 @@ def stege2_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     if idx.numel() == 0:
         return terminated, success
 
-    term_common = common_chairman_checker(states, handler, idx) | check_movement_chair(states, handler, idx)
+    term_common = common_chairman_checker(states, handler, idx, stage_id=2) | check_movement_chair(states, handler, idx)
 
     right_ee_pos = right_palm_position(states, handler.robot.name, ee_name="endeffector")[idx]
     left_ee_pos = right_palm_position(states, handler.robot.name, ee_name="left_endeffector")[idx]
@@ -422,7 +460,7 @@ def stege3_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
         return terminated, success
 
     # --- 1. Spadl robot? ---
-    term_common = common_chairman_checker(states, handler, idx)
+    term_common = common_chairman_checker(states, handler, idx, stage_id=3) | check_movement_chair(states, handler, idx)
 
     # --- 2. Kontrola Driftu (zda mu neujely ruce z madel) ---
     right_ee_pos = right_palm_position(states, handler.robot.name, ee_name="endeffector")[idx]
@@ -477,7 +515,7 @@ def stege4_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     if idx.numel() == 0: return terminated, success
 
     # --- 1. Kontrola pádu robota ---
-    term_common = common_chairman_checker(states, handler, idx)
+    term_common = common_chairman_checker(states, handler, idx, stage_id=4) | check_movement_chair(states, handler, idx)
 
     # --- 2. Kontrola pohybu ŽIDLE (Nesmí se pohnout z NOVÉ pozice) ---
     chair_base_idx = states.objects["chair"].body_names.index("base_link")
@@ -539,7 +577,7 @@ def stege5_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
         return terminated, success
 
     # --- 1. Kontrola pádu robota ---
-    term_common = common_chairman_checker(states, handler, idx)
+    term_common = common_chairman_checker(states, handler, idx, stage_id=5) | check_movement_chair(states, handler, idx)
 
     # --- 2. Kontrola pohybu ŽIDLE (Nesmí se pohnout z NOVÉ pozice) ---
     # Židle už je odtažená na pozici x = -0.25
@@ -625,7 +663,7 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
             break
     for env in env_ids:
         new_stage = random.randint(0, max_available_stage)
-        #new_stage = 2  # PRO TESTOVÁNÍ - vždy začínáme Stage 1, aby bylo vidět, že načítání z RAM funguje
+        new_stage = 0  # PRO TESTOVÁNÍ - vždy začínáme Stage 1, aby bylo vidět, že načítání z RAM funguje
         for i in range(len(handler.task.reward_functions)):
             handler.task.reward_functions[i].actual_stage[env] = new_stage
             handler.task.reward_functions[i].completed_stages[env] = 0
@@ -645,6 +683,8 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
             states = [state] * handler.num_envs
         else:
             states[env] = state
+    if hasattr(handler.task, "recorded_stage") and env_ids is not None:
+        handler.task.recorded_stage[env_ids] = -1
     handler.set_states(states=states, env_ids=env_ids)
     states2 = handler.get_states()
     handler.task.reward_functions[6].reset(env_ids=env_ids,states=states2)
@@ -1015,7 +1055,7 @@ def stage0_init(robot_name: str):
                         "pos": torch.tensor([
                             0.0,
                             0.0,
-                            0.1
+                            0.0
                         ]),
                         "rot": torch.tensor([
                             0.0,

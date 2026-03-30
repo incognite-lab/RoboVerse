@@ -71,7 +71,7 @@ class StableBaseline3VecEnv(VecEnv):
         self.indexes = [states.robots[robot_name].body_names.index(link) for link in self.main_robot_link_names]
 
         num_robot_bodies = len(self.main_robot_link_names)  # pozice (3) + orientace (4) pro každý link
-        obs_shape = num_joints + (num_robot_bodies * 7) + 7 + 7 + 6
+        obs_shape = num_joints + (num_robot_bodies * 7) + 7 + 7 + 6 + 7
 
         self.observation_space = spaces.Box(
             low=-np.inf,
@@ -87,27 +87,49 @@ class StableBaseline3VecEnv(VecEnv):
         super().__init__(env.num_envs, self.observation_space, self.action_space)
 
     def add_extra_to_obs(self, obs: np.ndarray) -> np.ndarray:
-        """extend obs with extra data."""
-        states = self.env.env.handler.get_states()
+        """extend obs with extra data including the current stage."""
+        handler = self.env.env.handler
+        states = handler.get_states()
         robot_name = self.env.scenario.robots[0].name
         chair = states.objects["chair"]
 
-        # 1. vybrané body_states robota
-        # Vybere pozici a orientaci (prvních 7 hodnot) pro všechny linky.
-        # Shape: (num_envs, num_bodies, 7) -> po reshape: (num_envs, num_bodies * 7)
+        # 1. Vybrané body_states robota (pozice a orientace)
+        robot_body_states = states.robots[robot_name].body_state[:, self.indexes, :7].reshape(self.num_envs, -1).cpu().numpy()
 
-        robot_body_states = states.robots[robot_name].body_state[:, self.indexes, :7].reshape(self.num_envs, -1).cpu().numpy()#TODO přidat i rychlost
-        # 2. Získání indexů a stavů pro cílové body na židli
+        # 2. Získání rychlosti pelvisu
         pelvis_idx = states.robots[robot_name].body_names.index("pelvis")
-        velocity_pelvis = states.robots[robot_name].body_state[:, pelvis_idx, 7:14].cpu().numpy() #TODO debug - rychlost pélvisu
+        velocity_pelvis = states.robots[robot_name].body_state[:, pelvis_idx, 7:14].cpu().numpy()
+
+        # 3. Získání cílů na židli
         target_left_idx = chair.body_names.index("target_hand_left")
         target_right_idx = chair.body_names.index("target_hand_right")
 
         target_left_pos_ori = chair.body_state[:, target_left_idx, :7].cpu().numpy()
         target_right_pos_ori = chair.body_state[:, target_right_idx, :7].cpu().numpy()
 
-        # 3. Sloučení extra dat
-        other_pos = np.concatenate([robot_body_states, velocity_pelvis, target_left_pos_ori, target_right_pos_ori], axis=1)
+        # --- NOVÉ: 4. Získání aktuální Stage a One-Hot kódování ---
+        # Vytažení tenzoru se stages (převedeme na int)
+        current_stages = handler.task.reward_functions[0].actual_stage.cpu().numpy().astype(int)
+
+        # Máme stages 0, 1, 2, 3, 4, 5, 6 (celkem 7 možností)
+        num_stages = 7
+        stage_one_hot = np.zeros((self.num_envs, num_stages), dtype=np.float32)
+
+        # Ochrana, kdyby se nějaké prostředí dostalo do neznámé stage
+        safe_stages = np.clip(current_stages, 0, num_stages - 1)
+
+        # Pomocí pokročilého indexování nasázíme 1.0 na správná místa pro všechna prostředí najednou
+        stage_one_hot[np.arange(self.num_envs), safe_stages] = 1.0
+        # ----------------------------------------------------------
+
+        # 5. Sloučení extra dat (Přidán stage_one_hot na úplný konec)
+        other_pos = np.concatenate([
+            robot_body_states,
+            velocity_pelvis,
+            target_left_pos_ori,
+            target_right_pos_ori,
+            stage_one_hot  # <--- PŘIDÁNO SEM
+        ], axis=1)
 
         # Zajištění správného rozměru původního obs (klouby)
         obs = obs.reshape(self.num_envs, -1)
