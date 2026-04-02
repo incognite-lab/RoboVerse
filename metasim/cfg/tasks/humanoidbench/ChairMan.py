@@ -466,7 +466,7 @@ class WalkToChairReward(HumanoidBaseReward):
         self.active_stages = [0]
         self.stop_distance = 0.75
         self.braking_distance = 0.5
-        self.backward_penalty_weight = 50.0
+        self.backward_penalty_weight = 20.0
         self.overshoot_margin = 0.05        # 5 cm tolerance (přiblížení pod 0.71m)
         self.overshoot_penalty_value = -4.0 # Hodnota trestu za přejetí
         # --- NOVÉ: Buffer pro statickou pozici židle ---
@@ -484,9 +484,6 @@ class WalkToChairReward(HumanoidBaseReward):
             # Přepíšeme uloženou pozici novou pozicí židle jen pro resetovaná prostředí
             self.saved_chair_pos[env_ids] = chair.body_state[env_ids, chair_base_link_idx, :3].clone()
 
-        # Pokud parent třída (HumanoidBaseReward) má svůj reset, zavoláme ho
-        if hasattr(super(), 'reset'):
-            super().reset(env_ids, states)
 
     def __call__(self, states: list['EnvState'], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -873,20 +870,40 @@ class HandOrientationReward(HumanoidBaseReward):
 class StandStillPenalty(HumanoidBaseReward):
     """
     Stage 1, 2, 4, 5: Stability / Stand Still
-    Penalizes movement from a saved anchor position.
-    The penalty grows exponentially with the distance from the anchor.
-    The anchor is reset upon entering Stage 1, 4, or 5.
+    Penalizuje pohyb z uložené kotevní pozice.
+    Kotva se dynamicky aktualizuje při vstupu do fáze a spolehlivě se resetuje na konci epizody.
     """
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
-        self.active_stages = [1, 2, 4, 5] # Active during pre-grasp, grasp, and keep chair still
+        self.active_stages = [1, 2, 4, 5]
 
-        # Stavové proměnné pro logiku uložení pozice
         self.saved_positions = None
         self.prev_stages = None
 
-        # Koeficient strmosti exponenciály (čím vyšší, tím rychleji penalizace roste)
         self.alpha = 5.0
+
+        # Pro případné budoucí využití jména robota v resetu
+        self.robot_name_for_reset = robot_name
+
+    def reset(self, env_ids: torch.Tensor, states: list['EnvState']):
+        """
+        Garantuje, že po tvrdém resetu prostředí (konec epizody) se kotva
+        okamžitě srovná s novou startovní pozicí robota.
+        """
+        if self.saved_positions is not None:
+            robot = states.robots[self.robot_name_for_reset]
+            base_idx = robot.body_names.index("pelvis")
+
+            # 1. Přepíšeme kotvu na aktuální pozici (po teleportu na start)
+            self.saved_positions[env_ids] = robot.body_state[env_ids, base_idx, :3].clone()
+
+            # 2. Srovnáme prev_stages, aby nevznikaly falešné detekce změn fází z minulé epizody
+            if self.actual_stage is not None:
+                self.prev_stages[env_ids] = self.actual_stage[env_ids].clone()
+
+        # Volání rodičovské třídy
+        if hasattr(super(), 'reset'):
+            super().reset(env_ids, states)
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -898,46 +915,29 @@ class StandStillPenalty(HumanoidBaseReward):
 
         stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
 
-        # Root pozice robota [num_envs, 3]
         base_idx = robot.body_names.index("pelvis")
         current_pos = robot.body_state[:, base_idx, :3]
 
-        # 1. Inicializace tenzorů při úplně prvním kroku
+        # Inicializace při úplně prvním spuštění tréninku
         if self.saved_positions is None:
             self.saved_positions = current_pos.clone()
             self.prev_stages = self.actual_stage.clone()
 
-        # 2. Logika pro aktualizaci uložené pozice
-        # Zjišťujeme, zda se prostředí právě přepnulo do nové stage
+        # Logika pro aktualizaci BĚHEM epizody (když postoupí do nové stage)
         stage_changed = (self.actual_stage != self.prev_stages)
-
-        # Nechceme přepsat pozici při přechodu ze Stage 1 do Stage 2,
-        # protože tam má pořád stát na tom samém místě jako při přípravě na úchop.
         is_1_to_2 = (self.prev_stages == 1) & (self.actual_stage == 2)
-
-        # Maska pro updatování pozice (např. vlezl do Stage 1, Stage 4 nebo Stage 5)
         update_mask = stage_changed & stage_mask & ~is_1_to_2
 
-        # Pokud nějaké prostředí splňuje podmínky, přepíšeme jeho uloženou pozici
         if update_mask.any():
             self.saved_positions[update_mask] = current_pos[update_mask].clone()
 
-        # Uložíme si aktuální stage pro kontrolu v dalším kroku
         self.prev_stages = self.actual_stage.clone()
 
-        # 3. Výpočet vzdálenosti od uloženého bodu (ve 3D)
+        # Výpočet exponenciální penalizace
         dist = torch.norm(current_pos - self.saved_positions, dim=-1)
-
-        # 4. Exponenciální penalizace: exp(alpha * dist) - 1.0
-        # - Pokud dist = 0 -> exp(0) - 1 = 0
-        # - Pokud dist = 0.2 (20 cm) -> exp(5 * 0.2) - 1 = exp(1) - 1 = 1.71
-        # - Pokud dist = 0.5 (50 cm) -> exp(5 * 0.5) - 1 = exp(2.5) - 1 = 11.18
         penalty = torch.exp(self.alpha * dist) - 1.0
+        penalty = torch.clamp(penalty, max=50.0)/50
 
-        # Ochrana proti explozi gradientu (pokud by fyzikální engine vystřelil robota do vesmíru)
-        penalty = torch.clamp(penalty, max=50.0)
-
-        # Váha v configu (STAND_STILL_PENALTY_WEIGHT) se postará o to, aby toto číslo bylo záporné
         return penalty * stage_mask.float()
 class OpenGraspReward(HumanoidBaseReward):
     """
@@ -1306,13 +1306,20 @@ class PullRobotVelocityReward(HumanoidBaseReward):
 #---------------------Stage 4----------------------
 class KeepChairStillPenalty(HumanoidBaseReward):
     """
-    Stage 4: Keep Chair Still
-    Penalizuje jakýkoliv pohyb židle (lineární i úhlovou rychlost).
-    Zajišťuje, že robot pustí židli jemně a neodhodí ji.
+    Stage 0, 1: Keep Chair Still (Ohraničená dynamická penalizace)
+    Penalizuje pohyb židle v rozsahu 0.0 (stojí) až 1.0 (letí pryč).
+    Ve Stage 0 je extrémně přísná.
+    Ve Stage 1 je benevolentnější, aby se robot nebál do židle sáhnout.
     """
     def __init__(self, robot_name="g1_slider"):
         super().__init__(robot_name)
-        self.active_stages = [0]
+        self.active_stages = [0, 1]
+
+        # Slovník tolerancí (sigma) pro různé fáze
+        self.stage_sigmas = {
+            0: 0.05,  # Stage 0: Velmi přísné (i 5 cm/s způsobí velký trest).
+            1: 0.25   # Stage 1: Benevolentní (odpouští drobné drcnutí při úchopu).
+        }
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -1324,21 +1331,30 @@ class KeepChairStillPenalty(HumanoidBaseReward):
         stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
         if not stage_mask.any(): return torch.zeros(num_envs, device=device)
 
-        # Rychlosti židle (root_state obsahuje pos[0:3], quat[3:7], lin_vel[7:10], ang_vel[10:13])
+        # 1. Rychlosti židle
         base_link_idx = chair.body_names.index("base_link")
-
         chair_lin_vel = chair.body_state[:, base_link_idx, 7:10]
         chair_ang_vel = chair.body_state[:, base_link_idx, 10:13]
 
-        # Výpočet kvadratické odchylky od nuly (čím rychleji letí, tím větší trest)
+        # 2. Výpočet kvadratické odchylky
         lin_vel_sq = torch.sum(torch.square(chair_lin_vel), dim=-1)
         ang_vel_sq = torch.sum(torch.square(chair_ang_vel), dim=-1)
+        total_vel_error_sq = lin_vel_sq + 0.5 * ang_vel_sq
 
-        # Sečteme penalty (úhlovou rychlost penalizujeme trochu méně,
-        # protože mírné zhoupnutí při puštění je fyzikálně přirozené)
-        total_penalty = lin_vel_sq + 0.5 * ang_vel_sq
+        # 3. Vytvoření dynamického tenzoru pro Sigmu podle toho, ve které stage robot zrovna je
+        sigma_tensor = torch.ones(num_envs, device=device) # výchozí hodnota
+        for stage_id, sigma_val in self.stage_sigmas.items():
+            sigma_tensor = torch.where(self.actual_stage == stage_id,
+                                       torch.tensor(sigma_val, device=device),
+                                       sigma_tensor)
 
-        return total_penalty * stage_mask.float()
+        # 4. Výpočet Gaussovy křivky (1.0 = stojí dokonale, 0.0 = letí rychle pryč)
+        smooth_reward = torch.exp(-total_vel_error_sq / (2 * torch.square(sigma_tensor)))
+
+        # 5. Převedení na penalizaci (0.0 = žádný trest, 1.0 = maximální trest)
+        penalty = 1.0 - smooth_reward
+
+        return penalty * stage_mask.float()
 #---------------------Stage 5----------------------
 class DropArmsReward(HumanoidBaseReward):
     """
@@ -1401,16 +1417,16 @@ DOF_POSITION_LIMITS_WEIGHT = -5.0
 HUMANLY_DOF_LIMIT_WEIGHT = -1.0
 UPRIGHT_PENALTY_WEIGHT = -1.0
 #STAGE_PROGRESS_WEIGHT = 4.0
-CONTINUOUS_REWARD_WEIGHT= 10.0
+CONTINUOUS_REWARD_WEIGHT= 6.0
 FACE_CHAIR_REWARD_WEIGHT = 1.0
 
 #stage 0
 WALK_TO_CHAIR_REWARD_WEIGHT = 5.0
-OPEN_GRASP_REWARD_WEIGHT = 1.0
+OPEN_GRASP_REWARD_WEIGHT = 0.5
 #stage 1
-REACH_CHAIR_REWARD_WEIGHT = 5.0
-REACH_ORIENTATION_REWARD_WEIGHT = 5.0
-STAND_STILL_PENALTY_WEIGHT = -1.0
+REACH_CHAIR_REWARD_WEIGHT = 3.5
+REACH_ORIENTATION_REWARD_WEIGHT = 1.5
+STAND_STILL_PENALTY_WEIGHT = -2.0
 
 #stage 2
 CLOSE_GRASP_REWARD_WEIGHT = 8.5
@@ -1418,7 +1434,7 @@ FORCE_GRASP_REWARD_WEIGHT = 1.5
 
 PULL_CHAIR_DISTANCE_WEIGHT = 5.0
 PULL_ROBOT_VELOCITY_WEIGHT = 4.0
-KEEP_CHAIR_STILL_PENALTY_WEIGHT = -1.0
+KEEP_CHAIR_STILL_PENALTY_WEIGHT = -2.0
 ARM_RESTING_POSE_PENALTY_WEIGHT = -0.01
 
 @configclass
@@ -1449,37 +1465,37 @@ class ChairmanCfg(HumanoidTaskCfg):
     traj_filepath = "roboverse_data/trajs/humanoidbench/chair/initial_state_v2.json"
     checker = _ChairManChecker()
     reward_weights = [
-        TERMINATION_WEIGHT,
-        DELTA_ACTION_RATE_WEIGHT,
-        DOF_VELOCITY_ACCELERATION_WEIGHT,
-        DOF_POSITION_LIMITS_WEIGHT,
-        HUMANLY_DOF_LIMIT_WEIGHT,
-        UPRIGHT_PENALTY_WEIGHT,
+        # TERMINATION_WEIGHT,
+        # DELTA_ACTION_RATE_WEIGHT,
+        # DOF_VELOCITY_ACCELERATION_WEIGHT,
+        # DOF_POSITION_LIMITS_WEIGHT,
+        # HUMANLY_DOF_LIMIT_WEIGHT,
+        # UPRIGHT_PENALTY_WEIGHT,
         #STAGE_PROGRESS_WEIGHT,
         WALK_TO_CHAIR_REWARD_WEIGHT,
-        FACE_CHAIR_REWARD_WEIGHT,
+        # FACE_CHAIR_REWARD_WEIGHT,
         REACH_CHAIR_REWARD_WEIGHT,
         REACH_ORIENTATION_REWARD_WEIGHT,
         STAND_STILL_PENALTY_WEIGHT,
         OPEN_GRASP_REWARD_WEIGHT,
         CLOSE_GRASP_REWARD_WEIGHT,
         FORCE_GRASP_REWARD_WEIGHT,
-        PULL_CHAIR_DISTANCE_WEIGHT,
-        PULL_ROBOT_VELOCITY_WEIGHT,
+        # PULL_CHAIR_DISTANCE_WEIGHT,
+        # PULL_ROBOT_VELOCITY_WEIGHT,
         KEEP_CHAIR_STILL_PENALTY_WEIGHT,
-        ARM_RESTING_POSE_PENALTY_WEIGHT,
-        CONTINUOUS_REWARD_WEIGHT
+        # ARM_RESTING_POSE_PENALTY_WEIGHT,
+        # CONTINUOUS_REWARD_WEIGHT
     ]
     #function_index_success_save_time = 10 #TODO hloupé řešení ale budiž to tak (potřeba opravit)
-    reward_functions = [TerminationCfg(),
-                        DeltaActionRateCfg(),
-                        DoFVelocityAccelerationCfg(),
-                        DofPositionLimitsCfg(),
-                        HumanlyDofLimitCfg(),
-                        UprightPenaltyCfg(),
+    reward_functions = [#TerminationCfg(),
+                        # DeltaActionRateCfg(),
+                        # DoFVelocityAccelerationCfg(),
+                        # DofPositionLimitsCfg(),
+                        # HumanlyDofLimitCfg(),
+                        # UprightPenaltyCfg(),
                         #StageProgressCfg(),
                         WalkToChairReward(),
-                        FaceChairReward(),
+                        #FaceChairReward(),
                         ReachChairReward(),
                         HandOrientationReward(),
                         StandStillPenalty(),

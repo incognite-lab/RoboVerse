@@ -8,6 +8,8 @@ import torch
 from loguru import logger as log
 import numpy as np
 
+import cv2
+
 
 from metasim.wrapper.gym_vec_env import MetaSimVecEnv
 from stable_baselines3.common.vec_env import VecEnv
@@ -85,6 +87,7 @@ class StableBaseline3VecEnv(VecEnv):
         self.action = None #TODO debug holder
         self.finger_current_positions = {} #TODO debug holder
         super().__init__(env.num_envs, self.observation_space, self.action_space)
+        #self._init_joint_viz()
 
     def add_extra_to_obs(self, obs: np.ndarray) -> np.ndarray:
         """extend obs with extra data including the current stage."""
@@ -180,7 +183,7 @@ class StableBaseline3VecEnv(VecEnv):
         #------------------------------------
         #--------------DEBUG-----------------
         #------------------------------------
-        # debug = 2
+        # debug = 0
         # if debug == 0:
         #     actions = self.debug0()
         #     obs, rewards, unsuccess, timeout, _ = self.env.step(actions)
@@ -233,7 +236,7 @@ class StableBaseline3VecEnv(VecEnv):
             for i in timeout_ids:
                 infos[i]["is_success"] = True
                 infos[i]["TimeLimit.truncated"] = True
-
+        #self._update_joint_viz()
         return obs, rewards.cpu().numpy(), dones.cpu().numpy(), infos
     def render(self):
         """Render the environment."""
@@ -380,7 +383,7 @@ class StableBaseline3VecEnv(VecEnv):
         actions = [{"g1_slider": {"dof_pos_target":
                                   {
                         "baseslide_joint": 0.0, #y
-                        "baseslide_joint2": 0.0, #x
+                        "baseslide_joint2": -0.8, #x
                         "baserot_joint": 0.0,
                         "waist_yaw_joint": 0.0,
                         "waist_roll_joint": 0.0,
@@ -599,3 +602,72 @@ class StableBaseline3VecEnv(VecEnv):
             actions.append({robot_name: {"dof_pos_target": dof_targets}})
 
         return actions
+    def _init_joint_viz(self):
+        """Inicializuje okno a parametry pro živou vizualizaci kloubů."""
+        self.viz_joint_limits = self.env.scenario.robots[0].joint_limits
+        self.viz_joint_names = list(self.viz_joint_limits.keys())
+        self.viz_num_joints = len(self.viz_joint_names)
+
+        # Rozměry vykreslovacího plátna
+        self.viz_bar_height = 14
+        self.viz_margin_y = 30
+        self.viz_width = 800
+        self.viz_height = self.viz_num_joints * self.viz_margin_y + 40
+        self.viz_text_width = 250
+        self.viz_bar_width = self.viz_width - self.viz_text_width - 50
+
+    def _update_joint_viz(self):
+        """Vykreslí aktuální a cílové pozice kloubů pro Env 0."""
+        states = self.env.env.handler.get_states()
+        robot_name = self.env.scenario.robots[0].name
+
+        # Získáme data pouze pro prvního robota (Env 0)
+        curr_pos = states.robots[robot_name].joint_pos[0].cpu().numpy()
+
+        # Targety bereme přímo ze states, což je nejspolehlivější
+        targ_pos = states.robots[robot_name].joint_pos_target[0].cpu().numpy()
+
+        # Vytvoření černého plátna
+        img = np.zeros((self.viz_height, self.viz_width, 3), dtype=np.uint8)
+
+        for i, j_name in enumerate(self.viz_joint_names):
+            low, high = self.viz_joint_limits[j_name]
+            c_val = curr_pos[i]
+            t_val = targ_pos[i]
+
+            y_offset = 20 + i * self.viz_margin_y
+
+            # 1. Název kloubu
+            cv2.putText(img, j_name, (10, y_offset + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+
+            # Přepočet hodnoty na pixely
+            range_val = high - low
+            if range_val == 0: range_val = 1e-6
+
+            def val_to_px(v):
+                v_clamped = np.clip(v, low, high)
+                norm = (v_clamped - low) / range_val
+                return self.viz_text_width + int(norm * self.viz_bar_width)
+
+            px_low = self.viz_text_width
+            px_high = self.viz_text_width + self.viz_bar_width
+            px_curr = val_to_px(c_val)
+            px_targ = val_to_px(t_val)
+
+            # 2. Vykreslení limitů (Šedé pozadí)
+            cv2.rectangle(img, (px_low, y_offset), (px_high, y_offset + self.viz_bar_height), (50, 50, 50), -1)
+
+            # 3. Vykreslení aktuální pozice (Zelený bar)
+            # Pokud je hodnota záporná/kladná, bar roste od minima (zleva)
+            cv2.rectangle(img, (px_low, y_offset), (px_curr, y_offset + self.viz_bar_height), (0, 180, 0), -1)
+
+            # 4. Vykreslení cílové pozice akce (Červená svislá čára)
+            cv2.line(img, (px_targ, y_offset - 4), (px_targ, y_offset + self.viz_bar_height + 4), (0, 0, 255), 2)
+
+            # 5. Textové hodnoty pod barem (C=Current, T=Target, L=Limits)
+            val_text = f"C: {c_val: .2f} | T: {t_val: .2f}  [lim: {low:.2f} to {high:.2f}]"
+            cv2.putText(img, val_text, (self.viz_text_width, y_offset + self.viz_bar_height + 11), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
+
+        # Zobrazení okna
+        cv2.imshow("Live Joint Info (Env 0)", img)
+        cv2.waitKey(1) # 1 ms pauza nutná pro překreslení okna OpenCV

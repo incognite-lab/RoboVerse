@@ -20,8 +20,8 @@ except:
     pass
 
 STAGE_TIMEOUTS = {
-    0: 500,  # Dojít k židli
-    1: 300,  # Reach (150 kroků by mělo stačit na natažení)
+    0: 400,  # Dojít k židli
+    1: 200,  # Reach (150 kroků by mělo stačit na natažení)
     2: 100,  # Zavření prstů
     3: 200,  # Zatažení za židli
     4: 100,  # Zastavení židle
@@ -39,7 +39,7 @@ ORIENTATION_DISTANCE_HANDLE_THRESHOLD = 0.03
 GRASP_DRIFT_THRESHOLD = 0.1
 GRASP_FORCE_THRESHOLD = 2.0
 
-POS_THRESHOLD = 1.0
+POS_THRESHOLD = 0.4
 ORI_DOT_PRODUCT_THRESHOLD = 0.9
 CHAIR_PULL_DISTANCE_THRESHOLD = 1.0
 
@@ -663,7 +663,7 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
             break
     for env in env_ids:
         new_stage = random.randint(0, max_available_stage)
-        new_stage = 0  # PRO TESTOVÁNÍ - vždy začínáme Stage 1, aby bylo vidět, že načítání z RAM funguje
+        #new_stage = 1  # PRO TESTOVÁNÍ - vždy začínáme Stage 1, aby bylo vidět, že načítání z RAM funguje
         for i in range(len(handler.task.reward_functions)):
             handler.task.reward_functions[i].actual_stage[env] = new_stage
             handler.task.reward_functions[i].completed_stages[env] = 0
@@ -687,7 +687,11 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
         handler.task.recorded_stage[env_ids] = -1
     handler.set_states(states=states, env_ids=env_ids)
     states2 = handler.get_states()
-    handler.task.reward_functions[6].reset(env_ids=env_ids,states=states2)
+
+    # Projdeme všechny reward funkce a zavoláme jejich reset (pokud ho mají)
+    for reward_fn in handler.task.reward_functions:
+        if hasattr(reward_fn, 'reset'):
+            reward_fn.reset(env_ids=env_ids, states=states2)
 
 def save_snapshot_chairman(handler: BaseSimHandler, env_id: int, stage: int) -> None:
     global UNSAVED_COUNT
