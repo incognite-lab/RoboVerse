@@ -101,25 +101,33 @@ class TensorboardMetricsCallbackOld(BaseCallback):
     def _on_training_end(self) -> None:
         self.writer.close()
 
+from stable_baselines3.common.callbacks import BaseCallback
+import os
+from loguru import logger as log
+from torch.utils.tensorboard import SummaryWriter
+import numpy as np
+from datetime import datetime
+
+
 class TensorboardMetricsCallback(BaseCallback):
     """
-    Callback pro logování průměrných metrik epizod do TensorBoardu
-    každých log_interval kroků. Bezpečně ošetřuje prázdné buffery.
+    Callback pro logování metrik epizod + statistik stages do TensorBoardu a terminálu.
+
+    Stage completion se NEODVOZUJE ze změny actual_stage,
+    ale z explicitního signálu completed_stages z checkeru.
     """
 
-    def __init__(self, log_dir: str, log_interval: int = 1000000):
-        """
-        Args:
-            log_dir: cesta do adresáře pro TensorBoard
-            log_interval: počet kroků mezi jednotlivými logy
-        """
-        super().__init__()
+    def __init__(self, log_dir: str, log_interval: int = 10000, max_stage: int = 6, verbose: int = 1):
+        super().__init__(verbose)
         os.makedirs(log_dir, exist_ok=True)
         self.writer = SummaryWriter(log_dir)
         self.log_interval = log_interval
+        self.max_stage = max_stage
+        self.verbose = verbose
 
     def _on_training_start(self) -> None:
         n_envs = self.training_env.num_envs
+
         self.episode_rewards = np.zeros(n_envs, dtype=np.float32)
         self.episode_lengths = np.zeros(n_envs, dtype=np.int32)
         self.episode_success = np.zeros(n_envs, dtype=np.int32)
@@ -127,6 +135,41 @@ class TensorboardMetricsCallback(BaseCallback):
         self.completed_rewards = []
         self.completed_lengths = []
         self.completed_success = []
+
+        self.prev_stages = None
+        self.prev_completed_flags = None
+
+        self.stage_presence_counts = np.zeros(self.max_stage + 1, dtype=np.int64)
+        self.stage_completed_window_counts = np.zeros(self.max_stage + 1, dtype=np.int64)
+        self.stage_completed_total_counts = np.zeros(self.max_stage + 1, dtype=np.int64)
+
+        self.max_stage_seen = 0
+
+        log.info(
+            f"TensorboardMetricsCallback started | "
+            f"n_envs={n_envs}, log_interval={self.log_interval}, max_stage={self.max_stage}"
+        )
+
+    def _get_stage_data(self):
+        """
+        Vrátí:
+        - current_stages: numpy array aktuálních stages
+        - completed_flags: numpy array completed_stages
+        """
+        try:
+            handler = self.training_env.env.env.handler
+            current_stages = handler.task.reward_functions[0].actual_stage
+            completed_flags = handler.task.reward_functions[0].completed_stages
+
+            if current_stages is None or completed_flags is None:
+                return None, None
+
+            return (
+                current_stages.detach().cpu().numpy().astype(int),
+                completed_flags.detach().cpu().numpy().astype(int),
+            )
+        except Exception:
+            return None, None
 
     def _on_step(self) -> bool:
         rewards = np.array(self.locals["rewards"])
@@ -149,23 +192,63 @@ class TensorboardMetricsCallback(BaseCallback):
                 self.episode_lengths[i] = 0
                 self.episode_success[i] = 0
 
-        # log do TensorBoard každých log_interval kroků
+        # =========================
+        # STAGE TRACKING
+        # =========================
+        current_stages, completed_flags = self._get_stage_data()
+        if current_stages is not None and completed_flags is not None:
+            current_stages = np.clip(current_stages, 0, self.max_stage)
+            completed_flags = np.clip(completed_flags, 0, 1)
+
+            if self.prev_stages is None:
+                self.prev_stages = current_stages.copy()
+
+            if self.prev_completed_flags is None:
+                self.prev_completed_flags = completed_flags.copy()
+
+            # aktuální obsazenost stages
+            for s in range(self.max_stage + 1):
+                self.stage_presence_counts[s] += int(np.sum(current_stages == s))
+
+            # NOVÉ completion eventy: completed_stages přešlo 0 -> 1
+            newly_completed_mask = (self.prev_completed_flags == 0) & (completed_flags == 1)
+            newly_completed_indices = np.where(newly_completed_mask)[0]
+
+            for idx in newly_completed_indices:
+                completed_stage = int(current_stages[idx]) - 1
+                if 0 <= completed_stage <= self.max_stage:
+                    self.stage_completed_window_counts[completed_stage] += 1
+                    self.stage_completed_total_counts[completed_stage] += 1
+
+            self.max_stage_seen = max(self.max_stage_seen, int(np.max(current_stages)))
+
+            self.prev_stages = current_stages.copy()
+            self.prev_completed_flags = completed_flags.copy()
+
+        # =========================
+        # LOGGING
+        # =========================
         if self.num_timesteps % self.log_interval == 0 and self.num_timesteps != 0:
             if len(self.completed_rewards) > 0:
-                mean_r = np.mean(self.completed_rewards)
-                mean_l = np.mean(self.completed_lengths)
-                mean_s = np.mean(self.completed_success)
-                max_r = np.max(self.completed_rewards)
-                min_r = np.min(self.completed_rewards)
-                success_count = np.sum(self.completed_success)
-                fail_count = len(self.completed_success) - success_count
+                mean_r = float(np.mean(self.completed_rewards))
+                mean_l = float(np.mean(self.completed_lengths))
+                mean_s = float(np.mean(self.completed_success))
+                max_r = float(np.max(self.completed_rewards))
+                min_r = float(np.min(self.completed_rewards))
+                success_count = int(np.sum(self.completed_success))
+                fail_count = int(len(self.completed_success) - success_count)
                 success_rate = 100.0 * mean_s
             else:
-                # když zatím žádná epizoda neskončila → defaultní hodnoty
-                mean_r = mean_l = mean_s = max_r = min_r = success_rate = 0.0
-                success_count = fail_count = 0
+                mean_r = 0.0
+                mean_l = 0.0
+                mean_s = 0.0
+                max_r = 0.0
+                min_r = 0.0
+                success_count = 0
+                fail_count = 0
+                success_rate = 0.0
 
-            # TensorBoard log
+            # episode logs
             self.writer.add_scalar("episode/mean_return", mean_r, self.num_timesteps)
             self.writer.add_scalar("episode/mean_length", mean_l, self.num_timesteps)
             self.writer.add_scalar("episode/success_rate_%", success_rate, self.num_timesteps)
@@ -173,22 +256,90 @@ class TensorboardMetricsCallback(BaseCallback):
             self.writer.add_scalar("episode/min_return", min_r, self.num_timesteps)
             self.writer.add_scalar("episode/success_count", success_count, self.num_timesteps)
             self.writer.add_scalar("episode/fail_count", fail_count, self.num_timesteps)
+
             if len(self.completed_rewards) > 0:
                 self.writer.add_histogram("episode/reward_hist", np.array(self.completed_rewards), self.num_timesteps)
 
-            # SB3 logger (aby se metriky objevily i v logu SB3)
-            self.logger.record("episode/mean_return", mean_r, self.num_timesteps)
-            self.logger.record("episode/mean_length", mean_l, self.num_timesteps)
-            self.logger.record("episode/success_rate_%", success_rate, self.num_timesteps)
-            self.logger.record("episode/max_return", max_r, self.num_timesteps)
-            self.logger.record("episode/min_return", min_r, self.num_timesteps)
-            self.logger.record("episode/success_count", success_count, self.num_timesteps)
-            self.logger.record("episode/fail_count", fail_count, self.num_timesteps)
+            # stage logs
+            if current_stages is not None:
+                n_envs = len(current_stages)
 
-            # Vyčisti buffery po zápisu
+                for s in range(self.max_stage + 1):
+                    current_count = int(np.sum(current_stages == s))
+                    current_ratio = current_count / max(n_envs, 1)
+
+                    self.writer.add_scalar(f"stage/current_stage_{s}_envs", current_count, self.num_timesteps)
+                    self.writer.add_scalar(f"stage/current_stage_{s}_ratio", current_ratio, self.num_timesteps)
+                    self.writer.add_scalar(f"stage_completed/window_stage_{s}_count", int(self.stage_completed_window_counts[s]), self.num_timesteps)
+                    self.writer.add_scalar(f"stage_completed/total_stage_{s}_count", int(self.stage_completed_total_counts[s]), self.num_timesteps)
+
+                self.writer.add_scalar("stage/max_stage_seen_in_window", self.max_stage_seen, self.num_timesteps)
+
+            # sb3 logger
+            self.logger.record("episode/mean_return", mean_r)
+            self.logger.record("episode/mean_length", mean_l)
+            self.logger.record("episode/success_rate_%", success_rate)
+            self.logger.record("episode/max_return", max_r)
+            self.logger.record("episode/min_return", min_r)
+            self.logger.record("episode/success_count", success_count)
+            self.logger.record("episode/fail_count", fail_count)
+
+            if current_stages is not None:
+                n_envs = len(current_stages)
+                for s in range(self.max_stage + 1):
+                    current_count = int(np.sum(current_stages == s))
+                    current_ratio = current_count / max(n_envs, 1)
+
+                    self.logger.record(f"stage/current_stage_{s}_envs", current_count)
+                    self.logger.record(f"stage/current_stage_{s}_ratio", current_ratio)
+                    self.logger.record(f"stage_completed/window_stage_{s}_count", int(self.stage_completed_window_counts[s]))
+                    self.logger.record(f"stage_completed/total_stage_{s}_count", int(self.stage_completed_total_counts[s]))
+
+                self.logger.record("stage/max_stage_seen_in_window", int(self.max_stage_seen))
+
+            self.logger.dump(self.num_timesteps)
+
+            # terminal print
+            if self.verbose > 0:
+                msg = (
+                    f"[TB] step={self.num_timesteps} | "
+                    f"mean_return={mean_r:.3f} | mean_length={mean_l:.1f} | "
+                    f"success_rate={success_rate:.2f}% | "
+                    f"success={success_count} fail={fail_count}"
+                )
+
+                if current_stages is not None:
+                    current_parts = []
+                    completed_window_parts = []
+                    completed_total_parts = []
+
+                    for s in range(self.max_stage + 1):
+                        current_count = int(np.sum(current_stages == s))
+                        window_count = int(self.stage_completed_window_counts[s])
+                        total_count = int(self.stage_completed_total_counts[s])
+
+                        if current_count > 0:
+                            current_parts.append(f"S{s}:{current_count}")
+                        if window_count > 0:
+                            completed_window_parts.append(f"S{s}:{window_count}")
+                        if total_count > 0:
+                            completed_total_parts.append(f"S{s}:{total_count}")
+
+                    msg += " | current_stages=[" + ", ".join(current_parts) + "]"
+                    msg += " | completed_window=[" + ", ".join(completed_window_parts) + "]"
+                    msg += " | completed_total=[" + ", ".join(completed_total_parts) + "]"
+                    msg += f" | max_stage_seen={self.max_stage_seen}"
+
+                log.info(msg)
+
+            # reset window buffers
             self.completed_rewards.clear()
             self.completed_lengths.clear()
             self.completed_success.clear()
+
+            self.stage_presence_counts[:] = 0
+            self.stage_completed_window_counts[:] = 0
+            self.max_stage_seen = 0
 
             self.writer.flush()
 
@@ -196,6 +347,9 @@ class TensorboardMetricsCallback(BaseCallback):
 
     def _on_training_end(self) -> None:
         self.writer.close()
+        log.info("TensorboardMetricsCallback finished.")
+
+
 class SaveModelCallback(BaseCallback):
         """
         Callback for saving the model every 1M timesteps.

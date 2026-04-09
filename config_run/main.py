@@ -238,7 +238,6 @@ def main():
         #_Eval env
         metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
         env = StableBaseline3VecEnv(metasim_env)
-        eval_env = StableBaseline3VecEnv(metasim_env)
 
         model = PPO(
             "MlpPolicy",
@@ -260,7 +259,12 @@ def main():
         model.learn(total_timesteps=config.get("total_timesteps", 1_000_000),
                     callback=[
                     SaveModelCallback(save_path=config.get("model_save_path"), save_freq=config.get("model_save_freq", 1_000_000),task_name=config.get("task")),
-                    TensorboardMetricsCallback(log_dir=config.get("tensorboard_log", "./ppo_tensorboard/")),
+                    TensorboardMetricsCallback(
+                        log_dir=config.get("tensorboard_log", "./ppo_tensorboard/"),
+                        log_interval=100000,
+                        max_stage=3,
+                        verbose=1,
+                    ),
                     # EvalCallback(
                     # eval_env=eval_env,
                     # eval_freq=config.get("eval_freq", 10_000_000),

@@ -965,21 +965,21 @@ class _ChairManChecker(BaseChecker):
         mask_1 = (stages == 1)
         mask_2 = (stages == 2)
         mask_3 = (stages == 3)
-        mask_4 = (stages == 4)
-        mask_5 = (stages == 5)
-        mask_6 = (stages == 6)
+        # mask_4 = (stages == 4)
+        # mask_5 = (stages == 5)
+        # mask_6 = (stages == 6)
 
         # --- 2. HROMADNÝ VÝPOČET PRO KAŽDOU STAGE ---
         term_0, succ_0 = stege0_chacker(states, handler, mask_0)
         term_1, succ_1 = stege1_chacker(states, handler, mask_1)
         term_2, succ_2 = stege2_chacker(states, handler, mask_2)
         term_3, succ_3 = stege3_chacker(states, handler, mask_3)
-        term_4, succ_4 = stege4_chacker(states, handler, mask_4)
-        term_5, succ_5 = stege5_chacker(states, handler, mask_5)
+        # term_4, succ_4 = stege4_chacker(states, handler, mask_4)
+        # term_5, succ_5 = stege5_chacker(states, handler, mask_5)
 
         # --- 3. SPOJENÍ VÝSLEDKŮ ---
-        all_terminated = term_0 | term_1 | term_2 | term_3 | term_4 | term_5 | mask_6
-        all_success = succ_0 | succ_1 | succ_2 | succ_3 | succ_4 | succ_5
+        all_terminated = term_0 | term_1 | term_2 #| term_3 | term_4 | term_5 | mask_6
+        all_success = succ_0 | succ_1 | succ_2 #| succ_3 | succ_4 | succ_5
 
         # --- 4. ZPRACOVÁNÍ ÚSPĚCHŮ ---
         if all_success.any():
@@ -1040,7 +1040,99 @@ class _ChairManChecker(BaseChecker):
 
         #print("reset chairman checker")
 
+# class _ChairManChecker(BaseChecker):
+#     """
+#     Checker upravený pro task pouze do Stage 2:
+#     Stage 0 -> dojet k židli
+#     Stage 1 -> reach oběma rukama
+#     Stage 2 -> uchopit židli
+#     Stage 3 = FINÁLE / DONE
+#     """
 
+#     def check(self, handler: BaseSimHandler) -> torch.BoolTensor:
+#         from metasim.cfg.checkers.stages_chairman import (
+#             stege0_chacker,
+#             stege1_chacker,
+#             stege2_chacker,
+#             save_snapshot_chairman,
+#         )
+
+#         # Paměť pro jednorázové logy
+#         if not hasattr(self, "announced_stages"):
+#             self.announced_stages = set()
+#             self.announced_stages.add(0)
+
+#         SAVE_PROBABILITY = 0.1
+
+#         states = handler.get_states()
+#         stages = handler.task.reward_functions[0].actual_stage
+
+#         # Stage masky
+#         mask_0 = (stages == 0)
+#         mask_1 = (stages == 1)
+#         mask_2 = (stages == 2)
+#         mask_3 = (stages == 3)   # finální done stage
+
+#         # Výpočet jen pro stage 0..2
+#         term_0, succ_0 = stege0_chacker(states, handler, mask_0)
+#         term_1, succ_1 = stege1_chacker(states, handler, mask_1)
+#         term_2, succ_2 = stege2_chacker(states, handler, mask_2)
+
+#         all_terminated = term_0 | term_1 | term_2 | mask_3
+#         all_success = succ_0 | succ_1 | succ_2
+
+#         # Posun success envů do další stage
+#         if all_success.any():
+#             handler.task.reward_functions[0].actual_stage[all_success] += 1
+#             handler.task.reward_functions[0].completed_stages[all_success] = 1
+
+#         # Success envy NEukončujeme hned, jen je přesuneme do další stage
+#         all_terminated[all_success] = False
+
+#         # ------------------------------------------------------------
+#         # Snapshoty: ukládáme jen stage 1 a 2, protože stage 3 je už finále
+#         # ------------------------------------------------------------
+#         success_to_save = all_success & (stages <= 2)
+
+#         if success_to_save.any():
+#             num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
+#             rand_mask = torch.rand(num_envs, device=handler.device) < SAVE_PROBABILITY
+#             envs_to_save = (success_to_save & rand_mask).nonzero(as_tuple=False).squeeze(-1)
+
+#             if len(envs_to_save) > 0:
+#                 envs_to_save_cpu = envs_to_save.cpu().numpy()
+#                 new_stages_cpu = handler.task.reward_functions[0].actual_stage[envs_to_save].cpu().numpy()
+
+#                 for i in range(len(envs_to_save_cpu)):
+#                     env_idx = int(envs_to_save_cpu[i])
+#                     new_stage = int(new_stages_cpu[i])
+
+#                     # ukládáme jen stage 1 a 2
+#                     if new_stage in [1, 2]:
+#                         save_snapshot_chairman(handler, env_idx, new_stage)
+
+#                         if new_stage not in self.announced_stages:
+#                             print("\n" + "*" * 50)
+#                             print(f"🚀 PRŮLOM: Poprvé uložen snapshot pro STAGE {new_stage}! (Env: {env_idx})")
+#                             print("*" * 50 + "\n")
+#                             self.announced_stages.add(new_stage)
+
+#         # ------------------------------------------------------------
+#         # Finální dokončení tasku = env se právě posunul ze stage 2 do stage 3
+#         # ------------------------------------------------------------
+#         just_finished = all_success & (handler.task.reward_functions[0].actual_stage == 3)
+#         if just_finished.any():
+#             if 3 not in self.announced_stages:
+#                 print("\n" + "=" * 50)
+#                 print("🏆 PRŮLOM: Robot poprvé dokončil task do STAGE 2 (grasp hotov)!")
+#                 print("=" * 50 + "\n")
+#                 self.announced_stages.add(3)
+
+#         return all_terminated
+
+#     def reset(self, handler: BaseSimHandler, env_ids: list[int] | None = None):
+#         from metasim.cfg.checkers.stages_chairman import reset_chairman
+#         reset_chairman(handler, env_ids)
 
 ## FIXME: This checker should be removed!
 @configclass

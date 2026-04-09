@@ -18,7 +18,7 @@ from gymnasium import spaces
 from ikpy.chain import Chain
 from scipy.spatial.transform import Rotation as R
 
-
+VIZUALIZATION = False
 #from roboverse_learn.rl.rsl_rl.rsl_rl import env
 
 class StableBaseline3VecEnv(VecEnv):
@@ -87,7 +87,8 @@ class StableBaseline3VecEnv(VecEnv):
         self.action = None #TODO debug holder
         self.finger_current_positions = {} #TODO debug holder
         super().__init__(env.num_envs, self.observation_space, self.action_space)
-        #self._init_joint_viz()
+        if VIZUALIZATION:
+            self._init_joint_viz()
 
     def add_extra_to_obs(self, obs: np.ndarray) -> np.ndarray:
         """extend obs with extra data including the current stage."""
@@ -236,7 +237,9 @@ class StableBaseline3VecEnv(VecEnv):
             for i in timeout_ids:
                 infos[i]["is_success"] = True
                 infos[i]["TimeLimit.truncated"] = True
-        #self._update_joint_viz()
+        if VIZUALIZATION:
+            self._update_joint_viz()
+            print(f"Step rewards: {rewards.cpu().numpy()}, Unsuccess: {unsuccess.cpu().numpy()}, Timeout: {timeout.cpu().numpy()}")
         return obs, rewards.cpu().numpy(), dones.cpu().numpy(), infos
     def render(self):
         """Render the environment."""

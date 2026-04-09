@@ -52,9 +52,9 @@ force: false
 #Eveluation settings
 #------------------------------------------
 #load_model_path: ./my_env/output/ppo_models/run_2025-10-16_13-59-07/model_80003072
-load_model_path: ./config_run/output/ppo_model/run_2026-03-30_19_chairman/model_1671336000
+load_model_path: ./config_run/output/ppo_model/run_2026-04-08_18_chairman/
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-03-19_18_chairman/model_430344000
-#load_model_path: ./config_run/output/ppo_model_cluster/run_2026-03-23_18_chairman/model_270216000
+#load_model_path: ./config_run/output/ppo_model_cluster/run_2026-04-02_20_chairman/model_970776000
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-03-13_14_chairman_top/model_200070000
 video_save_path: ./config_run/output/eval_videos/chair_man_7.mp4
 eval_episodes: 2
@@ -63,7 +63,7 @@ eval_max_steps: 1000
 
 # PPO training settings
 #-------------------------------------------
-total_timesteps: 2_000_000_000
+total_timesteps: 1_000_000_000
 model_save_path: ./config_run/output/ppo_model
 model_save_freq: 10_000_000
 tensorboard_log: ./config_run/output/tensorboard
@@ -72,16 +72,16 @@ tensorboard_log: ./config_run/output/tensorboard
 # PPO parameters
 #-------------------------------------------
 net_arch_pivf: true
-net_arch_pi: [512, 256, 256, 128]  # Větší síť, humanoid má 30+ kloubů
-net_arch_vf: [512, 512, 256]
+net_arch_pi: [256, 256, 128]
+net_arch_vf: [256, 256, 128]
 
-learning_rate: 0.0005     # Mírně vyšší LR díky obrovskému batch size (běžně 3e-4 až 1e-3)
-n_steps: 32               # Kratší rollouty (častější updaty sítě). Pro 9k envs stačí bohatě 32 nebo 64
-batch_size: 72000         # MASIVNÍ batch size. (Vzorec: num_envs * n_steps / počet_minibatchů -> 9000*32 / 4)
-n_epochs: 5               # Počet průchodů bufferem (standard v RSL_RL je 4 nebo 5)
-gamma: 0.99               # Klasika, optimální pro běžný horizon
-gae_lambda: 0.95          # Klasika
-clip_range: 0.2           # Klasika
-ent_coef: 0.001           # Lehká entropie (0.01 - 0.001) pro podporu explorace u těžkých úloh, aby robot "neztuhl"
-vf_coef: 1.0              # Default je 0.5, ale u složitých odměn (stage) pomáhá 1.0 lépe predikovat Value funkci
+learning_rate: 0.0003
+n_steps: 32
+batch_size: 72000
+n_epochs: 4
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+ent_coef: 0.002
+vf_coef: 1.0
 max_grad_norm: 1.0

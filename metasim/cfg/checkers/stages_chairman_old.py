@@ -22,7 +22,7 @@ except:
 STAGE_TIMEOUTS = {
     0: 400,  # Dojít k židli
     1: 200,  # Reach (150 kroků by mělo stačit na natažení)
-    2: 200,  # Zavření prstů
+    2: 100,  # Zavření prstů
     3: 200,  # Zatažení za židli
     4: 100,  # Zastavení židle
     5: 100   # Svěšení rukou
@@ -30,11 +30,11 @@ STAGE_TIMEOUTS = {
 VELOCITY_THRESHOLD = 0.06
 HEIGHT_THRESHOLD = 0.4
 DISTANCE_TO_CHAIR_X_THRESHOLD = 0.8
-DISTANCE_TO_CHAIR_Y_THRESHOLD = 0.4
+DISTANCE_TO_CHAIR_Y_THRESHOLD = 0.2
 
 HAND_VELOCITY_THRESHOLD = 0.15
 
-DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.05
+DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.034
 ORIENTATION_DISTANCE_HANDLE_THRESHOLD = 0.03
 GRASP_DRIFT_THRESHOLD = 0.1
 GRASP_FORCE_THRESHOLD = 2.0
@@ -44,23 +44,10 @@ ORI_DOT_PRODUCT_THRESHOLD = 0.9
 CHAIR_PULL_DISTANCE_THRESHOLD = 1.0
 
 ARM_RESTING_THRESHOLD = 0.35
-
-
-# =========================================================
-# SNAPSHOT CONFIG
-# =========================================================
-
-# Pokud True, při startu se načtou snapshoty z disku do RAM bufferu.
-ENABLE_DISK_SNAPSHOT_LOAD = False
-
-# Pokud True, nové snapshoty se budou průběžně zapisovat i na disk.
-ENABLE_DISK_SNAPSHOT_SAVE = False
-
 SNAPSHOT_DIR = Path("config_run/snapshots_chair/")
 MAX_SNAPSHOTS = 100
-# Pokud True, všechny envy vždy startují od stage 0
-# a snapshot curriculum se zcela ignoruje.
-FORCE_START_FROM_STAGE0 = False
+
+
 RAM_SNAPSHOT_BUFFER = {1: [], 2: [], 3: [], 4: [], 5: []}
 BUFFER_INITIALIZED = False
 UNSAVED_COUNT = 0
@@ -68,19 +55,9 @@ SYNC_THRESHOLD = 30  # Každých 50 uložených snapshotů se jeden zapíše trv
 LOCK = threading.Lock()
 
 def init_ram_buffer():
-    """Inicializuje RAM snapshot buffer. Volitelně načte snapshoty z disku."""
-    global BUFFER_INITIALIZED, RAM_SNAPSHOT_BUFFER
-
-    if BUFFER_INITIALIZED:
-        return
-
-    # Vždy začneme s čistým RAM bufferem
-    RAM_SNAPSHOT_BUFFER = {1: [], 2: [], 3: [], 4: [], 5: []}
-
-    if not ENABLE_DISK_SNAPSHOT_LOAD:
-        BUFFER_INITIALIZED = True
-        print("RAM Snapshot Buffer inicializován bez načítání z disku.")
-        return
+    """Načte všechny dosud uložené .pkl soubory z disku do RAM."""
+    global BUFFER_INITIALIZED
+    if BUFFER_INITIALIZED: return
 
     print("Inicializuji RAM Snapshot Buffer z disku...")
     for stage in range(1, 6):
@@ -89,30 +66,27 @@ def init_ram_buffer():
             files = list(stage_dir.glob("*.pkl"))
             for f in files:
                 try:
-                    with open(f, "rb") as file:
+                    with open(f, 'rb') as file:
                         data = pickle.load(file)
                         RAM_SNAPSHOT_BUFFER[stage].append(data)
                 except Exception:
                     pass
 
     BUFFER_INITIALIZED = True
-    counts = [len(RAM_SNAPSHOT_BUFFER[s]) for s in range(1, 6)]
+    counts = [len(RAM_SNAPSHOT_BUFFER[s]) for s in range(1,6)]
     print(f"RAM Buffer načten. Počty snapshotů pro stages 1-5: {counts}")
-
 
 def _sync_to_disk_worker(stage, snapshot_data, snapshot_idx):
     """Pracovník na pozadí, který uloží 1 soubor na disk bez zablokování tréninku."""
-    if not ENABLE_DISK_SNAPSHOT_SAVE:
-        return
-
     stage_dir = SNAPSHOT_DIR / f"stage_{stage}"
     stage_dir.mkdir(parents=True, exist_ok=True)
     filename = stage_dir / f"snapshot_{snapshot_idx}.pkl"
     try:
-        with open(filename, "wb") as f:
+        with open(filename, 'wb') as f:
             pickle.dump(snapshot_data, f)
     except Exception:
         pass
+
 
 
 # ---------------------------------------------------------
@@ -440,9 +414,9 @@ def stege1_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     success_cond = (left_dist < DISTANCE_TO_CHAIR_HANDLE_THRESHOLD) & \
                    (right_dist < DISTANCE_TO_CHAIR_HANDLE_THRESHOLD) & \
                    (l_ori_dist < ORIENTATION_DISTANCE_HANDLE_THRESHOLD) & \
-                   (r_ori_dist < ORIENTATION_DISTANCE_HANDLE_THRESHOLD)# & \
-                   #(left_vel_norm < HAND_VELOCITY_THRESHOLD) & \
-                   #(right_vel_norm < HAND_VELOCITY_THRESHOLD)
+                   (r_ori_dist < ORIENTATION_DISTANCE_HANDLE_THRESHOLD) & \
+                   (left_vel_norm < HAND_VELOCITY_THRESHOLD) & \
+                   (right_vel_norm < HAND_VELOCITY_THRESHOLD)
 
     terminated[idx] = term_common | success_cond
     success[idx] = success_cond & (~term_common)
@@ -663,9 +637,8 @@ def stege5_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     return terminated, success
 
 def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
+    # 1. Inicializace RAM bufferu (spustí se jen úplně poprvé)
     global BUFFER_INITIALIZED
-
-    # 1. Inicializace RAM bufferu
     if not BUFFER_INITIALIZED:
         init_ram_buffer()
 
@@ -681,52 +654,19 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
             handler.task.reward_functions[i].actual_stage = current_stages_tensor
             handler.task.reward_functions[i].completed_stages = current_stages_completed
 
-    # =====================================================
-    # Režim: vždy start od stage 0
-    # =====================================================
-    if FORCE_START_FROM_STAGE0:
-        print(f"[reset_chairman] FORCE_START_FROM_STAGE0=True -> reset envs {env_ids} vždy do stage 0")
-
-        for env in env_ids:
-            for i in range(len(handler.task.reward_functions)):
-                handler.task.reward_functions[i].actual_stage[env] = 0
-                handler.task.reward_functions[i].completed_stages[env] = 0
-
-            states[env] = stage0_init(handler.robot.name)
-            print(f"[reset_chairman] env {env} -> stage 0")
-
-        if hasattr(handler.task, "recorded_stage") and env_ids is not None:
-            handler.task.recorded_stage[env_ids] = -1
-
-        handler.set_states(states=states, env_ids=env_ids)
-        states2 = handler.get_states()
-
-        for reward_fn in handler.task.reward_functions:
-            if hasattr(reward_fn, "reset"):
-                reward_fn.reset(env_ids=env_ids, states=states2)
-
-        return
-
-    # =====================================================
-    # Curriculum režim
-    # =====================================================
+    # Zjistíme maximální stage už jen z RAM (žádné prohledávání disku)
     max_available_stage = 0
     for i in range(1, 6):
         if len(RAM_SNAPSHOT_BUFFER[i]) > 0:
             max_available_stage = i
         else:
             break
-
-    #print(f"[reset_chairman] Max available stage found in RAM buffer: {max_available_stage}")
-
     for env in env_ids:
         new_stage = random.randint(0, max_available_stage)
-
+        #new_stage = 1  # PRO TESTOVÁNÍ - vždy začínáme Stage 1, aby bylo vidět, že načítání z RAM funguje
         for i in range(len(handler.task.reward_functions)):
             handler.task.reward_functions[i].actual_stage[env] = new_stage
             handler.task.reward_functions[i].completed_stages[env] = 0
-
-        #print(f"[reset_chairman] Resetting env {env} to stage {new_stage} (max available: {max_available_stage})")
 
         state = None
         if new_stage > 0:
@@ -734,37 +674,27 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
 
         if state is None:
             if new_stage > 0:
-                #print(f"[reset_chairman] Warning: failed to load snapshot for stage {new_stage}, reverting env {env} to stage 0")
                 for i in range(len(handler.task.reward_functions)):
                     handler.task.reward_functions[i].actual_stage[env] = 0
                     handler.task.reward_functions[i].completed_stages[env] = 0
-
             state = stage0_init(handler.robot.name)
-            #print(f"[reset_chairman] env {env} -> using procedural stage0_init")
+
+        if states is None:
+            states = [state] * handler.num_envs
         else:
-            #print(f"[reset_chairman] env {env} -> loaded snapshot for stage {new_stage}")
-            pass
-
-        states[env] = state
-
+            states[env] = state
     if hasattr(handler.task, "recorded_stage") and env_ids is not None:
         handler.task.recorded_stage[env_ids] = -1
-
     handler.set_states(states=states, env_ids=env_ids)
     states2 = handler.get_states()
 
+    # Projdeme všechny reward funkce a zavoláme jejich reset (pokud ho mají)
     for reward_fn in handler.task.reward_functions:
-        if hasattr(reward_fn, "reset"):
+        if hasattr(reward_fn, 'reset'):
             reward_fn.reset(env_ids=env_ids, states=states2)
-
-
 
 def save_snapshot_chairman(handler: BaseSimHandler, env_id: int, stage: int) -> None:
     global UNSAVED_COUNT
-
-    # Když chceme trénovat vždy od nuly, snapshoty vůbec neřešíme
-    if FORCE_START_FROM_STAGE0:
-        return
 
     full_states = handler.get_states()
     snapshot_data = {"robots": {}, "objects": {}}
@@ -779,6 +709,7 @@ def save_snapshot_chairman(handler: BaseSimHandler, env_id: int, stage: int) -> 
     dof_vel = {name: vel for name, vel in zip(joint_names, joint_vel)}
 
     snapshot_data["robots"][robot_name] = {
+        # ZMĚNA: Použito .clone() místo .numpy()
         "pos": robot_states.root_state[env_id, :3].detach().cpu().clone(),
         "rot": robot_states.root_state[env_id, 3:7].detach().cpu().clone(),
         "dof_pos": dof_pos,
@@ -791,7 +722,6 @@ def save_snapshot_chairman(handler: BaseSimHandler, env_id: int, stage: int) -> 
                 "pos": obj_state.root_state[env_id, :3].detach().cpu().clone(),
                 "rot": obj_state.root_state[env_id, 3:7].detach().cpu().clone(),
             }
-
         obj_joint_names = obj_state.joint_names.tolist()
         obj_joint_pos = obj_state.joint_pos[env_id].detach().cpu().numpy()
         obj_joint_vel = obj_state.joint_vel[env_id].detach().cpu().numpy()
@@ -800,13 +730,14 @@ def save_snapshot_chairman(handler: BaseSimHandler, env_id: int, stage: int) -> 
         o_dof_vel = {name: vel for name, vel in zip(obj_joint_names, obj_joint_vel)}
 
         snapshot_data["objects"][obj_name] = {
+            # ZMĚNA: Použito .clone() místo .numpy()
             "pos": obj_state.root_state[env_id, :3].detach().cpu().clone(),
             "rot": obj_state.root_state[env_id, 3:7].detach().cpu().clone(),
             "dof_pos": o_dof_pos,
             "dof_vel": o_dof_vel,
         }
 
-    # Uložení do RAM
+    # Zápis do RAM s Thready
     with LOCK:
         if len(RAM_SNAPSHOT_BUFFER[stage]) < MAX_SNAPSHOTS:
             RAM_SNAPSHOT_BUFFER[stage].append(snapshot_data)
@@ -817,25 +748,24 @@ def save_snapshot_chairman(handler: BaseSimHandler, env_id: int, stage: int) -> 
 
         UNSAVED_COUNT += 1
         trigger_sync = False
-        if ENABLE_DISK_SNAPSHOT_SAVE and UNSAVED_COUNT >= SYNC_THRESHOLD:
+        if UNSAVED_COUNT >= SYNC_THRESHOLD:
             trigger_sync = True
             UNSAVED_COUNT = 0
 
-    # Volitelný zápis na disk
+    # Spuštění zápisu na disk ve VEDLEJŠÍM vlákně
     if trigger_sync:
         thread = threading.Thread(target=_sync_to_disk_worker, args=(stage, snapshot_data, idx))
         thread.start()
 
 def load_snapshot_chairman(stage: int) -> dict | None:
-    # Když chceme jet vždy od nuly, snapshoty se vůbec nepoužijí
-    if FORCE_START_FROM_STAGE0:
-        return None
-
+    # Extrémně rychlé načtení z RAM
     with LOCK:
         if not RAM_SNAPSHOT_BUFFER[stage]:
             return None
         data = random.choice(RAM_SNAPSHOT_BUFFER[stage])
 
+    # ZPĚTNÁ KOMPATIBILITA: Provedeme formátování "pos" a "rot" na Torch Tenzory,
+    # kdyby se načetly staré .pkl soubory z disku, které obsahovaly numpy pole.
     formatted_data = {"robots": {}, "objects": {}}
 
     for rob_name, rob_data in data["robots"].items():
@@ -843,7 +773,7 @@ def load_snapshot_chairman(stage: int) -> dict | None:
             "pos": torch.as_tensor(rob_data["pos"], dtype=torch.float32),
             "rot": torch.as_tensor(rob_data["rot"], dtype=torch.float32),
             "dof_pos": rob_data["dof_pos"],
-            "dof_vel": rob_data["dof_vel"],
+            "dof_vel": rob_data["dof_vel"]
         }
 
     for obj_name, obj_data in data["objects"].items():
@@ -851,7 +781,7 @@ def load_snapshot_chairman(stage: int) -> dict | None:
             "pos": torch.as_tensor(obj_data["pos"], dtype=torch.float32),
             "rot": torch.as_tensor(obj_data["rot"], dtype=torch.float32),
             "dof_pos": obj_data["dof_pos"],
-            "dof_vel": obj_data["dof_vel"],
+            "dof_vel": obj_data["dof_vel"]
         }
 
     return formatted_data
