@@ -21,7 +21,7 @@ except:
 
 STAGE_TIMEOUTS = {
     0: 400,  # Dojít k židli
-    1: 200,  # Reach (150 kroků by mělo stačit na natažení)
+    1: 150,  # Reach (150 kroků by mělo stačit na natažení)
     2: 200,  # Zavření prstů
     3: 200,  # Zatažení za židli
     4: 100,  # Zastavení židle
@@ -51,7 +51,7 @@ ARM_RESTING_THRESHOLD = 0.35
 # =========================================================
 
 # Pokud True, při startu se načtou snapshoty z disku do RAM bufferu.
-ENABLE_DISK_SNAPSHOT_LOAD = False
+ENABLE_DISK_SNAPSHOT_LOAD = True
 
 # Pokud True, nové snapshoty se budou průběžně zapisovat i na disk.
 ENABLE_DISK_SNAPSHOT_SAVE = False
@@ -721,7 +721,6 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
 
     for env in env_ids:
         new_stage = random.randint(0, max_available_stage)
-
         for i in range(len(handler.task.reward_functions)):
             handler.task.reward_functions[i].actual_stage[env] = new_stage
             handler.task.reward_functions[i].completed_stages[env] = 0

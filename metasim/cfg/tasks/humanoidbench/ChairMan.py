@@ -997,8 +997,8 @@ class CloseGraspReward(HumanoidBaseReward):
         self.threshold = 0.10
 
         # škálování
-        self.progress_scale = 0.02   # cca 0.02 rad průměrného zlepšení -> reward 1
-        self.state_scale = 0.35      # průměrná chyba 0.35 rad -> reward 0
+        self.progress_scale = 0.01   # cca 0.02 rad průměrného zlepšení -> reward 1
+        self.state_scale = 1.0     # průměrná chyba 0.35 rad -> reward 0
 
         self.finger_targets_dict = {
             "left_hand_thumb_0_joint": 0.396 + self.threshold,
@@ -1076,8 +1076,8 @@ class CloseGraspReward(HumanoidBaseReward):
         state_reward = torch.clamp(1.0 - mean_error / self.state_scale, min=0.0, max=1.0)
 
         total_reward = (
-            0.60 * progress_reward +
-            0.40 * state_reward
+            0.30 * progress_reward +
+            0.70 * state_reward
         )
 
         return total_reward * stage_mask.float()
@@ -1323,7 +1323,7 @@ HUMANLY_DOF_LIMIT_WEIGHT = -0.10
 UPRIGHT_PENALTY_WEIGHT = -0.20
 FACE_CHAIR_REWARD_WEIGHT = 0.20
 ARM_RESTING_POSE_PENALTY_WEIGHT = -0.02
-STAGE_PROGRESS_WEIGHT = 10.0
+STAGE_PROGRESS_WEIGHT = 500.0
 CONTINUOUS_STAGE_REWARD_WEIGHT = 4.0
 
 # Stage 0
@@ -1339,7 +1339,7 @@ STAY_NEAR_ANCHOR_REWARD_WEIGHT = 1.5
 
 # Stage 2
 CLOSE_GRASP_REWARD_WEIGHT = 5.5
-FORCE_GRASP_REWARD_WEIGHT = 2.0
+FORCE_GRASP_REWARD_WEIGHT = 4.0
 
 
 # =============================================================================
@@ -1387,9 +1387,9 @@ class ChairmanCfg(HumanoidTaskCfg):
         FORCE_GRASP_REWARD_WEIGHT,
 
         FACE_CHAIR_REWARD_WEIGHT,
-        # ARM_RESTING_POSE_PENALTY_WEIGHT,
+        ARM_RESTING_POSE_PENALTY_WEIGHT,
         STAGE_PROGRESS_WEIGHT,
-        CONTINUOUS_STAGE_REWARD_WEIGHT,
+        #CONTINUOUS_STAGE_REWARD_WEIGHT,
     ]
 
     reward_functions = [
@@ -1412,9 +1412,9 @@ class ChairmanCfg(HumanoidTaskCfg):
         GraspForceReward(),
 
         FaceChairReward(),
-        # ArmRestingPosePenaltyCfg(),
+        ArmRestingPosePenaltyCfg(),
         StageProgressCfg(),
-        ContinuousStageReward(),
+        #ContinuousStageReward(),
     ]
 
     def extra_spec(self):

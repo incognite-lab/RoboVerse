@@ -184,7 +184,7 @@ class StableBaseline3VecEnv(VecEnv):
         #------------------------------------
         #--------------DEBUG-----------------
         #------------------------------------
-        # debug = 0
+        # debug = 2
         # if debug == 0:
         #     actions = self.debug0()
         #     obs, rewards, unsuccess, timeout, _ = self.env.step(actions)
@@ -438,11 +438,11 @@ class StableBaseline3VecEnv(VecEnv):
         # 1. DEFINICE CÍLOVÝCH HODNOT (Limity kam až se mají prsty zavřít)
         finger_limits = {
             # --- LEVÁ RUKA ---
-            "left_hand_thumb_0_joint": 1.0, "left_hand_thumb_1_joint": 0.7, "left_hand_thumb_2_joint": 1.0,
+            "left_hand_thumb_0_joint": 0.396, "left_hand_thumb_1_joint": 0.7, "left_hand_thumb_2_joint": 1.0,
             "left_hand_middle_0_joint": -1.5, "left_hand_middle_1_joint": -1.7,
             "left_hand_index_0_joint": -1.5, "left_hand_index_1_joint": -1.7,
             # --- PRAVÁ RUKA ---
-            "right_hand_thumb_0_joint": -1.0, "right_hand_thumb_1_joint": -0.7, "right_hand_thumb_2_joint": -1.0,
+            "right_hand_thumb_0_joint": -0.396, "right_hand_thumb_1_joint": -0.7, "right_hand_thumb_2_joint": -1.0,
             "right_hand_middle_0_joint": 1.5, "right_hand_middle_1_joint": 1.7,
             "right_hand_index_0_joint": 1.5, "right_hand_index_1_joint": 1.7
         }
