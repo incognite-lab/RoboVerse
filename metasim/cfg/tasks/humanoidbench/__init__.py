@@ -25,3 +25,4 @@ from .reach_cfg_pos import ReachposCfg
 from .door_stand_cfg import DoorStandCfg
 from .walk_new_cfg import WalkNewCfg
 from .ChairMan import ChairmanCfg
+from .ChairMan_simple import ChairmansimpleCfg

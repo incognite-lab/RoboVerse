@@ -51,7 +51,7 @@ ARM_RESTING_THRESHOLD = 0.35
 # =========================================================
 
 # Pokud True, při startu se načtou snapshoty z disku do RAM bufferu.
-ENABLE_DISK_SNAPSHOT_LOAD = True
+ENABLE_DISK_SNAPSHOT_LOAD = False
 
 # Pokud True, nové snapshoty se budou průběžně zapisovat i na disk.
 ENABLE_DISK_SNAPSHOT_SAVE = False
@@ -60,7 +60,7 @@ SNAPSHOT_DIR = Path("config_run/snapshots_chair/")
 MAX_SNAPSHOTS = 100
 # Pokud True, všechny envy vždy startují od stage 0
 # a snapshot curriculum se zcela ignoruje.
-FORCE_START_FROM_STAGE0 = False
+FORCE_START_FROM_STAGE0 = True
 RAM_SNAPSHOT_BUFFER = {1: [], 2: [], 3: [], 4: [], 5: []}
 BUFFER_INITIALIZED = False
 UNSAVED_COUNT = 0

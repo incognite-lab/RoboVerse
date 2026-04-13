@@ -1134,6 +1134,105 @@ class _ChairManChecker(BaseChecker):
 #         from metasim.cfg.checkers.stages_chairman import reset_chairman
 #         reset_chairman(handler, env_ids)
 
+class _ChairManCheckerSimple(BaseChecker):
+
+    def check(self, handler: BaseSimHandler) -> torch.BoolTensor:
+        from metasim.cfg.checkers.stages_chairman_simple import (
+            stege0_chacker, stege1_chacker, stege2_chacker,
+            stege3_chacker, save_snapshot_chairman
+        )
+        import random
+        import time
+
+        # --- INICIALIZACE PAMĚTI PRO VÝPISY PRŮLOMŮ ---
+        # Vytvoří množinu (set) pouze při prvním zavolání checkeru
+        if not hasattr(self, "announced_stages"):
+            self.announced_stages = set()
+            self.announced_stages.add(0) # Stage 0 nás nezajímá, tu už umí od začátku
+
+        SAVE_PROBABILITY = 0.1
+
+        states = handler.get_states()
+        # Získáme tenzor se všemi aktuálními stages [num_envs]
+        stages = handler.task.reward_functions[0].actual_stage
+
+        # --- 1. VYTVOŘENÍ MASEK ---
+        mask_0 = (stages == 0)
+        mask_1 = (stages == 1)
+        mask_2 = (stages == 2)
+        mask_3 = (stages == 3)
+
+
+        # --- 2. HROMADNÝ VÝPOČET PRO KAŽDOU STAGE ---
+        term_0, succ_0 = stege0_chacker(states, handler, mask_0)
+        term_1, succ_1 = stege1_chacker(states, handler, mask_1)
+        term_2, succ_2 = stege2_chacker(states, handler, mask_2)
+        term_3, succ_3 = stege3_chacker(states, handler, mask_3)
+
+        # --- 3. SPOJENÍ VÝSLEDKŮ ---
+        all_terminated = term_0 | term_1 | term_2 | term_3
+        all_success = succ_0 | succ_1 | succ_2 | succ_3
+        # --- 4. ZPRACOVÁNÍ ÚSPĚCHŮ ---
+        if all_success.any():
+            print(f"complete success stage {handler.task.reward_functions[0].actual_stage[all_success]}")
+        handler.task.reward_functions[0].actual_stage[all_success] += 1
+
+        handler.task.reward_functions[0].completed_stages[all_success] = 1
+
+        all_terminated[all_success] = False
+
+        # --- 5. UKLÁDÁNÍ SNAPSHOTŮ A LOGOVÁNÍ PRŮLOMŮ ---
+
+        # A) Finále (Stage 4) - Jelikož se Stage 6 neukládá do snapshotů, vypíšeme průlom rovnou
+        just_finished = all_success & (stages == 4) # (protože jsme v kroku 4 zvedli stages na 6)
+        if just_finished.any():
+            if 4 not in self.announced_stages:
+                print("\n" + "="*50)
+                print(f"🏆 ABSOLUTNÍ PRŮLOM! Robot poprvé dokončil celou úlohu (Stage 4)!")
+                print("="*50 + "\n")
+                self.announced_stages.add(4)
+
+        # B) Náhodný výběr pro uložení snapshotu
+        success_to_save = all_success & (stages <= 3)
+
+        if success_to_save.any():
+            num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
+            rand_mask = torch.rand(num_envs, device=handler.device) < SAVE_PROBABILITY
+
+            envs_to_save = (success_to_save & rand_mask).nonzero(as_tuple=False).squeeze(-1)
+
+            if len(envs_to_save) > 0:
+                envs_to_save_cpu = envs_to_save.cpu().numpy()
+                stages_cpu = stages[envs_to_save].cpu().numpy()
+
+                for i in range(len(envs_to_save_cpu)):
+                    env_idx = int(envs_to_save_cpu[i])
+                    new_stage = int(stages_cpu[i])
+
+                    # 1. Nejprve fyzicky uložíme snapshot
+                    save_snapshot_chairman(handler, env_idx, new_stage)
+
+                    # 2. Pokud se uložení provedlo a stage ještě nebyla oznámena -> Vypiš to!
+                    if new_stage not in self.announced_stages:
+                        print("\n" + "*"*50)
+                        print(f"🚀 PRŮLOM: Robot se poprvé posunul a ULOŽIL stav pro STAGE {new_stage}! (Env: {env_idx})")
+                        print("*"*50 + "\n")
+                        # Zapíšeme do paměti, ať už to nikdy nevypíše
+                        self.announced_stages.add(new_stage)
+
+        return all_terminated
+    def reset(self, handler: BaseSimHandler, env_ids: list[int] | None = None):
+        """
+        RESET
+        """
+        from metasim.cfg.checkers.stages_chairman_simple import reset_chairman
+        import time
+        reset_chairman(handler, env_ids)
+
+        #print("reset chairman checker")
+
+
+
 ## FIXME: This checker should be removed!
 @configclass
 class _PackageChecker(BaseChecker):

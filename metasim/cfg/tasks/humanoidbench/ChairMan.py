@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 
 from metasim.cfg.checkers import _ChairManChecker
-from metasim.cfg.objects import ArticulationObjCfg
+from metasim.cfg.objects import ArticulationObjCfg, RigidObjCfg
 from metasim.types import EnvState
 from metasim.utils import configclass
 from metasim.utils.humanoid_robot_util import neck_height_tensor
@@ -1362,6 +1362,12 @@ class ChairmanCfg(HumanoidTaskCfg):
             colapse_fixed_joints=False,
             batch_fixed_verts=True,
         ),
+        RigidObjCfg(
+            name="room",
+            urdf_path="/home/roboversepc/Documents/rooms/room5/room.urdf",
+            default_position= [0.0, 0.0, 0.0],
+            fix_base_link=True
+        )
     ]
 
     traj_filepath = "roboverse_data/trajs/humanoidbench/chair/initial_state_v2.json"

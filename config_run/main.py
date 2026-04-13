@@ -117,7 +117,7 @@ def main():
         #config_name = "g1_door_IK"
         #config_name = "g1_door_open_stand_train"
         #config_name = "g1_door_stand_IK"
-        config_name = "g1_ChairMan"
+        config_name = "g1_ChairMan_simple"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
     elif len(sys.argv) == 2:
@@ -177,7 +177,11 @@ def main():
         if scenario.robots[0].fix_base_link == False:
             scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
             scenario.robots[0].fix_base_link = False
-
+    elif config.get("task") == "chairmansimple":
+        from SB3_chairman_env import StableBaseline3VecEnv
+        if scenario.robots[0].fix_base_link == False:
+            scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
+            scenario.robots[0].fix_base_link = False
 
 
 
@@ -261,7 +265,7 @@ def main():
                     SaveModelCallback(save_path=config.get("model_save_path"), save_freq=config.get("model_save_freq", 1_000_000),task_name=config.get("task")),
                     TensorboardMetricsCallback(
                         log_dir=config.get("tensorboard_log", "./ppo_tensorboard/"),
-                        log_interval=100000,
+                        log_interval=1000000,
                         max_stage=3,
                         verbose=1,
                     ),
@@ -540,87 +544,150 @@ def main():
         runner = OnPolicyRunner(env, algo, runner_cfg)
         runner.learn()
 
-
     elif config.get("train_or_eval") == "train_dagger":
+        VIZUALIZATION = config.get("visualization", False)
         from dagger.student_net import VisionStudent
         from dagger.dagger_trainer import DAggerBuffer, train_dagger_step
-        import torch.nn.functional as F
-        from torch.utils.tensorboard import SummaryWriter # <--- PŘIDÁNO PRO TENSORBOARD
+        from torch.utils.tensorboard import SummaryWriter
+        import cv2
 
-        metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
+        metasim_env = MetaSimVecEnv(
+            scenario,
+            task_name=config.get("task"),
+            num_envs=config.get("num_envs", 1),
+            sim=config.get("sim")
+        )
         env = StableBaseline3VecEnv(metasim_env)
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # --- TENSORBOARD SETUP ---
         tb_log_dir = config.get("tensorboard_log", "./dagger_tensorboard/")
         os.makedirs(tb_log_dir, exist_ok=True)
         writer = SummaryWriter(log_dir=tb_log_dir)
 
-        # --- MODEL SAVING SETUP ---
         save_dir = config.get("model_save_path", "./output/dagger_models/")
         os.makedirs(save_dir, exist_ok=True)
         save_freq = config.get("model_save_freq", 5000)
 
-        # 1. Načtení EXPERTA (PPO) - Zmrazený, už se neučí
         log.info(f"Loading Expert model from {config.get('load_model_path')}")
         sys.modules['numpy._core'] = np.core
         sys.modules['numpy._core.numeric'] = np.core.numeric
         expert_model = PPO.load(config.get("load_model_path"), env=env, device=device)
 
-        # 2. Inicializace STUDENTA a Bufferu
         num_actions = env.action_space.shape[0]
-        student_model = VisionStudent(num_actions=num_actions).to(device)
-        optimizer = torch.optim.Adam(student_model.parameters(), lr=3e-4)
+        num_joints = env.action_space.shape[0]
 
-        buffer = DAggerBuffer(max_size=15000, device=device)
+        student_model = VisionStudent(
+            num_actions=num_actions,
+            num_joints=num_joints
+        ).to(device)
+
+        optimizer = torch.optim.Adam(
+            student_model.parameters(),
+            lr=config.get("learning_rate", 3e-4)
+        )
+
+        buffer = DAggerBuffer(
+            max_samples=config.get("dagger_buffer_steps", 4000) * config.get("dagger_store_per_step", 32),
+            img_shape=(3, 128, 128),
+            num_joints=num_joints,
+            num_actions=num_actions,
+            device=device
+        )
 
         total_iterations = config.get("total_timesteps", 100_000)
-        beta = 1.0
-        beta_decay = 0.999
+        beta = config.get("beta_start", 1.0)
+        beta_decay = config.get("beta_decay", 0.9995)
+
+        store_per_step = config.get("dagger_store_per_step", 32)
+        train_every = config.get("dagger_train_every", 20)
+        updates_per_train = config.get("dagger_updates_per_train", 10)
+        train_batch_size = config.get("dagger_batch_size", 512)
 
         expert_obs = env.reset()
+
+        if VIZUALIZATION:
+            cv2.namedWindow("Student camera input", cv2.WINDOW_NORMAL)
 
         log.info("Starting DAgger Training...")
         for step in range(total_iterations):
             states = metasim_env.env.handler.get_states()
 
-            # Extrakce a zmenšení obrazu pro trénink
+            # kamera: [N, H, W, C] -> [N, C, H, W]
             rgb_tensor = states.cameras["camera0"].rgb.to(device)
-            rgb_permuted = rgb_tensor.permute(0, 3, 1, 2).float()
-            student_obs_small = F.interpolate(rgb_permuted, size=(72, 128), mode='bilinear', align_corners=False)
+            rgb_permuted = rgb_tensor.permute(0, 3, 1, 2).contiguous().float()
 
-            student_obs_uint8 = student_obs_small.to(dtype=torch.uint8)
-            student_obs_net_input = student_obs_small / 255.0
+            # očekáváme kameru 128x128, bez resize
+            student_obs = rgb_permuted
+            student_obs_uint8 = student_obs.to(torch.uint8)
+            student_obs_net_input = student_obs / 255.0
+
+            # jointy z observation; v tvém wrapperu jsou na začátku observation
+            joint_obs_tensor = torch.as_tensor(
+                expert_obs[:, :num_joints],
+                device=device,
+                dtype=torch.float32
+            )
 
             with torch.no_grad():
                 expert_actions, _ = expert_model.predict(expert_obs, deterministic=True)
-                expert_actions_tensor = torch.tensor(expert_actions, device=device)
+                expert_actions_tensor = torch.as_tensor(expert_actions, device=device, dtype=torch.float32)
 
                 student_model.eval()
-                student_actions_tensor = student_model(student_obs_net_input)
+                student_actions_tensor = student_model(student_obs_net_input, joint_obs_tensor)
                 student_actions = student_actions_tensor.cpu().numpy()
 
+            # směs expert/student
             if random.random() < beta:
                 env_actions = expert_actions
             else:
                 env_actions = student_actions
 
-            buffer.add_batch(student_obs_uint8, expert_actions_tensor)
+            # do bufferu uložit jen část env, ne všech 100
+            buffer.add_batch(
+                student_obs_uint8,
+                joint_obs_tensor,
+                expert_actions_tensor,
+                store_count=store_per_step
+            )
+
             expert_obs, rewards, dones, infos = env.step(env_actions)
 
-            # Zápis do Tensorboardu a učení
-            if step > 0 and step % 5 == 0:
-                loss = train_dagger_step(student_model, optimizer, buffer, batch_size=128)
+            # trénovat méně často, ale více gradient kroky
+            if step > 0 and step % train_every == 0:
+                losses = []
+                for _ in range(updates_per_train):
+                    loss = train_dagger_step(
+                        student_model,
+                        optimizer,
+                        buffer,
+                        batch_size=train_batch_size
+                    )
+                    losses.append(loss)
 
-                # --- LOGOVÁNÍ TENSORBOARD ---
-                writer.add_scalar("DAgger/MSE_Loss", loss, step)
+                mean_loss = float(np.mean(losses)) if losses else 0.0
+
+                writer.add_scalar("DAgger/MSE_Loss", mean_loss, step)
                 writer.add_scalar("DAgger/Beta_Mix_Ratio", beta, step)
-                writer.add_scalar("DAgger/Env_Mean_Reward", rewards.mean().item(), step)
+                writer.add_scalar("DAgger/Env_Mean_Reward", float(np.mean(rewards)), step)
+                writer.add_scalar("DAgger/Buffer_Size", buffer.size, step)
 
-                log.info(f"Step {step}/{total_iterations} | Beta: {beta:.2f} | Loss: {loss:.5f}")
+                log.info(
+                    f"Step {step}/{total_iterations} | "
+                    f"Beta: {beta:.4f} | "
+                    f"Loss: {mean_loss:.6f} | "
+                    f"Buffer: {buffer.size}"
+                )
 
-            # --- PRŮBĚŽNÉ UKLÁDÁNÍ MODELU ---
+            if VIZUALIZATION and step % 5 == 0:
+                img_vis = student_obs_uint8[0].permute(1, 2, 0).detach().cpu().numpy()
+                img_vis_bgr = cv2.cvtColor(img_vis, cv2.COLOR_RGB2BGR)
+                cv2.imshow("Student camera input", img_vis_bgr)
+                key = cv2.waitKey(1) & 0xFF
+                if key == 27:
+                    log.info("Visualization interrupted by user (ESC).")
+                    break
+
             if step > 0 and step % save_freq == 0:
                 current_save_path = os.path.join(save_dir, f"student_model_step_{step}.pth")
                 torch.save(student_model.state_dict(), current_save_path)
@@ -628,67 +695,69 @@ def main():
 
             beta = max(0.0, beta * beta_decay)
 
-        # --- FINÁLNÍ ULOŽENÍ A UKONČENÍ ---
         final_save_path = os.path.join(save_dir, "student_model_final.pth")
         torch.save(student_model.state_dict(), final_save_path)
         log.info(f"DAgger Training Finished! Final model saved to {final_save_path}")
 
         writer.close()
         env.close()
+
+        if VIZUALIZATION:
+            cv2.destroyAllWindows()
+
     elif config.get("train_or_eval") == "eval_dagger_video":
         from dagger.student_net import VisionStudent
         import torch.nn.functional as F
-        import cv2  # <--- PRO TVORBU VIDEA Z KAMERY
+        import cv2
 
         metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
         env = StableBaseline3VecEnv(metasim_env)
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # 1. Načtení STUDENTA a jeho natrénovaných vah
         num_actions = env.action_space.shape[0]
-        student_model = VisionStudent(num_actions=num_actions).to(device)
+        num_joints = env.action_space.shape[0]
+
+        student_model = VisionStudent(
+            num_actions=num_actions,
+            num_joints=num_joints
+        ).to(device)
 
         model_path = config.get("load_model_path")
         log.info(f"Loading Student model from {model_path}")
         student_model.load_state_dict(torch.load(model_path, map_location=device))
-        student_model.eval() # Přepnutí do eval módu (vypne dropout atd.)
+        student_model.eval()
 
-        # 2. Nastavení tvorby videa
         video_path = config.get("video_save_path", "./output/dagger_fpv_video.mp4")
         os.makedirs(os.path.dirname(video_path), exist_ok=True)
 
-        # Očekáváme plné rozlišení z vaší kamery
-        video_width, video_height = 640, 360
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v') # Kodek pro .mp4
+        video_width, video_height = 64, 64
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         video_writer = cv2.VideoWriter(video_path, fourcc, 30.0, (video_width, video_height))
 
         obs = env.reset()
         log.info("Starting DAgger Evaluation...")
 
-        # 3. Evaluační smyčka
         for step in range(config.get("eval_max_steps", 1000)):
             states = metasim_env.env.handler.get_states()
 
-            # Získání raw obrazu [B, H, W, C]
             rgb_tensor_raw = states.cameras["camera0"].rgb
-
-            # --- Zápis do Videa (Použijeme prostředí s indexem 0) ---
-            # Převod na numpy a uint8 (formát pro obrázky)
             frame_np = rgb_tensor_raw[0].cpu().numpy().astype(np.uint8)
-            # OpenCV používá barevný prostor BGR, Genesis RGB. Musíme to přehodit.
             frame_bgr = cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
             video_writer.write(frame_bgr)
 
-            # --- Zpracování obrazu pro neuronovou síť ---
             rgb_tensor_gpu = rgb_tensor_raw.to(device)
             rgb_permuted = rgb_tensor_gpu.permute(0, 3, 1, 2).float()
-            # Student potřebuje zmenšený formát 128x72
             student_obs_small = F.interpolate(rgb_permuted, size=(72, 128), mode='bilinear', align_corners=False)
             student_obs_net_input = student_obs_small / 255.0
 
-            # 4. Predikce a krok v prostředí
+            joint_obs_tensor = torch.tensor(
+                obs[:, :num_joints],
+                device=device,
+                dtype=torch.float32
+            )
+
             with torch.no_grad():
-                student_actions_tensor = student_model(student_obs_net_input)
+                student_actions_tensor = student_model(student_obs_net_input, joint_obs_tensor)
                 actions = student_actions_tensor.cpu().numpy()
 
             obs, rewards, dones, infos = env.step(actions)
@@ -696,10 +765,8 @@ def main():
             if step % 100 == 0:
                 log.info(f"Eval step: {step}/{config.get('eval_max_steps', 1000)}")
 
-        # 5. Úklid a uložení videa
         video_writer.release()
         log.info(f"🎬 FPV Video saved successfully to: {video_path}")
         env.close()
-        quit()
 if __name__ == "__main__":
     main()

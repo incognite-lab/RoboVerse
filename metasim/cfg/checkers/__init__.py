@@ -33,7 +33,8 @@ from .checkers import (
     _WalkChecker,
     _ReachCheckerPos,
     _ReachCheckerPosOri,
-    _ChairManChecker
+    _ChairManChecker,
+    _ChairManCheckerSimple
 )
 from .detectors import (
     Relative2DSphereDetector,

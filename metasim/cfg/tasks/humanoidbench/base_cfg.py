@@ -155,6 +155,12 @@ class HumanoidBaseReward:
         }
             self.actual_stage: torch.Tensor = None
             self.completed_stages: torch.Tensor = None
+        elif robot_name == "g1_slider_simple":
+            self._stand_height = G1_STAND_HEAD_HEIGHT
+            self._stand_neck_height = G1_STAND_NECK_HEIGHT
+            self._crawl_height = G1_CRAWL_HEAD_HEIGHT
+            self.actual_stage: torch.Tensor = None
+            self.completed_stages: torch.Tensor = None
         else:
             raise ValueError(f"Unknown robot {robot_name}")
 
