@@ -22,7 +22,7 @@ except:
 STAGE_TIMEOUTS = {
     0: 400,   # dojit k zidli
     1: 120,   # spustit ruce dolu a zustat stat
-    2: 250,   # couvat se zidli na target
+    2: 400,   # couvat se zidli na target
     3: 120,   # zvednout ruce nahoru a zustat stat
 }
 VELOCITY_THRESHOLD = 0.06
@@ -65,7 +65,7 @@ MAX_SNAPSHOTS = 100
 # Pokud True, všechny envy vždy startují od stage 0
 # a snapshot curriculum se zcela ignoruje.
 FORCE_START_FROM_STAGE0 = False
-RAM_SNAPSHOT_BUFFER = {1: [], 2: [], 3: [], 4: [], 5: []}
+RAM_SNAPSHOT_BUFFER = {1: [], 2: [], 3: []}
 BUFFER_INITIALIZED = False
 UNSAVED_COUNT = 0
 SYNC_THRESHOLD = 30  # Každých 50 uložených snapshotů se jeden zapíše trvale na disk
@@ -79,7 +79,7 @@ def init_ram_buffer():
         return
 
     # Vždy začneme s čistým RAM bufferem
-    RAM_SNAPSHOT_BUFFER = {1: [], 2: [], 3: [], 4: [], 5: []}
+    RAM_SNAPSHOT_BUFFER = {1: [], 2: [], 3: []}
 
     if not ENABLE_DISK_SNAPSHOT_LOAD:
         BUFFER_INITIALIZED = True
@@ -222,8 +222,8 @@ def _arms_up_ok(states: list[EnvState], handler: BaseSimHandler, idx: torch.Tens
 def _arms_down_ok(states: list[EnvState], handler: BaseSimHandler, idx: torch.Tensor) -> torch.Tensor:
     err = _arm_pose_error(
         states, handler, idx,
-        left_target=-1.0,
-        right_target=-1.0,
+        left_target=-1.32,
+        right_target=-1.32,
     )
     return err < ARM_DOWN_THRESHOLD
 
@@ -338,11 +338,10 @@ def stege0_chacker(states: list[EnvState], handler: BaseSimHandler,
     fail_common = common_chairman_checker(states, handler, idx, stage_id=0)
 
     near_chair = _robot_near_chair_pregrasp(states, handler, idx)
-    #robot_still = _robot_is_still(states, handler, idx)
     arms_up = _arms_up_ok(states, handler, idx)
-    #facing_forward = _robot_facing_forward(states, handler, idx)
+    chair_still = _chair_is_still(states, idx)
 
-    success_cond = near_chair & arms_up #& facing_forward & robot_still
+    success_cond = near_chair & arms_up & chair_still
 
     terminated[idx] = fail_common | success_cond
     success[idx] = success_cond & (~fail_common)
@@ -519,7 +518,7 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
     # Režim: vždy start od stage 0
     # =====================================================
     if FORCE_START_FROM_STAGE0:
-        print(f"[reset_chairman] FORCE_START_FROM_STAGE0=True -> reset envs {env_ids} vždy do stage 0")
+        #print(f"[reset_chairman] FORCE_START_FROM_STAGE0=True -> reset envs {env_ids} vždy do stage 0")
 
         for env in env_ids:
             for i in range(len(handler.task.reward_functions)):
@@ -527,7 +526,7 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
                 handler.task.reward_functions[i].completed_stages[env] = 0
 
             states[env] = stage0_init(handler.robot.name)
-            print(f"[reset_chairman] env {env} -> stage 0")
+            #print(f"[reset_chairman] env {env} -> stage 0")
 
         if hasattr(handler.task, "recorded_stage") and env_ids is not None:
             handler.task.recorded_stage[env_ids] = -1

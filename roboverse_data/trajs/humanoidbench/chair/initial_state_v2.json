@@ -511,12 +511,12 @@
                 "g1_slider_simple": {
                     "dof_pos": {
                         "baseslide_joint": 0.0,
-                        "baseslide_joint2": 0.0,
+                        "baseslide_joint2": -1.5,
                         "baserot_joint": 0.0,
 
-                        "left_shoulder_pitch_joint": 0.0,
+                        "left_shoulder_pitch_joint": -1.86,
 
-                        "right_shoulder_pitch_joint": 0.0
+                        "right_shoulder_pitch_joint": -1.86
 
                     },
                     "pos": [

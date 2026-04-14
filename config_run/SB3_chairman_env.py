@@ -39,41 +39,14 @@ class StableBaseline3VecEnv(VecEnv):
 
         states = env.env.handler.get_states()
         self.main_robot_link_names = [
-                                "left_endeffector",
-                                "endeffector",
-                                "torso_link",
                                 "pelvis",
                                 'left_shoulder_pitch_link',
-                                'left_shoulder_roll_link',
-                                'left_shoulder_yaw_link',
-                                'left_elbow_link',
-                                'left_wrist_roll_link',
-                                'left_wrist_pitch_link',
-                                'left_wrist_yaw_link',
                                  'right_shoulder_pitch_link',
-                                 'right_shoulder_roll_link',
-                                 'right_shoulder_yaw_link',
-                                 'right_elbow_link',
-                                 'right_wrist_roll_link',
-                                 'right_wrist_pitch_link',
-                                 'right_wrist_yaw_link',
-                                 'left_hand_thumb_0_link',
-                                 'left_hand_middle_0_link',
-                                 'left_hand_index_0_link',
-                                 'right_hand_thumb_0_link',
-                                 'right_hand_middle_0_link',
-                                 'right_hand_index_0_link',
-                                 'left_hand_thumb_1_link',
-                                 'left_hand_thumb_2_link',
-                                 'left_hand_middle_1_link',
-                                 'right_hand_thumb_1_link',
-                                 'right_hand_thumb_2_link',
-                                 'right_hand_middle_1_link'
                                  ]
         self.indexes = [states.robots[robot_name].body_names.index(link) for link in self.main_robot_link_names]
 
         num_robot_bodies = len(self.main_robot_link_names)  # pozice (3) + orientace (4) pro každý link
-        obs_shape = num_joints + (num_robot_bodies * 7) + 7 + 7 + 6 + 7
+        obs_shape = num_joints + (num_robot_bodies * 7) + 6 + 7
 
         self.observation_space = spaces.Box(
             low=-np.inf,
@@ -104,15 +77,7 @@ class StableBaseline3VecEnv(VecEnv):
         pelvis_idx = states.robots[robot_name].body_names.index("pelvis")
         velocity_pelvis = states.robots[robot_name].body_state[:, pelvis_idx, 7:14].cpu().numpy()
 
-        # 3. Získání cílů na židli
-        target_left_idx = chair.body_names.index("target_hand_left")
-        target_right_idx = chair.body_names.index("target_hand_right")
 
-        target_left_pos_ori = chair.body_state[:, target_left_idx, :7].cpu().numpy()
-        target_right_pos_ori = chair.body_state[:, target_right_idx, :7].cpu().numpy()
-
-        # --- NOVÉ: 4. Získání aktuální Stage a One-Hot kódování ---
-        # Vytažení tenzoru se stages (převedeme na int)
         current_stages = handler.task.reward_functions[0].actual_stage.cpu().numpy().astype(int)
 
         # Máme stages 0, 1, 2, 3, 4, 5, 6 (celkem 7 možností)
@@ -130,8 +95,6 @@ class StableBaseline3VecEnv(VecEnv):
         other_pos = np.concatenate([
             robot_body_states,
             velocity_pelvis,
-            target_left_pos_ori,
-            target_right_pos_ori,
             stage_one_hot  # <--- PŘIDÁNO SEM
         ], axis=1)
 
@@ -184,7 +147,7 @@ class StableBaseline3VecEnv(VecEnv):
         #------------------------------------
         #--------------DEBUG-----------------
         #------------------------------------
-        # debug = 2
+        # debug = 3
         # if debug == 0:
         #     actions = self.debug0()
         #     obs, rewards, unsuccess, timeout, _ = self.env.step(actions)
@@ -194,6 +157,8 @@ class StableBaseline3VecEnv(VecEnv):
         #     obs, rewards, unsuccess, timeout, _ = self.env.step([{"g1_slider": {"dof_pos_target": self.action}}])
         # elif debug == 2:
         #     obs, rewards, unsuccess, timeout, _ = self.env.step(self.debug2())
+        # elif debug == 3:
+        #     obs, rewards, unsuccess, timeout, _ = self.env.step(self.debug_hold_still_arms_up())
         #end debug
 
         if self.env.scenario.sim == 'genesis' and self.raw_actions is not None:
@@ -674,3 +639,33 @@ class StableBaseline3VecEnv(VecEnv):
         # Zobrazení okna
         cv2.imshow("Live Joint Info (Env 0)", img)
         cv2.waitKey(1) # 1 ms pauza nutná pro překreslení okna OpenCV
+    def debug_hold_still_arms_up(self) -> np.ndarray:
+        """
+        Debug akce pro simple slider robota:
+        - robot stojí na místě
+        - ruce drží nahoře
+
+        Vrací numpy array tvaru [num_envs, action_dim],
+        což je přesně formát, který Genesis větev ve wrapperu umí poslat dál.
+        """
+        robot_cfg = self.env.scenario.robots[0]
+        joint_names = list(robot_cfg.joint_limits.keys())
+
+        # výchozí targety pro aktuální simple robota
+        target_dict = {
+            "baseslide_joint": 0.0,
+            "baseslide_joint2": 0.0,
+            "baserot_joint": 0.0,
+            "left_shoulder_pitch_joint": -1.86,
+            "right_shoulder_pitch_joint": -1.86,
+        }
+
+        # složení akce přesně ve stejném pořadí jako action_space
+        single_action = np.array(
+            [target_dict[name] for name in joint_names],
+            dtype=np.float32
+        )
+
+        # stejná akce pro všechna prostředí
+        actions = np.tile(single_action[None, :], (self.num_envs, 1))
+        return actions

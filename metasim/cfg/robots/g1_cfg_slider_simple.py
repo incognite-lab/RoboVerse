@@ -39,22 +39,18 @@ class G1SliderSimpleCfg(BaseRobotCfg):
 
     actuators: dict[str, BaseActuatorCfg] = {
         # --- Base Joints (New Prismatic/Revolute) ---
-        "baseslide_joint": BaseActuatorCfg(stiffness=200, damping=200),
-        "baseslide_joint2": BaseActuatorCfg(stiffness=200, damping=200),
-        "baserot_joint": BaseActuatorCfg(stiffness=200, damping=200),
+        "baseslide_joint": BaseActuatorCfg(stiffness=40, damping=20),
+        "baseslide_joint2": BaseActuatorCfg(stiffness=20, damping=10),
+        "baserot_joint": BaseActuatorCfg(stiffness=60, damping=20),
 
 
-        # -- Left Arm ---
-        "left_shoulder_pitch_joint": BaseActuatorCfg(stiffness=40, damping=10),
-
-
-        # --- Right Arm (Left is fixed in URDF) ---
-        "right_shoulder_pitch_joint": BaseActuatorCfg(stiffness=40, damping=10),
+        "left_shoulder_pitch_joint": BaseActuatorCfg(stiffness=140, damping=30, torque_limit=80),
+        "right_shoulder_pitch_joint": BaseActuatorCfg(stiffness=140, damping=30, torque_limit=80),
     }
     joint_limits: dict[str, tuple[float, float]] = {
 
         "baseslide_joint": (-1.5, 1.5),  # Example limits for the first prismatic joint
-        "baseslide_joint2": (-2.0, 0.1),
+        "baseslide_joint2": (-1.6, 0.1),
         "baserot_joint": (-2.618, 2.618),
 
 
@@ -64,19 +60,16 @@ class G1SliderSimpleCfg(BaseRobotCfg):
     }
 
     torque_limits: dict[str, float] = {  # = target angles [rad] when action = 0.0
-        "baseslide_joint": 100,
-        "baseslide_joint2": 100,
-        "baserot_joint": 100,
-
-
-        "left_shoulder_pitch_joint": 25,
-
-        "right_shoulder_pitch_joint": 25,
-    }
+        "baseslide_joint": 30,
+        "baseslide_joint2": 10,
+        "baserot_joint": 30,
+        "left_shoulder_pitch_joint": 80,
+        "right_shoulder_pitch_joint": 80,
+        }
 
     default_joint_positions: dict[str, float] = {  # = target angles [rad] when action = 0.0
         "baseslide_joint": 0.0, #y
-        "baseslide_joint2": 0.6, #x
+        "baseslide_joint2": 0.0, #x
         "baserot_joint": 0.0,
 
         "left_shoulder_pitch_joint": 0.0,
@@ -89,7 +82,7 @@ class G1SliderSimpleCfg(BaseRobotCfg):
         "baseslide_joint2": "position",
         "baserot_joint": "position",
 
-        "left_shoulder_roll_joint": "position",
+        "left_shoulder_pitch_joint": "position",
 
         "right_shoulder_pitch_joint": "position",
 
