@@ -265,7 +265,7 @@ def main():
                     SaveModelCallback(save_path=config.get("model_save_path"), save_freq=config.get("model_save_freq", 1_000_000),task_name=config.get("task")),
                     TensorboardMetricsCallback(
                         log_dir=config.get("tensorboard_log", "./ppo_tensorboard/"),
-                        log_interval=100000,
+                        log_interval=1000000,
                         max_stage=3,
                         verbose=1,
                     ),

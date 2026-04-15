@@ -123,30 +123,35 @@ class DoFVelocityAccelerationCfg(HumanoidBaseReward):
 class ChairApproachReward(HumanoidBaseReward):
     """
     Stage 0:
-    Reward for getting to the correct position in front of the chair.
+    Reward only for direct motion toward the pre-grasp point in front of the chair.
 
-    Simple version:
-    - 30 % progress reward
-    - 70 % state reward
+    Robot is rewarded mainly when:
+    - distance to target decreases
+    - velocity points toward target
+    - lateral motion is small
+
+    Output: <0, 1>
     """
     def __init__(
         self,
         robot_name="g1_slider_simple",
         target_distance_x=0.75,
-        sigma_x=0.15,
-        sigma_y=0.12,
-        progress_scale=0.03,
+        progress_scale=0.02,
+        target_sigma=0.12,
+        direction_speed_scale=0.25,
+        lateral_speed_scale=0.08,
     ):
         super().__init__(robot_name)
         self.active_stages = [0]
 
         self.target_distance_x = target_distance_x
-        self.sigma_x = sigma_x
-        self.sigma_y = sigma_y
         self.progress_scale = progress_scale
+        self.target_sigma = target_sigma
+        self.direction_speed_scale = direction_speed_scale
+        self.lateral_speed_scale = lateral_speed_scale
 
         self.chair_pos = None
-        self.prev_err = None
+        self.prev_dist = None
 
     def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
         chair = states.objects["chair"]
@@ -162,10 +167,10 @@ class ChairApproachReward(HumanoidBaseReward):
         device = robot.joint_pos.device
         num_envs = robot.joint_pos.shape[0]
 
-        if self.prev_err is None:
-            self.prev_err = torch.full((num_envs,), float("nan"), device=device)
+        if self.prev_dist is None:
+            self.prev_dist = torch.full((num_envs,), float("nan"), device=device)
         else:
-            self.prev_err[env_ids] = float("nan")
+            self.prev_dist[env_ids] = float("nan")
 
         if hasattr(super(), "reset"):
             super().reset(env_ids, states)
@@ -190,6 +195,7 @@ class ChairApproachReward(HumanoidBaseReward):
 
         base_idx = robot.body_names.index("pelvis")
         root_pos = robot.body_state[:, base_idx, :3]
+        root_vel = robot.body_state[:, base_idx, 7:10]
 
         chair_base_idx = chair.body_names.index("base_link")
         if self.chair_pos is None:
@@ -197,31 +203,88 @@ class ChairApproachReward(HumanoidBaseReward):
 
         chair_pos = self.chair_pos
 
-        dx = torch.abs(root_pos[:, 0] - chair_pos[:, 0])
-        dy = torch.abs(root_pos[:, 1] - chair_pos[:, 1])
+        # -------------------------------------------------
+        # target point = point in front of the chair
+        # robot should approach this point directly
+        # -------------------------------------------------
+        target_pos = torch.zeros_like(root_pos)
+        target_pos[:, 0] = chair_pos[:, 0] - self.target_distance_x
+        target_pos[:, 1] = chair_pos[:, 1]
+        target_pos[:, 2] = root_pos[:, 2]
 
-        x_err = dx - self.target_distance_x
-        y_err = dy
+        vec_to_target = target_pos - root_pos
+        vec_to_target[:, 2] = 0.0
+        dist = torch.norm(vec_to_target, dim=-1)
+        dir_to_target = vec_to_target / (dist.unsqueeze(-1) + 1e-6)
 
-        err = torch.sqrt(x_err**2 + y_err**2)
+        root_vel_xy = root_vel[:, :2]
+        dir_xy = dir_to_target[:, :2]
 
         # -------------------------------------------------
         # 1) progress reward
+        # only if distance truly decreases
         # -------------------------------------------------
-        invalid_mask = torch.isnan(self.prev_err)
-        delta_err = self.prev_err - err
-        progress_reward = torch.clamp(delta_err / self.progress_scale, min=0.0, max=1.0)
+        invalid_mask = torch.isnan(self.prev_dist)
+        delta_dist = self.prev_dist - dist
+        progress_reward = torch.clamp(delta_dist / self.progress_scale, min=0.0, max=1.0)
         progress_reward[invalid_mask] = 0.0
-        self.prev_err = err.clone()
+        self.prev_dist = dist.clone()
 
         # -------------------------------------------------
         # 2) state reward
+        # reward for being close to the exact target point
         # -------------------------------------------------
-        state_reward_x = torch.exp(-(x_err ** 2) / (2.0 * self.sigma_x ** 2))
-        state_reward_y = torch.exp(-(y_err ** 2) / (2.0 * self.sigma_y ** 2))
-        state_reward = torch.clamp(state_reward_x * state_reward_y, 0.0, 1.0)
+        state_reward = torch.exp(-(dist ** 2) / (2.0 * self.target_sigma ** 2))
+        state_reward = torch.clamp(state_reward, 0.0, 1.0)
 
-        reward = 0.3 * progress_reward + 0.7 * state_reward
+        # -------------------------------------------------
+        # 3) direction reward
+        # reward only forward motion toward target
+        # -------------------------------------------------
+        forward_speed = torch.sum(root_vel_xy * dir_xy, dim=-1)
+        direction_reward = torch.clamp(
+            forward_speed / self.direction_speed_scale,
+            min=0.0,
+            max=1.0
+        )
+
+        # -------------------------------------------------
+        # 4) lateral motion suppression
+        # if robot moves sideways, reward is strongly reduced
+        # -------------------------------------------------
+        lateral_vec = root_vel_xy - forward_speed.unsqueeze(-1) * dir_xy
+        lateral_speed = torch.norm(lateral_vec, dim=-1)
+
+        lateral_penalty = torch.clamp(
+            lateral_speed / self.lateral_speed_scale,
+            min=0.0,
+            max=1.0
+        )
+        lateral_factor = 1.0 - lateral_penalty
+
+        # -------------------------------------------------
+        # 5) backward motion suppression
+        # if robot moves away from target, kill reward
+        # -------------------------------------------------
+        backward_amount = torch.clamp(-forward_speed, min=0.0)
+        backward_penalty = torch.clamp(
+            backward_amount / self.direction_speed_scale,
+            min=0.0,
+            max=1.0
+        )
+        backward_factor = 1.0 - backward_penalty
+
+        # -------------------------------------------------
+        # final reward
+        # only good if robot goes directly toward the target
+        # -------------------------------------------------
+        base_reward = (
+            0.35 * progress_reward +
+            0.25 * state_reward +
+            0.40 * direction_reward
+        )
+
+        reward = base_reward * lateral_factor * backward_factor
         reward = torch.clamp(reward, 0.0, 1.0)
 
         return reward * stage_mask.float()
@@ -358,7 +421,7 @@ class ArmPostureReward(HumanoidBaseReward):
         up_target_right=-1.86,
         down_target_left=-1.32,
         down_target_right=-1.32,
-        sigma=0.20,
+        sigma=0.1,
         progress_scale=0.04,
     ):
         super().__init__(robot_name)
@@ -446,7 +509,7 @@ class ArmPostureReward(HumanoidBaseReward):
         progress_reward[invalid_mask] = 0.0
         self.prev_err = err.clone()
 
-        reward = 0.3 * progress_reward + 0.7 * state_reward
+        reward = 0.01 * progress_reward + 0.99 * state_reward
         reward = torch.clamp(reward, 0.0, 1.0)
 
         return reward * active_mask.float()
@@ -569,7 +632,106 @@ class ChairStillPenalty(HumanoidBaseReward):
 
         penalty = torch.clamp(chair_speed / self.speed_scale, min=0.0, max=1.0)
         return penalty * stage_mask.float()
+class ContinuousStageReward(HumanoidBaseReward):
+    """
+    Continuous Stage Reward: Dává permanentní odměnu za to, ve kterém Stage se robot nachází.
+    Stage 0 = 0 bodů
+    Stage 1 = 1 * váha
+    Stage 2 = 2 * váha
+    ... atd.
 
+    Tímto robotovi jasně říkáme, že udržet se v pozdějších fázích je matematicky
+    nejvýhodnější věc v celé hře.
+    """
+    def __init__(self, robot_name="g1_slider"):
+        super().__init__(robot_name)
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        # 1. Ochrana pro úplně první krok, kdy stage ještě nemusí být zinicializován
+        if self.actual_stage is None:
+            robot = states.robots[robot_name]
+            num_envs = robot.joint_pos.shape[0]
+            device = robot.joint_pos.device
+            return torch.zeros(num_envs, device=device)
+
+        # 2. Jednoduše vrátíme aktuální číslo stage (0, 1, 2, 3...)
+        # Váš framework (Metasim/Gym wrapper) tuto hodnotu následně
+        # automaticky vynásobí váhou, kterou máte definovanou v configu.
+        return self.actual_stage.float()
+
+
+class ArmPoseErrorPenalty(HumanoidBaseReward):
+    """
+    Penalty for shoulder posture error by stage.
+
+    Output: <0,1>
+    Use with NEGATIVE weight.
+    """
+    def __init__(
+        self,
+        robot_name="g1_slider_simple",
+        up_target_left=-1.86,
+        up_target_right=-1.86,
+        down_target_left=-1.32,
+        down_target_right=-1.32,
+        scale=0.5,
+    ):
+        super().__init__(robot_name)
+
+        self.up_stages = [0, 3]
+        self.down_stages = [1, 2]
+
+        self.up_target_left = up_target_left
+        self.up_target_right = up_target_right
+        self.down_target_left = down_target_left
+        self.down_target_right = down_target_right
+        self.scale = scale
+
+        self.left_idx = None
+        self.right_idx = None
+
+    def _lazy_init(self, robot):
+        if self.left_idx is None:
+            joint_names = robot.joint_names.tolist() if hasattr(robot.joint_names, "tolist") else list(robot.joint_names)
+            self.left_idx = joint_names.index("left_shoulder_pitch_joint")
+            self.right_idx = joint_names.index("right_shoulder_pitch_joint")
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        robot_name = robot_name or self.robot_name
+        robot = states.robots[robot_name]
+
+        device = robot.joint_pos.device
+        num_envs = robot.joint_pos.shape[0]
+
+        if self.actual_stage is None:
+            return torch.zeros(num_envs, device=device)
+
+        self._lazy_init(robot)
+
+        q_left = robot.joint_pos[:, self.left_idx]
+        q_right = robot.joint_pos[:, self.right_idx]
+
+        target_left = torch.zeros(num_envs, device=device)
+        target_right = torch.zeros(num_envs, device=device)
+
+        up_mask = torch.isin(self.actual_stage, torch.tensor(self.up_stages, device=device))
+        down_mask = torch.isin(self.actual_stage, torch.tensor(self.down_stages, device=device))
+        active_mask = up_mask | down_mask
+
+        target_left[up_mask] = self.up_target_left
+        target_right[up_mask] = self.up_target_right
+        target_left[down_mask] = self.down_target_left
+        target_right[down_mask] = self.down_target_right
+
+        if not active_mask.any():
+            return torch.zeros(num_envs, device=device)
+
+        err_left = torch.abs(q_left - target_left)
+        err_right = torch.abs(q_right - target_right)
+        err = 0.5 * (err_left + err_right)
+
+        penalty = torch.clamp(err / self.scale, min=0.0, max=1.0)
+        return penalty * active_mask.float()
 # =============================================================================
 # WEIGHTS
 # reward functions output either:
@@ -584,11 +746,13 @@ DELTA_ACTION_RATE_WEIGHT = -0.01
 DOF_VELOCITY_ACCELERATION_WEIGHT = -0.01
 
 CHAIR_APPROACH_WEIGHT = 2.0
-ARM_POSTURE_WEIGHT = 2.0
+ARM_POSTURE_WEIGHT = 3.0
 CHAIR_PULL_WEIGHT = 3.0
 STILLNESS_WEIGHT = 1.5
-STAGE_PROGRESS_WEIGHT = 10.0
+STAGE_PROGRESS_WEIGHT = 50.0
 CHAIR_STILL_PENALTY_WEIGHT = -1.0
+CONTINUOUS_STAGE_WEIGHT = 4.0
+ARM_PENALITY_WEIGHT = -1.5
 
 # =============================================================================
 # TASK CONFIG
@@ -630,6 +794,8 @@ class ChairmansimpleCfg(HumanoidTaskCfg):
         STILLNESS_WEIGHT,
         STAGE_PROGRESS_WEIGHT,
         CHAIR_STILL_PENALTY_WEIGHT,
+        CONTINUOUS_STAGE_WEIGHT,
+        ARM_PENALITY_WEIGHT,
     ]
 
     reward_functions = [
@@ -641,6 +807,8 @@ class ChairmansimpleCfg(HumanoidTaskCfg):
         StillnessReward(),
         StageProgressCfg(),
         ChairStillPenalty(),
+        ContinuousStageReward(),
+        ArmPoseErrorPenalty(),
     ]
 
     def extra_spec(self):
