@@ -514,9 +514,9 @@
                         "baseslide_joint2": -1.5,
                         "baserot_joint": 0.0,
 
-                        "left_shoulder_pitch_joint": -1.86,
+                        "left_shoulder_pitch_joint": -1.5,
 
-                        "right_shoulder_pitch_joint": -1.86
+                        "right_shoulder_pitch_joint": -1.5
 
                     },
                     "pos": [

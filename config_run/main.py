@@ -550,7 +550,7 @@ def main():
         from dagger.dagger_trainer import DAggerBuffer, train_dagger_step
         from torch.utils.tensorboard import SummaryWriter
         import cv2
-
+        scenario.dagger = True
         metasim_env = MetaSimVecEnv(
             scenario,
             task_name=config.get("task"),

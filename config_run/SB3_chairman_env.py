@@ -45,8 +45,36 @@ class StableBaseline3VecEnv(VecEnv):
                                  ]
         self.indexes = [states.robots[robot_name].body_names.index(link) for link in self.main_robot_link_names]
 
-        num_robot_bodies = len(self.main_robot_link_names)  # pozice (3) + orientace (4) pro každý link
-        obs_shape = num_joints + (num_robot_bodies * 7) + 6 + 7
+        self.num_stages = 4  # simple task: stage 0,1,2,3
+
+        num_robot_bodies = len(self.main_robot_link_names)
+
+        # extra obs:
+        # robot_body_states        = num_robot_bodies * 7
+        # pelvis vel (lin+ang)     = 6
+        # chair world pos          = 3
+        # chair world vel          = 3
+        # robot->chair world vec   = 3
+        # robot->chair body vec    = 2
+        # dist to chair            = 1
+        # dist error to stop       = 1
+        # stage one hot            = self.num_stages
+        # arm errors (L,R)         = 2
+        extra_obs_dim = (
+            num_robot_bodies * 7 +
+            6 +
+            3 +
+            3 +
+            3 +
+            2 +
+            1 +
+            1 +
+            self.num_stages +
+            2
+        )
+        self.left_shoulder_idx = None
+        self.right_shoulder_idx = None
+        obs_shape = num_joints + extra_obs_dim
 
         self.observation_space = spaces.Box(
             low=-np.inf,
@@ -64,45 +92,154 @@ class StableBaseline3VecEnv(VecEnv):
             self._init_joint_viz()
 
     def add_extra_to_obs(self, obs: np.ndarray) -> np.ndarray:
-        """extend obs with extra data including the current stage."""
+        """
+        Extend obs with extra task-relevant data.
+
+        Přidané informace:
+        - vybrané body states robota
+        - rychlost pelvisu
+        - world pozice a rychlost židle
+        - vektor robot -> židle ve world frame
+        - vektor robot -> židle v body frame robota
+        - vzdálenost k židli
+        - chyba vůči cílové stop distance
+        - one-hot aktuální stage
+        - chyba ramen vůči cílové póze podle stage
+        """
         handler = self.env.env.handler
         states = handler.get_states()
         robot_name = self.env.scenario.robots[0].name
+
+        robot = states.robots[robot_name]
         chair = states.objects["chair"]
 
-        # 1. Vybrané body_states robota (pozice a orientace)
-        robot_body_states = states.robots[robot_name].body_state[:, self.indexes, :7].reshape(self.num_envs, -1).cpu().numpy()
+        # --------------------------------------------------
+        # 1) vybrané body states robota (pos + quat)
+        # --------------------------------------------------
+        robot_body_states = (
+            robot.body_state[:, self.indexes, :7]
+            .reshape(self.num_envs, -1)
+            .cpu()
+            .numpy()
+        )
 
-        # 2. Získání rychlosti pelvisu
-        pelvis_idx = states.robots[robot_name].body_names.index("pelvis")
-        velocity_pelvis = states.robots[robot_name].body_state[:, pelvis_idx, 7:14].cpu().numpy()
+        # --------------------------------------------------
+        # 2) pelvis state
+        # --------------------------------------------------
+        pelvis_idx = robot.body_names.index("pelvis")
+        pelvis_pos = robot.body_state[:, pelvis_idx, :3]
+        pelvis_quat = robot.body_state[:, pelvis_idx, 3:7]   # w,x,y,z
+        velocity_pelvis = robot.body_state[:, pelvis_idx, 7:13].cpu().numpy()  # lin(3)+ang(3)
 
+        # --------------------------------------------------
+        # 3) chair base state
+        # --------------------------------------------------
+        chair_idx = chair.body_names.index("base_link")
+        chair_pos = chair.body_state[:, chair_idx, :3]
+        chair_vel = chair.body_state[:, chair_idx, 7:10]
 
-        current_stages = handler.task.reward_functions[0].actual_stage.cpu().numpy().astype(int)
+        chair_pos_np = chair_pos.cpu().numpy()
+        chair_vel_np = chair_vel.cpu().numpy()
 
-        # Máme stages 0, 1, 2, 3, 4, 5, 6 (celkem 7 možností)
-        num_stages = 7
-        stage_one_hot = np.zeros((self.num_envs, num_stages), dtype=np.float32)
+        # --------------------------------------------------
+        # 4) robot -> chair vector ve world frame
+        # --------------------------------------------------
+        vec_world = chair_pos - pelvis_pos
+        vec_world_np = vec_world.cpu().numpy()
 
-        # Ochrana, kdyby se nějaké prostředí dostalo do neznámé stage
-        safe_stages = np.clip(current_stages, 0, num_stages - 1)
+        dist_to_chair = torch.norm(vec_world[:, :2], dim=-1, keepdim=True)
+        dist_to_chair_np = dist_to_chair.cpu().numpy()
 
-        # Pomocí pokročilého indexování nasázíme 1.0 na správná místa pro všechna prostředí najednou
+        # target stop distance pro stage 0
+        stop_distance = 0.75
+        dist_error = torch.abs(dist_to_chair - stop_distance)
+        dist_error_np = dist_error.cpu().numpy()
+
+        # --------------------------------------------------
+        # 5) robot -> chair vector v body frame robota
+        #    používáme yaw z pelvis quaternionu
+        # --------------------------------------------------
+        w = pelvis_quat[:, 0]
+        x = pelvis_quat[:, 1]
+        y = pelvis_quat[:, 2]
+        z = pelvis_quat[:, 3]
+
+        yaw = torch.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+
+        dx = vec_world[:, 0]
+        dy = vec_world[:, 1]
+
+        cos_yaw = torch.cos(yaw)
+        sin_yaw = torch.sin(yaw)
+
+        # transformace world -> body
+        chair_rel_body_x = cos_yaw * dx + sin_yaw * dy
+        chair_rel_body_y = -sin_yaw * dx + cos_yaw * dy
+
+        chair_rel_body = torch.stack([chair_rel_body_x, chair_rel_body_y], dim=-1)
+        chair_rel_body_np = chair_rel_body.cpu().numpy()
+
+        # --------------------------------------------------
+        # 6) stage one-hot
+        # --------------------------------------------------
+        current_stage_tensor = handler.task.reward_functions[0].actual_stage
+        if current_stage_tensor is None:
+            current_stages = np.zeros(self.num_envs, dtype=np.int32)
+        else:
+            current_stages = current_stage_tensor.cpu().numpy().astype(np.int32)
+
+        stage_one_hot = np.zeros((self.num_envs, self.num_stages), dtype=np.float32)
+        safe_stages = np.clip(current_stages, 0, self.num_stages - 1)
         stage_one_hot[np.arange(self.num_envs), safe_stages] = 1.0
-        # ----------------------------------------------------------
 
-        # 5. Sloučení extra dat (Přidán stage_one_hot na úplný konec)
-        other_pos = np.concatenate([
-            robot_body_states,
-            velocity_pelvis,
-            stage_one_hot  # <--- PŘIDÁNO SEM
+        # --------------------------------------------------
+        # 7) arm posture errors vůči cíli podle stage
+        # --------------------------------------------------
+        if self.left_shoulder_idx is None:
+            joint_names = robot.joint_names.tolist() if hasattr(robot.joint_names, "tolist") else list(robot.joint_names)
+            self.left_shoulder_idx = joint_names.index("left_shoulder_pitch_joint")
+            self.right_shoulder_idx = joint_names.index("right_shoulder_pitch_joint")
+
+        q_left = robot.joint_pos[:, self.left_shoulder_idx]
+        q_right = robot.joint_pos[:, self.right_shoulder_idx]
+
+        # simple task targets
+        up_target = -1.86
+        down_target = -1.32
+
+        target_left = torch.full_like(q_left, up_target)
+        target_right = torch.full_like(q_right, up_target)
+
+        # stage 1,2 -> ruce dole
+        down_mask = torch.isin(
+            torch.as_tensor(safe_stages, device=q_left.device),
+            torch.tensor([1, 2], device=q_left.device)
+        )
+        target_left[down_mask] = down_target
+        target_right[down_mask] = down_target
+
+        arm_err_left = torch.abs(q_left - target_left).unsqueeze(-1)
+        arm_err_right = torch.abs(q_right - target_right).unsqueeze(-1)
+        arm_err_np = torch.cat([arm_err_left, arm_err_right], dim=-1).cpu().numpy()
+
+        # --------------------------------------------------
+        # 8) složení extra observace
+        # --------------------------------------------------
+        extra_obs = np.concatenate([
+            robot_body_states,     # 3 body * (pos+quat)
+            velocity_pelvis,       # 6
+            chair_pos_np,          # 3
+            chair_vel_np,          # 3
+            vec_world_np,          # 3
+            chair_rel_body_np,     # 2
+            dist_to_chair_np,      # 1
+            dist_error_np,         # 1
+            stage_one_hot,         # 4
+            arm_err_np,            # 2
         ], axis=1)
 
-        # Zajištění správného rozměru původního obs (klouby)
         obs = obs.reshape(self.num_envs, -1)
-
-        # Vrácení spojeného finálního pole obs + extra data
-        return np.concatenate([obs, other_pos], axis=1).astype(np.float32)
+        return np.concatenate([obs, extra_obs], axis=1).astype(np.float32)
 
     def _combine_obs(self, obs: np.ndarray) -> np.ndarray:
         """Spojí joint states a gyro data pro všechna envs."""

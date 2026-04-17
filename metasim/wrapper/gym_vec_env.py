@@ -69,7 +69,10 @@ class MetaSimVecEnv(VectorEnv):
         _, _, success, timeout, _ = self.env.step(actions)
         obs = self.unwrapped._get_obs()
         #tic = time.time()
-        rewards = self.unwrapped._calculate_rewards()
+        if self.scenario.dagger:
+            rewards = torch.zeros(self.num_envs, device=obs.device)
+        else:
+            rewards = self.unwrapped._calculate_rewards()
         #toc = time.time()
         #print(f"Reward calculation took {toc - tic:.2f} seconds")
         return obs, rewards, success, timeout, {}

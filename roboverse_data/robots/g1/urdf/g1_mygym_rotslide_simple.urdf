@@ -25,7 +25,7 @@
       <parent link="base_link"/>
       <child link="base_footprint"/>
       <axis xyz="0 1 0"/>
-      <limit effort="300" lower="-1.5" upper="1.5" velocity="0.05"/>
+      <limit effort="100" lower="-1.5" upper="1.5" velocity="0.05"/>
     </joint>
   <!-- Base footprint -->
   <link name="base_footprint">
@@ -52,7 +52,7 @@
     <parent link="base_footprint"/>
     <child link="base_footprint2"/>
     <axis xyz="1 0 0"/>
-    <limit effort="10" lower="-1.6" upper="0.1" velocity="0.25"/>
+    <limit effort="100" lower="-1.6" upper="0.1" velocity="0.25"/>
   </joint>
 
   <joint name="baserot_joint" type="revolute">

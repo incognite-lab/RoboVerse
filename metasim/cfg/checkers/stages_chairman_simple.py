@@ -22,10 +22,10 @@ except:
 STAGE_TIMEOUTS = {
     0: 400,   # dojit k zidli
     1: 120,   # spustit ruce dolu a zustat stat
-    2: 400,   # couvat se zidli na target
+    2: 500,   # couvat se zidli na target
     3: 120,   # zvednout ruce nahoru a zustat stat
 }
-VELOCITY_THRESHOLD = 0.06
+VELOCITY_THRESHOLD = 0.1
 HEIGHT_THRESHOLD = 0.4
 ANGULAR_VELOCITY_THRESHOLD = 0.35
 # stage 0
@@ -36,20 +36,20 @@ FACING_FORWARD_DOT_THRESHOLD = 0.92
 
 
 # ruce
-ARM_UP_THRESHOLD = 0.10
-ARM_DOWN_THRESHOLD = 0.20
+ARM_UP_THRESHOLD = 0.20
+ARM_DOWN_THRESHOLD = 0.24
 
 # stage 1 / 3 stani na miste
 ANCHOR_POS_THRESHOLD = 0.05
 ANCHOR_YAW_THRESHOLD = 0.20
 
 # stage 2
-BACK_TARGET_X = -0.80
+BACK_TARGET_X = -1.60
 BACK_TARGET_Y = 0.00
-BACK_TARGET_POS_TOL = 0.1
+BACK_TARGET_POS_TOL = 0.2
 CHAIR_MOVED_MIN_X = 0.30
 CHAIR_STILL_THRESHOLD = 0.1
-
+STAGE0_ARM_MIN_ANGLE = -1.3
 # =========================================================
 # SNAPSHOT CONFIG
 # =========================================================
@@ -64,7 +64,7 @@ SNAPSHOT_DIR = Path("config_run/snapshots_chair/")
 MAX_SNAPSHOTS = 100
 # Pokud True, všechny envy vždy startují od stage 0
 # a snapshot curriculum se zcela ignoruje.
-FORCE_START_FROM_STAGE0 = False
+FORCE_START_FROM_STAGE0 = True
 RAM_SNAPSHOT_BUFFER = {1: [], 2: [], 3: []}
 BUFFER_INITIALIZED = False
 UNSAVED_COUNT = 0
@@ -87,7 +87,7 @@ def init_ram_buffer():
         return
 
     print("Inicializuji RAM Snapshot Buffer z disku...")
-    for stage in range(1, 6):
+    for stage in range(1, 4):
         stage_dir = SNAPSHOT_DIR / f"stage_{stage}"
         if stage_dir.exists():
             files = list(stage_dir.glob("*.pkl"))
@@ -100,8 +100,8 @@ def init_ram_buffer():
                     pass
 
     BUFFER_INITIALIZED = True
-    counts = [len(RAM_SNAPSHOT_BUFFER[s]) for s in range(1, 6)]
-    print(f"RAM Buffer načten. Počty snapshotů pro stages 1-5: {counts}")
+    counts = [len(RAM_SNAPSHOT_BUFFER[s]) for s in range(1, 4)]
+    print(f"RAM Buffer načten. Počty snapshotů pro stages 1-3: {counts}")
 
 
 def _sync_to_disk_worker(stage, snapshot_data, snapshot_idx):
@@ -313,7 +313,18 @@ def common_chairman_checker(states: list[EnvState], handler: BaseSimHandler,
 
     return is_fallen | is_timeout
 
+def _arms_dropped_too_low_stage0(states: list[EnvState], handler: BaseSimHandler,
+                                 idx: torch.Tensor) -> torch.Tensor:
+    """
+    Vrací True tam, kde alespoň jedna ruka ve stage 0 klesla pod povolený limit.
+    """
+    robot = states.robots[handler.robot.name]
+    left_idx, right_idx = _get_shoulder_indices(states, handler)
 
+    q_left = robot.joint_pos[idx, left_idx]
+    q_right = robot.joint_pos[idx, right_idx]
+
+    return (q_left > STAGE0_ARM_MIN_ANGLE) | (q_right > STAGE0_ARM_MIN_ANGLE)
 # =========================================================
 # STAGE CHECKERS
 # =========================================================
@@ -335,7 +346,7 @@ def stege0_chacker(states: list[EnvState], handler: BaseSimHandler,
     if idx.numel() == 0:
         return terminated, success
 
-    fail_common = common_chairman_checker(states, handler, idx, stage_id=0)
+    fail_common = common_chairman_checker(states, handler, idx, stage_id=0) #| _arms_dropped_too_low_stage0(states, handler, idx)
 
     near_chair = _robot_near_chair_pregrasp(states, handler, idx)
     arms_up = _arms_up_ok(states, handler, idx)
@@ -544,7 +555,7 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
     # Curriculum režim
     # =====================================================
     max_available_stage = 0
-    for i in range(1, 6):
+    for i in range(1, 4):
         if len(RAM_SNAPSHOT_BUFFER[i]) > 0:
             max_available_stage = i
         else:
@@ -890,8 +901,8 @@ def stage0_init(robot_name: str):
                         "baseslide_joint2": -1.5,
                         "baserot_joint": 0.0,
 
-                        "left_shoulder_pitch_joint": -1.86,
-                        "right_shoulder_pitch_joint": -1.86,
+                        "left_shoulder_pitch_joint": -1.5,
+                        "right_shoulder_pitch_joint": -1.5,
                     },
                     "pos": torch.tensor([0.0, 0.0, 0.8]),
                     "rot": torch.tensor([1.0, 0.0, 0.0, 0.0]),
@@ -907,6 +918,20 @@ def stage0_init(robot_name: str):
                         "floor_rotate_z": 1.57,
                     },
                 },
+                "room": {
+                        "pos": torch.tensor([
+                            0.0,
+                            0.0,
+                            0.0
+                        ]),
+                        "rot": torch.tensor([
+                            0.0,
+                            0.0,
+                            0.0,
+                            1.0
+                        ])
+                }
             },
+
         }
         return state

@@ -60,8 +60,8 @@ class G1SliderSimpleCfg(BaseRobotCfg):
     }
 
     torque_limits: dict[str, float] = {  # = target angles [rad] when action = 0.0
-        "baseslide_joint": 30,
-        "baseslide_joint2": 10,
+        "baseslide_joint": 100,
+        "baseslide_joint2": 100,
         "baserot_joint": 30,
         "left_shoulder_pitch_joint": 80,
         "right_shoulder_pitch_joint": 80,
