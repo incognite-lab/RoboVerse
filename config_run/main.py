@@ -177,7 +177,7 @@ def main():
         if scenario.robots[0].fix_base_link == False:
             scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
             scenario.robots[0].fix_base_link = False
-    elif config.get("task") == "chairmansimple":
+    elif config.get("task") == "chairmansimple" or config.get("task") == "chairmansimplegrpo":
         from SB3_chairman_env import StableBaseline3VecEnv
         if scenario.robots[0].fix_base_link == False:
             scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
@@ -550,7 +550,7 @@ def main():
         from dagger.dagger_trainer import DAggerBuffer, train_dagger_step
         from torch.utils.tensorboard import SummaryWriter
         import cv2
-        scenario.dagger = True
+        scenario.dagger = 1 #for evaluation of student model in env wrapper
         metasim_env = MetaSimVecEnv(
             scenario,
             task_name=config.get("task"),
@@ -707,10 +707,17 @@ def main():
 
     elif config.get("train_or_eval") == "eval_dagger_video":
         from dagger.student_net import VisionStudent
-        import torch.nn.functional as F
         import cv2
+        import numpy as np
 
-        metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
+        scenario.dagger = 2
+
+        metasim_env = MetaSimVecEnv(
+            scenario,
+            task_name=config.get("task"),
+            num_envs=config.get("num_envs", 1),
+            sim=config.get("sim"),
+        )
         env = StableBaseline3VecEnv(metasim_env)
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -730,43 +737,267 @@ def main():
         video_path = config.get("video_save_path", "./output/dagger_fpv_video.mp4")
         os.makedirs(os.path.dirname(video_path), exist_ok=True)
 
-        video_width, video_height = 64, 64
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        video_width, video_height = 128, 128
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         video_writer = cv2.VideoWriter(video_path, fourcc, 30.0, (video_width, video_height))
 
         obs = env.reset()
+        max_steps = config.get("eval_max_steps", 1000)
+
         log.info("Starting DAgger Evaluation...")
 
-        for step in range(config.get("eval_max_steps", 1000)):
-            states = metasim_env.env.handler.get_states()
+        try:
+            for step in range(max_steps):
+                states = metasim_env.env.handler.get_states()
 
-            rgb_tensor_raw = states.cameras["camera0"].rgb
-            frame_np = rgb_tensor_raw[0].cpu().numpy().astype(np.uint8)
-            frame_bgr = cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
-            video_writer.write(frame_bgr)
+                # --- video frame ---
+                rgb_tensor_raw = states.cameras["camera0"].rgb
+                frame_np = rgb_tensor_raw[0].detach().cpu().numpy().astype(np.uint8)
+                frame_bgr = cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
+                video_writer.write(frame_bgr)
 
-            rgb_tensor_gpu = rgb_tensor_raw.to(device)
-            rgb_permuted = rgb_tensor_gpu.permute(0, 3, 1, 2).float()
-            student_obs_small = F.interpolate(rgb_permuted, size=(72, 128), mode='bilinear', align_corners=False)
-            student_obs_net_input = student_obs_small / 255.0
+                # --- přesně stejný preprocessing jako v train_dagger ---
+                rgb_tensor = rgb_tensor_raw.to(device)
+                rgb_permuted = rgb_tensor.permute(0, 3, 1, 2).contiguous().float()
+                student_obs_net_input = rgb_permuted / 255.0
 
-            joint_obs_tensor = torch.tensor(
-                obs[:, :num_joints],
+                joint_obs_tensor = torch.as_tensor(
+                    obs[:, :num_joints],
+                    device=device,
+                    dtype=torch.float32
+                )
+
+                with torch.no_grad():
+                    student_actions_tensor = student_model(student_obs_net_input, joint_obs_tensor)
+                    actions = student_actions_tensor.cpu().numpy()
+
+                # volitelné, ale bezpečnější: oříznout akce do rozsahu action space
+                actions = np.clip(actions, env.action_space.low, env.action_space.high)
+
+                obs, rewards, dones, infos = env.step(actions)
+
+                # Workaround na bug ve wrapperu:
+                # step_wait() resetne env interně, ale vrátí staré obs.
+                # Proto po done znovu resetneme, aby se joint_obs synchronizovalo s kamerou.
+                if np.any(dones):
+                    log.info(
+                        f"Episode finished at step {step + 1}, "
+                        f"success={infos[0].get('is_success', False)}"
+                    )
+                    obs = env.reset()
+
+                if step % 100 == 0:
+                    log.info(
+                        f"Eval step: {step}/{max_steps} | "
+                        f"reward={float(np.mean(rewards)):.4f}"
+                    )
+
+        finally:
+            video_writer.release()
+            env.close()
+
+        log.info(f"🎬 FPV Video saved successfully to: {video_path}")
+
+    elif config.get("train_or_eval") == "train_grpo":
+        from grpo.student_net_stochastic import VisionStudent
+        from grpo.grpo_trainer import collect_parallel_episodes, build_grpo_batch, grpo_update
+        from torch.utils.tensorboard import SummaryWriter
+        import gc
+        scenario.dagger = 2
+        metasim_env = MetaSimVecEnv(
+            scenario,
+            task_name=config.get("task"),
+            num_envs=config.get("num_envs", 1),
+            sim=config.get("sim")
+        )
+        env = StableBaseline3VecEnv(metasim_env)
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        num_actions = env.action_space.shape[0]
+        num_joints = env.action_space.shape[0]
+
+        student_model = VisionStudent(
+            num_actions=num_actions,
+            num_joints=num_joints
+        ).to(device)
+
+        model_path = config.get("load_model_path")
+        log.info(f"Loading DAgger Student model from {model_path}")
+        ckpt = torch.load(model_path, map_location=device)
+
+        missing, unexpected = student_model.load_state_dict(ckpt, strict=False)
+        log.info(f"Missing keys when loading DAgger checkpoint: {missing}")
+        log.info(f"Unexpected keys when loading DAgger checkpoint: {unexpected}")
+
+        optimizer = torch.optim.Adam(
+            student_model.parameters(),
+            lr=config.get("grpo_learning_rate", 1e-5)
+        )
+
+        tb_log_dir = config.get("tensorboard_log", "./grpo_tensorboard/")
+        os.makedirs(tb_log_dir, exist_ok=True)
+        writer = SummaryWriter(log_dir=tb_log_dir)
+
+        save_dir = config.get("model_save_path", "./output/grpo_models/")
+        os.makedirs(save_dir, exist_ok=True)
+        save_freq = config.get("model_save_freq", 50)
+
+        total_updates = config.get("grpo_total_updates", 2000)
+        group_size = config.get("grpo_group_size", 4)
+        rollouts_per_batch = config.get("grpo_rollouts_per_batch", env.num_envs)
+        success_bonus = config.get("grpo_success_bonus", 20.0)
+
+        if rollouts_per_batch % group_size != 0:
+            raise ValueError("grpo_rollouts_per_batch musí být násobek grpo_group_size")
+
+        log.info("Starting GRPO fine-tuning...")
+        for update in range(total_updates):
+            episodes = collect_parallel_episodes(
+                env=env,
+                metasim_env=metasim_env,
+                policy=student_model,
                 device=device,
-                dtype=torch.float32
+                num_episodes=rollouts_per_batch,
+                max_steps=1000,
+                success_bonus=success_bonus,
             )
 
-            with torch.no_grad():
-                student_actions_tensor = student_model(student_obs_net_input, joint_obs_tensor)
-                actions = student_actions_tensor.cpu().numpy()
+            batch, rollout_stats = build_grpo_batch(
+                episodes=episodes,
+                group_size=group_size,
+            )
+            del episodes
+            gc.collect()
 
-            obs, rewards, dones, infos = env.step(actions)
+            update_stats = grpo_update(
+                policy=student_model,
+                optimizer=optimizer,
+                batch=batch,
+                device=device,
+                clip_eps=config.get("grpo_clip_eps", 0.2),
+                ent_coef=config.get("grpo_ent_coef", 1e-3),
+                epochs=config.get("grpo_update_epochs", 4),
+                minibatch_size=config.get("grpo_minibatch_size", 2048),
+                max_grad_norm=config.get("grpo_max_grad_norm", 1.0),
+            )
 
-            if step % 100 == 0:
-                log.info(f"Eval step: {step}/{config.get('eval_max_steps', 1000)}")
+            writer.add_scalar("GRPO/MeanReturn", rollout_stats["mean_return"], update)
+            writer.add_scalar("GRPO/StdReturn", rollout_stats["std_return"], update)
+            writer.add_scalar("GRPO/SuccessRate", rollout_stats["success_rate"], update)
+            writer.add_scalar("GRPO/MeanEpisodeLength", rollout_stats["mean_length"], update)
 
-        video_writer.release()
-        log.info(f"🎬 FPV Video saved successfully to: {video_path}")
+            writer.add_scalar("GRPO/Loss", update_stats["loss"], update)
+            writer.add_scalar("GRPO/PolicyLoss", update_stats["policy_loss"], update)
+            writer.add_scalar("GRPO/Entropy", update_stats["entropy"], update)
+            writer.add_scalar("GRPO/RatioMean", update_stats["ratio_mean"], update)
+
+            log.info(
+                f"[GRPO] update={update}/{total_updates} | "
+                f"return={rollout_stats['mean_return']:.4f} | "
+                f"success={rollout_stats['success_rate']:.3f} | "
+                f"len={rollout_stats['mean_length']:.1f} | "
+                f"loss={update_stats['loss']:.6f} | "
+                f"entropy={update_stats['entropy']:.6f}"
+            )
+            del batch
+            gc.collect()
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if update > 0 and update % save_freq == 0:
+                save_path = os.path.join(save_dir, f"student_grpo_step_{update}.pth")
+                torch.save(student_model.state_dict(), save_path)
+                log.info(f"Saved checkpoint to {save_path}")
+
+        final_path = os.path.join(save_dir, "student_grpo_final.pth")
+        torch.save(student_model.state_dict(), final_path)
+        log.info(f"GRPO finished. Final checkpoint saved to {final_path}")
+
+        writer.close()
         env.close()
+    elif config.get("train_or_eval") == "eval_grpo_video":
+        from grpo.student_net_stochastic import VisionStudent
+        import cv2
+        import numpy as np
+
+        metasim_env = MetaSimVecEnv(
+            scenario,
+            task_name=config.get("task"),
+            num_envs=config.get("num_envs", 1),
+            sim=config.get("sim"),
+        )
+        env = StableBaseline3VecEnv(metasim_env)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        num_actions = env.action_space.shape[0]
+        num_joints = env.action_space.shape[0]
+
+        student_model = VisionStudent(
+            num_actions=num_actions,
+            num_joints=num_joints
+        ).to(device)
+
+        model_path = config.get("load_model_path")
+        log.info(f"Loading GRPO Student model from {model_path}")
+        ckpt = torch.load(model_path, map_location=device)
+        missing, unexpected = student_model.load_state_dict(ckpt, strict=False)
+        log.info(f"Missing keys: {missing}")
+        log.info(f"Unexpected keys: {unexpected}")
+        student_model.eval()
+
+        video_path = config.get("video_save_path", "./output/grpo_fpv_video.mp4")
+        os.makedirs(os.path.dirname(video_path), exist_ok=True)
+
+        video_width, video_height = 128, 128
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        video_writer = cv2.VideoWriter(video_path, fourcc, 30.0, (video_width, video_height))
+
+        low_t = torch.as_tensor(env.action_space.low, device=device, dtype=torch.float32)
+        high_t = torch.as_tensor(env.action_space.high, device=device, dtype=torch.float32)
+
+        _ = env.reset()
+        max_steps = config.get("eval_max_steps", 1000)
+
+        log.info("Starting GRPO evaluation...")
+
+        try:
+            for step in range(max_steps):
+                states = metasim_env.env.handler.get_states()
+                robot_name = metasim_env.scenario.robots[0].name
+
+                rgb_tensor_raw = states.cameras["camera0"].rgb
+                frame_np = rgb_tensor_raw[0].detach().cpu().numpy().astype(np.uint8)
+                frame_bgr = cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
+                video_writer.write(frame_bgr)
+
+                imgs = rgb_tensor_raw.to(device).permute(0, 3, 1, 2).contiguous().float() / 255.0
+                joints = states.robots[robot_name].joint_pos.to(device).float()
+
+                with torch.no_grad():
+                    actions_t, _, _, _ = student_model.act(imgs, joints, deterministic=True)
+                    actions_t = torch.max(torch.min(actions_t, high_t), low_t)
+
+                _, rewards, dones, infos = env.step(actions_t.detach().cpu().numpy())
+
+                if np.any(dones):
+                    log.info(
+                        f"Episode finished at step {step + 1}, "
+                        f"success={infos[0].get('is_success', False)}"
+                    )
+
+                if step % 100 == 0:
+                    log.info(
+                        f"Eval step: {step}/{max_steps} | "
+                        f"reward={float(np.mean(rewards)):.4f}"
+                    )
+
+        finally:
+            video_writer.release()
+            env.close()
+
+        log.info(f"🎬 GRPO FPV Video saved successfully to: {video_path}")
+
+
 if __name__ == "__main__":
     main()

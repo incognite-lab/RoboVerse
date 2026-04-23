@@ -470,7 +470,8 @@ class GenesisHandler(BaseSimHandler):
         states_flat = [state["objects"] | state["robots"] for state in states]
         for obj in self.objects + [self.robot]:
             obj_inst = self.object_inst_dict[obj.name]
-
+            if isinstance(obj, RigidObjCfg) and obj.fix_base_link and not (len(env_ids) == self.num_envs):
+                continue  # Ignorujeme nastavení pozice pro pevné objekty, protože to může způsobit problémy se stabilitou simulace
             # --- Base link position ---
             pos_tensor = torch.stack([states_flat[eid][obj.name]["pos"] for eid in env_ids])  # [N,3]
             pos = pos_tensor.cpu().numpy()

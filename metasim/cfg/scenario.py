@@ -63,7 +63,7 @@ class ScenarioCfg:
     headless: bool = False
     """environment spacing for parallel environments"""
     env_spacing: float = 1.0
-    dagger: bool = False
+    dagger: int = 0
 
     def __post_init__(self):
         """Post-initialization configuration."""

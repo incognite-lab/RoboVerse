@@ -326,22 +326,33 @@ class StableBaseline3VecEnv(VecEnv):
         if unsuccess_mask.any():
             self.timesteps[unsuccess_mask] = 0.0
             unsuccess_ids = np.nonzero(unsuccess_mask)[0].tolist()
-            self.env.reset(env_ids=unsuccess_ids)
+            obs, _ = self.env.reset(env_ids=unsuccess_ids)
+
             for i in unsuccess_ids:
                 infos[i]["is_success"] = False
                 infos[i]["TimeLimit.truncated"] = False
+        success = self.env.env.handler.task.just_finished.to(dones.device)
+        if success.any():
+            dones = dones | success
+            self.timesteps[success] = 0.0
+            success_ids = success.nonzero(as_tuple=False).squeeze(-1).cpu().tolist()
+            obs, _ = self.env.reset(env_ids=success_ids)
+            for i in success_ids:
+                infos[i]["is_success"] = True
+                infos[i]["TimeLimit.truncated"] = False
 
-        # --- Reset úspěšných envů (timeout = úspěch) ---
+        # --- Reset neúspěšných envů ---
         if timeout_mask.any():
             self.timesteps[timeout_mask] = 0.0
             timeout_ids = np.nonzero(timeout_mask)[0].tolist()
-            self.env.reset(env_ids=timeout_ids)
+            obs, _ = self.env.reset(env_ids=timeout_ids)
             for i in timeout_ids:
-                infos[i]["is_success"] = True
+                infos[i]["is_success"] = False
                 infos[i]["TimeLimit.truncated"] = True
         if VIZUALIZATION:
             self._update_joint_viz()
             print(f"Step rewards: {rewards.cpu().numpy()}, Unsuccess: {unsuccess.cpu().numpy()}, Timeout: {timeout.cpu().numpy()}")
+
         return obs, rewards.cpu().numpy(), dones.cpu().numpy(), infos
     def render(self):
         """Render the environment."""

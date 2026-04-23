@@ -307,10 +307,11 @@ def common_chairman_checker(states: list[EnvState], handler: BaseSimHandler,
     pelvis_idx = _get_pelvis_idx(states, handler)
     pelvis_z = states.robots[handler.robot.name].body_state[idx, pelvis_idx, 2]
     is_fallen = pelvis_z < HEIGHT_THRESHOLD
-
-    limit = STAGE_TIMEOUTS.get(stage_id, 9999)
-    is_timeout = handler.task.stage_steps[idx] > limit
-
+    if not handler.scenario.dagger == 2:
+        limit = STAGE_TIMEOUTS.get(stage_id, 9999)
+        is_timeout = handler.task.stage_steps[idx] > limit
+    else:
+        is_timeout = torch.zeros_like(is_fallen, dtype=torch.bool, device=device)
     return is_fallen | is_timeout
 
 def _arms_dropped_too_low_stage0(states: list[EnvState], handler: BaseSimHandler,

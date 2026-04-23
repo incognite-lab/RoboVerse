@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from metasim.cfg.checkers import _ChairManCheckerSimple
+from metasim.cfg.checkers import _ChairManCheckerSimple, _ChairManCheckerSimpleGRPO
 from metasim.cfg.objects import ArticulationObjCfg, RigidObjCfg
 from metasim.types import EnvState
 from metasim.utils import configclass
@@ -1127,7 +1127,8 @@ class ChairmansimpleCfg(HumanoidTaskCfg):
             name="room",
             urdf_path="/home/roboversepc/Documents/rooms/room5/room.urdf",
             default_position=[0.0, 0.0, 0.0],
-            fix_base_link=True
+            fix_base_link=True,
+            batch_fixed_verts=True
         )
     ]
 
@@ -1160,6 +1161,49 @@ class ChairmansimpleCfg(HumanoidTaskCfg):
         ContinuousStageReward(),
         ArmPosturePenalty(),
         FaceChairReward(),
+    ]
+
+    def extra_spec(self):
+        return {}
+@configclass
+class ChairmansimplegrpoCfg(HumanoidTaskCfg):
+    """ChairMan task config for GRPO fine-tuning."""
+
+    success_bar = 0.0
+    episode_length = 1000
+
+    objects = [
+        ArticulationObjCfg(
+            name="chair",
+            urdf_path="roboverse_data/assets/humanoidbench/chairs/chair1/foldable_chair_debug.urdf",
+            default_position=[0.0, 0.0, 0.0],
+            fix_base_link=True,
+            colapse_fixed_joints=False,
+            batch_fixed_verts=True,
+        ),
+        RigidObjCfg(
+            name="room",
+            urdf_path="/home/roboversepc/Documents/rooms/room5/room.urdf",
+            default_position=[0.0, 0.0, 0.0],
+            fix_base_link=True,
+            batch_fixed_verts=True
+        ),
+    ]
+
+    traj_filepath = "roboverse_data/trajs/humanoidbench/chair/initial_state_v2.json"
+
+    # necháme původní checker – ten už ví, kdy je task solved / failed
+    checker = _ChairManCheckerSimpleGRPO()
+
+    # jen jednoduché regularizační penalty
+    reward_weights = [
+        DELTA_ACTION_RATE_WEIGHT,
+        DOF_VELOCITY_ACCELERATION_WEIGHT,
+    ]
+
+    reward_functions = [
+        DeltaActionRateCfg(),
+        DoFVelocityAccelerationCfg(),
     ]
 
     def extra_spec(self):
