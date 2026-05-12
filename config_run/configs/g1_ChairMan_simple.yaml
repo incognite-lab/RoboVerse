@@ -5,13 +5,13 @@
 sim: genesis
 robots: [g1_slider_simple]
 fix_base_link: true
-task: chairmansimplegrpo
+task: chairmansimple #chairmansimplegrpo
 decimation: 5
 num_envs: 100
 headless: true
 add_table: true
 env_spacing: 4.0
-train_or_eval: train_grpo #load_and_train #train_dagger #eval_video #eval_dagger_video
+train_or_eval: eval  #load_and_train #train_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
 
 # Light configuration
 #---------------------------------------
@@ -29,20 +29,20 @@ train_or_eval: train_grpo #load_and_train #train_dagger #eval_video #eval_dagger
 #---------------------------------------
 #(Pro evaluaci je potřeba odkomentovat)
 #---------------------------------------
-cameras:
-   camera1:
-     type: PinholeCameraCfg
-     params:
-       name: camera0
-       pos: [3.0, -3.0, 3.0]
-       look_at: [0.0, 0.0, 0.0]
-       width: 128
-       height: 128
-       focal_length: 6.0
-       mount_to: g1_slider_simple
-       mount_link: head_link
-       mount_pos: [0.09, 0.0, 0.5]
-       mount_quat: [0.5, 0.5, -0.5, -0.5]
+# cameras:
+#    camera1:
+#      type: PinholeCameraCfg
+#      params:
+#        name: camera0
+#        pos: [3.0, -3.0, 3.0]
+#        look_at: [0.0, 0.0, 0.0]
+#        width: 1024 #128
+#        height: 640 #128
+#        focal_length: 6.0 #6
+#        mount_to: g1_slider_simple
+#        mount_link: head_link
+#        mount_pos: [0.09, 0.0, 0.5]
+#        mount_quat: [0.5, 0.5, -0.5, -0.5]
 
 
 # Train or Eval settings
@@ -51,23 +51,27 @@ force: false
 
 #Eveluation settings
 #------------------------------------------
-#load_model_path: ./my_env/output/ppo_models/run_2025-10-16_13-59-07/model_80003072
 #load_model_path: ./config_run/output/ppo_model/run_2026-04-16_18_chairmansimple/model_50040000
-load_model_path: ./config_run/output/ppo_model/student_model_step_760000.pth
-#load_model_path: ./config_run/output/ppo_model_cluster/run_2026-04-10_13_chairman/
+#load_model_path: ./config_run/output/ppo_model/run_2026-04-16_18_chairmansimple/
+#load_model_path: ./config_run/output/ppo_model/dagger/
+load_model_path: ./config_run/output/ppo_model/run_2026-05-06_18_chairmansimple/
+
+#load_model_path: ./config_run/output/ppo_model/dagger/student_model_step_760000.pth
+#load_model_path: ./config_run/output/ppo_model_cluster/run_2026-04-16_18_chairman/
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-04-02_20_chairman/model_970776000
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-03-13_14_chairman_top/model_200070000
-video_save_path: ./config_run/output/eval_videos/chair_man_9.mp4
-eval_episodes: 1
-eval_max_steps: 2000
+#load_model_path: ./config_run/output/grpo_model/
+video_save_path: ./config_run/output/eval_videos/chair_man_14.mp4
+eval_episodes: 100
+eval_max_steps: 1500
 
 
 # PPO training settings
 #-------------------------------------------
-# total_timesteps: 10_000_000
-# model_save_path: ./config_run/output/ppo_model
-# model_save_freq: 10_000
-# tensorboard_log: ./config_run/output/tensorboard
+total_timesteps: 1_000_000_000
+model_save_path: ./config_run/output/ppo_model
+model_save_freq: 10_000_000
+tensorboard_log: ./config_run/output/tensorboard
 
 
 # PPO parameters
@@ -103,9 +107,9 @@ visualization: false
 #GRPO parameters
 #--------------------------
 grpo_learning_rate: 1.0e-5
-grpo_total_updates: 2000
+grpo_total_updates: 200
 grpo_group_size: 5
-grpo_rollouts_per_batch: 100
+grpo_rollouts_per_batch: 200
 grpo_success_bonus: 20.0
 
 grpo_clip_eps: 0.2
@@ -115,6 +119,6 @@ grpo_minibatch_size: 2048
 grpo_max_grad_norm: 1.0
 
 
-model_save_path: ./config_run/output/grpo_model
-tensorboard_log: ./config_run/output/grpo_tensorboard
-model_save_freq: 10
+#model_save_path: ./config_run/output/grpo_model
+#tensorboard_log: ./config_run/output/grpo_tensorboard
+#model_save_freq: 5

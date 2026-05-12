@@ -54,31 +54,30 @@ def collect_parallel_episodes(
     c, h, w = imgs_u8.shape[1:]
     num_joints = joints_f32.shape[1]
     num_actions = env.action_space.shape[0]
-    assert joints_f32.shape[1] == num_joints, (joints_f32.shape[1], num_joints)
     # -----------------------------
     # aktivní epizody pro každý env
     # -----------------------------
-    active_imgs = torch.empty((num_envs, max_steps, c, h, w), dtype=torch.uint8)
-    active_joints = torch.empty((num_envs, max_steps, num_joints), dtype=torch.float16)
-    active_actions = torch.empty((num_envs, max_steps, num_actions), dtype=torch.float16)
-    active_old_logps = torch.empty((num_envs, max_steps), dtype=torch.float32)
+    cpu = torch.device("cpu")
 
-    active_returns = torch.zeros(num_envs, dtype=torch.float32)
-    active_lengths = torch.zeros(num_envs, dtype=torch.long)
-    active_success = torch.zeros(num_envs, dtype=torch.bool)
+    active_imgs = torch.empty((num_envs, max_steps, c, h, w), dtype=torch.uint8, device=cpu)
+    active_joints = torch.empty((num_envs, max_steps, num_joints), dtype=torch.float16, device=cpu)
+    active_actions = torch.empty((num_envs, max_steps, num_actions), dtype=torch.float16, device=cpu)
+    active_old_logps = torch.empty((num_envs, max_steps), dtype=torch.float32, device=cpu)
 
-    # -----------------------------
-    # dokončené epizody
-    # -----------------------------
-    finished_imgs = torch.empty((num_episodes, max_steps, c, h, w), dtype=torch.uint8)
-    finished_joints = torch.empty((num_episodes, max_steps, num_joints), dtype=torch.float16)
-    finished_actions = torch.empty((num_episodes, max_steps, num_actions), dtype=torch.float16)
-    finished_old_logps = torch.empty((num_episodes, max_steps), dtype=torch.float32)
+    active_returns = torch.zeros(num_envs, dtype=torch.float32, device=cpu)
+    active_lengths = torch.zeros(num_envs, dtype=torch.long, device=cpu)
+    active_success = torch.zeros(num_envs, dtype=torch.bool, device=cpu)
 
-    finished_returns = torch.empty(num_episodes, dtype=torch.float32)
-    finished_lengths = torch.empty(num_episodes, dtype=torch.long)
-    finished_success = torch.empty(num_episodes, dtype=torch.bool)
+    finished_imgs = torch.empty((num_episodes, max_steps, c, h, w), dtype=torch.uint8, device=cpu)
+    finished_joints = torch.empty((num_episodes, max_steps, num_joints), dtype=torch.float16, device=cpu)
+    finished_actions = torch.empty((num_episodes, max_steps, num_actions), dtype=torch.float16, device=cpu)
+    finished_old_logps = torch.empty((num_episodes, max_steps), dtype=torch.float32, device=cpu)
 
+    finished_returns = torch.empty(num_episodes, dtype=torch.float32, device=cpu)
+    finished_lengths = torch.empty(num_episodes, dtype=torch.long, device=cpu)
+    finished_success = torch.empty(num_episodes, dtype=torch.bool, device=cpu)
+    assert active_imgs.device.type == "cpu"
+    assert finished_imgs.device.type == "cpu"
     finished_count = 0
 
     while finished_count < num_episodes:
@@ -174,7 +173,7 @@ def build_grpo_batch(episodes, group_size):
 
     for start in range(0, len(episodes), group_size):
         group = episodes[start:start + group_size]
-        returns = torch.tensor([ep["return"] for ep in group], dtype=torch.float32)
+        returns = torch.tensor([ep["return"] for ep in group], dtype=torch.float32, device="cpu")
 
         mean_r = returns.mean()
         std_r = returns.std(unbiased=False)
@@ -187,7 +186,7 @@ def build_grpo_batch(episodes, group_size):
             joints_all.append(ep["joints"])        # CPU float16
             actions_all.append(ep["actions"])      # CPU float16
             old_logps_all.append(ep["old_logps"])  # CPU float32
-            adv_all.append(torch.full((T,), adv.item(), dtype=torch.float32))
+            adv_all.append(torch.full((T,), adv.item(), dtype=torch.float32, device="cpu"))
 
             all_returns.append(ep["return"])
             all_lengths.append(ep["length"])
@@ -232,7 +231,7 @@ def grpo_update(
     }
 
     for _ in range(epochs):
-        perm = torch.randperm(N)
+        perm = torch.randperm(N, device="cpu")
 
         for start in range(0, N, minibatch_size):
             idx = perm[start:start + minibatch_size]
@@ -265,4 +264,6 @@ def grpo_update(
             stats["entropy"].append(entropy_mean.item())
             stats["ratio_mean"].append(ratio.mean().item())
 
+            del imgs, joints, actions, old_logps, advantages
+            del new_logps, entropy, ratio, surr1, surr2, policy_loss, entropy_mean, loss
     return {k: float(np.mean(v)) for k, v in stats.items()}

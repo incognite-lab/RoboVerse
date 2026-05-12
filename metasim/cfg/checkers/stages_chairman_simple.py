@@ -25,7 +25,7 @@ STAGE_TIMEOUTS = {
     2: 500,   # couvat se zidli na target
     3: 120,   # zvednout ruce nahoru a zustat stat
 }
-VELOCITY_THRESHOLD = 0.1
+VELOCITY_THRESHOLD = 0.2
 HEIGHT_THRESHOLD = 0.4
 ANGULAR_VELOCITY_THRESHOLD = 0.35
 # stage 0
@@ -61,7 +61,7 @@ ENABLE_DISK_SNAPSHOT_LOAD = False
 ENABLE_DISK_SNAPSHOT_SAVE = False
 
 SNAPSHOT_DIR = Path("config_run/snapshots_chair/")
-MAX_SNAPSHOTS = 100
+MAX_SNAPSHOTS = 10
 # Pokud True, všechny envy vždy startují od stage 0
 # a snapshot curriculum se zcela ignoruje.
 FORCE_START_FROM_STAGE0 = True
@@ -900,10 +900,10 @@ def stage0_init(robot_name: str):
                     "dof_pos": {
                         "baseslide_joint": 0.0,
                         "baseslide_joint2": -1.5,
-                        "baserot_joint": 0.0,
+                        "baserot_joint": 0.3,
 
-                        "left_shoulder_pitch_joint": -1.5,
-                        "right_shoulder_pitch_joint": -1.5,
+                        "left_shoulder_pitch_joint": random.uniform(-1.57, -1.0), #-1.2, #random.uniform()
+                        "right_shoulder_pitch_joint": random.uniform(-1.57, -1.0), #-1.2, #random.uniform()
                     },
                     "pos": torch.tensor([0.0, 0.0, 0.8]),
                     "rot": torch.tensor([1.0, 0.0, 0.0, 0.0]),
@@ -914,8 +914,8 @@ def stage0_init(robot_name: str):
                     "pos": torch.tensor([0.0, 0.0, 0.1]),
                     "rot": torch.tensor([1.0, 0.0, 0.0, 0.0]),
                     "dof_pos": {
-                        "floor_slide_x": 0.75,
-                        "floor_slide_y": 0.0,
+                        "floor_slide_x": 0.75, #random.uniform(0.65,0.75), #0.75,
+                        "floor_slide_y": random.uniform(-0.1, 0.1), #0.0
                         "floor_rotate_z": 1.57,
                     },
                 },

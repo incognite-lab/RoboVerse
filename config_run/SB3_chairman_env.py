@@ -327,7 +327,8 @@ class StableBaseline3VecEnv(VecEnv):
             self.timesteps[unsuccess_mask] = 0.0
             unsuccess_ids = np.nonzero(unsuccess_mask)[0].tolist()
             obs, _ = self.env.reset(env_ids=unsuccess_ids)
-
+            obs = obs.cpu().numpy()
+            obs = self.add_extra_to_obs(obs)
             for i in unsuccess_ids:
                 infos[i]["is_success"] = False
                 infos[i]["TimeLimit.truncated"] = False
@@ -337,6 +338,8 @@ class StableBaseline3VecEnv(VecEnv):
             self.timesteps[success] = 0.0
             success_ids = success.nonzero(as_tuple=False).squeeze(-1).cpu().tolist()
             obs, _ = self.env.reset(env_ids=success_ids)
+            obs = obs.cpu().numpy()
+            obs = self.add_extra_to_obs(obs)
             for i in success_ids:
                 infos[i]["is_success"] = True
                 infos[i]["TimeLimit.truncated"] = False
@@ -346,6 +349,8 @@ class StableBaseline3VecEnv(VecEnv):
             self.timesteps[timeout_mask] = 0.0
             timeout_ids = np.nonzero(timeout_mask)[0].tolist()
             obs, _ = self.env.reset(env_ids=timeout_ids)
+            obs = obs.cpu().numpy()
+            obs = self.add_extra_to_obs(obs)
             for i in timeout_ids:
                 infos[i]["is_success"] = False
                 infos[i]["TimeLimit.truncated"] = True

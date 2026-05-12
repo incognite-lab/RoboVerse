@@ -1060,6 +1060,17 @@ class _ChairManCheckerSimple(BaseChecker):
         states = handler.get_states()
         # Získáme tenzor se všemi aktuálními stages [num_envs]
         stages = handler.task.reward_functions[0].actual_stage
+        num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
+        device = handler.device if hasattr(handler, "device") else torch.device("cpu")
+
+        # pomocné flagy pro wrapper
+        if not hasattr(handler.task, "just_finished"):
+            handler.task.just_finished = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        if not hasattr(handler.task, "stage_success"):
+            handler.task.stage_success = torch.zeros(num_envs, dtype=torch.bool, device=device)
+
+        handler.task.just_finished[:] = False
+        handler.task.stage_success[:] = False
 
         # --- 1. VYTVOŘENÍ MASEK ---
         mask_0 = (stages == 0)
@@ -1090,6 +1101,9 @@ class _ChairManCheckerSimple(BaseChecker):
 
         # A) Finále (Stage 4) - Jelikož se Stage 6 neukládá do snapshotů, vypíšeme průlom rovnou
         just_finished = all_success & (stages == 4) # (protože jsme v kroku 4 zvedli stages na 6)
+        handler.task.stage_success[:] = just_finished
+        handler.task.just_finished[:] = just_finished
+
         if just_finished.any():
             if 4 not in self.announced_stages:
                 print("\n" + "="*50)
@@ -1134,111 +1148,19 @@ class _ChairManCheckerSimple(BaseChecker):
         import time
         reset_chairman(handler, env_ids)
 
+        if hasattr(handler.task, "just_finished"):
+            if env_ids is None:
+                handler.task.just_finished[:] = False
+            else:
+                handler.task.just_finished[env_ids] = False
+
+        if hasattr(handler.task, "stage_success"):
+            if env_ids is None:
+                handler.task.stage_success[:] = False
+            else:
+                handler.task.stage_success[env_ids] = False
         #print("reset chairman checker")
 
-# class _ChairManCheckerSimpleGRPO(BaseChecker):
-
-#     def check(self, handler: BaseSimHandler) -> torch.BoolTensor:
-#         from metasim.cfg.checkers.stages_chairman_simple import (
-#             stege0_chacker, stege1_chacker, stege2_chacker,
-#             stege3_chacker, save_snapshot_chairman
-#         )
-
-#         if not hasattr(self, "announced_stages"):
-#             self.announced_stages = set()
-#             self.announced_stages.add(0)
-
-#         SAVE_PROBABILITY = 0.1
-
-#         states = handler.get_states()
-#         stages = handler.task.reward_functions[0].actual_stage
-
-#         # důležité: uložit si stage PŘED inkrementací
-#         prev_stages = stages.clone()
-
-#         # připravit výstupní flagy na task
-#         if not hasattr(handler.task, "just_finished"):
-#             handler.task.just_finished = torch.zeros_like(stages, dtype=torch.bool)
-#         if not hasattr(handler.task, "stage_success"):
-#             handler.task.stage_success = torch.zeros_like(stages, dtype=torch.bool)
-
-#         handler.task.just_finished[:] = False
-#         handler.task.stage_success[:] = False
-
-#         mask_0 = (stages == 0)
-#         #mask_1 = (stages == 1)
-#         #mask_2 = (stages == 2)
-#         #mask_3 = (stages == 3)
-
-#         #term_0, succ_0 = stege0_chacker(states, handler, mask_0)
-#         #term_1, succ_1 = stege1_chacker(states, handler, mask_1)
-#         #term_2, succ_2 = stege2_chacker(states, handler, mask_2)
-#         term_3, succ_3 = stege3_chacker(states, handler, mask_0)
-
-#         all_terminated =  term_3
-#         all_success = succ_3
-
-#         # uložíme stage-success obecně
-#         handler.task.stage_success[:] = all_success
-
-#         # posun do další stage
-#         handler.task.reward_functions[0].actual_stage[all_success] += 1
-#         handler.task.reward_functions[0].completed_stages[all_success] = 1
-
-#         # stage success nemá ukončit epizodu
-#         all_terminated[all_success] = False
-
-#         # finální success = env byl ve stage 3 a právě uspěl
-#         just_finished = all_success & (prev_stages == 3)
-#         handler.task.just_finished[:] = just_finished
-
-#         if just_finished.any():
-#             print("\n" + "="*50)
-#             print("🏆 ÚLOHA SPLNĚNA!")
-#             print(f"Envy: {just_finished.nonzero(as_tuple=True)[0].tolist()}")
-#             print("="*50 + "\n")
-
-#         success_to_save = all_success & (prev_stages <= 2)
-
-#         if success_to_save.any():
-#             num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
-#             rand_mask = torch.rand(num_envs, device=handler.device) < SAVE_PROBABILITY
-#             envs_to_save = (success_to_save & rand_mask).nonzero(as_tuple=False).squeeze(-1)
-
-#             if len(envs_to_save) > 0:
-#                 envs_to_save_cpu = envs_to_save.cpu().numpy()
-#                 stages_cpu = prev_stages[envs_to_save].cpu().numpy()
-
-#                 for i in range(len(envs_to_save_cpu)):
-#                     env_idx = int(envs_to_save_cpu[i])
-#                     new_stage = int(stages_cpu[i] + 1)
-
-#                     save_snapshot_chairman(handler, env_idx, new_stage)
-
-#                     if new_stage not in self.announced_stages:
-#                         print("\n" + "*"*50)
-#                         print(f"🚀 PRŮLOM: Robot poprvé uložil stav pro STAGE {new_stage}! (Env: {env_idx})")
-#                         print("*"*50 + "\n")
-#                         self.announced_stages.add(new_stage)
-
-#         return all_terminated
-
-#     def reset(self, handler: BaseSimHandler, env_ids: list[int] | None = None):
-#         from metasim.cfg.checkers.stages_chairman_simple import reset_chairman
-
-#         reset_chairman(handler, env_ids)
-
-#         if hasattr(handler.task, "just_finished"):
-#             if env_ids is None:
-#                 handler.task.just_finished[:] = False
-#             else:
-#                 handler.task.just_finished[env_ids] = False
-
-#         if hasattr(handler.task, "stage_success"):
-#             if env_ids is None:
-#                 handler.task.stage_success[:] = False
-#             else:
-#                 handler.task.stage_success[env_ids] = False
 class _ChairManCheckerSimpleGRPO(BaseChecker):
 
     def check(self, handler: BaseSimHandler) -> torch.BoolTensor:

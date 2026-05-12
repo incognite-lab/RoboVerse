@@ -997,7 +997,17 @@ class ContinuousStageReward(HumanoidBaseReward):
             return torch.zeros(num_envs, device=device)
 
         return self.actual_stage.float()
+class FinalReward(HumanoidBaseReward):
+    """
+    Permanentní reward za aktuální stage.
+    """
+    def __init__(self, robot_name="g1_slider_simple"):
+        super().__init__(robot_name)
 
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        robot_name = robot_name or self.robot_name
+        mask_success = self.actual_stage == 4
+        return mask_success.float()
 class FaceChairReward(HumanoidBaseReward):
     """
     Reward za to, že pelvis míří čelem k židli.
@@ -1102,6 +1112,7 @@ STAGE_PROGRESS_WEIGHT = 4.0
 CONTINUOUS_STAGE_WEIGHT = 4.0
 ARM_PENALTY_WEIGHT = -5.0
 FACE_CHAIR_WEIGHT = 2.0
+FINAL_WEIGHT = 3000.0
 
 # =============================================================================
 # TASK CONFIG
@@ -1123,13 +1134,13 @@ class ChairmansimpleCfg(HumanoidTaskCfg):
             colapse_fixed_joints=False,
             batch_fixed_verts=True,
         ),
-        RigidObjCfg(
-            name="room",
-            urdf_path="/home/roboversepc/Documents/rooms/room5/room.urdf",
-            default_position=[0.0, 0.0, 0.0],
-            fix_base_link=True,
-            batch_fixed_verts=True
-        )
+        # RigidObjCfg(
+        #     name="room",
+        #     urdf_path="/home/roboversepc/Documents/rooms/room5/room.urdf",
+        #     default_position=[0.0, 0.0, 0.0],
+        #     fix_base_link=True,
+        #     batch_fixed_verts=True
+        # )
     ]
 
     traj_filepath = "roboverse_data/trajs/humanoidbench/chair/initial_state_v2.json"
@@ -1147,6 +1158,7 @@ class ChairmansimpleCfg(HumanoidTaskCfg):
         CONTINUOUS_STAGE_WEIGHT,
         ARM_PENALTY_WEIGHT,
         FACE_CHAIR_WEIGHT,
+        FINAL_WEIGHT,
     ]
 
     reward_functions = [
@@ -1161,6 +1173,7 @@ class ChairmansimpleCfg(HumanoidTaskCfg):
         ContinuousStageReward(),
         ArmPosturePenalty(),
         FaceChairReward(),
+        FinalReward(),
     ]
 
     def extra_spec(self):
