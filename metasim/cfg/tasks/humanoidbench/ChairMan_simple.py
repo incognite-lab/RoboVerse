@@ -1134,13 +1134,13 @@ class ChairmansimpleCfg(HumanoidTaskCfg):
             colapse_fixed_joints=False,
             batch_fixed_verts=True,
         ),
-        # RigidObjCfg(
-        #     name="room",
-        #     urdf_path="/home/roboversepc/Documents/rooms/room5/room.urdf",
-        #     default_position=[0.0, 0.0, 0.0],
-        #     fix_base_link=True,
-        #     batch_fixed_verts=True
-        # )
+        RigidObjCfg(
+            name="room",
+            urdf_path="/home/roboversepc/Documents/rooms/room5/room.urdf",
+            default_position=[0.0, 0.0, 0.0],
+            fix_base_link=True,
+            batch_fixed_verts=True
+        )
     ]
 
     traj_filepath = "roboverse_data/trajs/humanoidbench/chair/initial_state_v2.json"

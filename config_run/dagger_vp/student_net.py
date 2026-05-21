@@ -1,8 +1,9 @@
+# dagger/student_net.py
 import torch
 import torch.nn as nn
 
 class VisionStudent(nn.Module):
-    def __init__(self, num_actions, img_channels=3):
+    def __init__(self, num_actions, num_joints, img_channels=3):
         super().__init__()
 
         self.cnn = nn.Sequential(
@@ -18,24 +19,35 @@ class VisionStudent(nn.Module):
             nn.Flatten(),
         )
 
-        # obraz -> 512 feature
+        # obraz -> 2048 feature
         self.img_head = nn.Sequential(
             nn.Linear(2048, 512),
             nn.ReLU(),
         )
 
-        # pouze obrazová politika
+        # klouby -> menší embedding
+        self.joint_head = nn.Sequential(
+            nn.Linear(num_joints, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+        )
+
+        # fúze obou větví
         self.actor = nn.Sequential(
-            nn.Linear(512, 256),
+            nn.Linear(512 + 128, 256),
             nn.ReLU(),
             nn.Linear(256, 256),
             nn.ReLU(),
             nn.Linear(256, num_actions)
         )
 
-    def forward(self, img):
+    def forward(self, img, joint_pos):
         img_feat = self.cnn(img)
         img_feat = self.img_head(img_feat)
 
-        actions = self.actor(img_feat)
+        joint_feat = self.joint_head(joint_pos)
+
+        fused = torch.cat([img_feat, joint_feat], dim=1)
+        actions = self.actor(fused)
         return actions

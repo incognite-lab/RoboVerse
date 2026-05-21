@@ -635,7 +635,7 @@ def save_snapshot_chairman(handler: BaseSimHandler, env_id: int, stage: int) -> 
                 "pos": obj_state.root_state[env_id, :3].detach().cpu().clone(),
                 "rot": obj_state.root_state[env_id, 3:7].detach().cpu().clone(),
             }
-
+            continue
         obj_joint_names = obj_state.joint_names.tolist()
         obj_joint_pos = obj_state.joint_pos[env_id].detach().cpu().numpy()
         obj_joint_vel = obj_state.joint_vel[env_id].detach().cpu().numpy()
@@ -691,6 +691,12 @@ def load_snapshot_chairman(stage: int) -> dict | None:
         }
 
     for obj_name, obj_data in data["objects"].items():
+        if obj_name == "room":
+            formatted_data["objects"][obj_name] = {
+                "pos": torch.as_tensor(obj_data["pos"], dtype=torch.float32),
+                "rot": torch.as_tensor(obj_data["rot"], dtype=torch.float32),
+            }
+            continue
         formatted_data["objects"][obj_name] = {
             "pos": torch.as_tensor(obj_data["pos"], dtype=torch.float32),
             "rot": torch.as_tensor(obj_data["rot"], dtype=torch.float32),

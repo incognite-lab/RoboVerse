@@ -117,7 +117,7 @@ class TensorboardMetricsCallback(BaseCallback):
     ale z explicitního signálu completed_stages z checkeru.
     """
 
-    def __init__(self, log_dir: str, log_interval: int = 10000, max_stage: int = 6, verbose: int = 1):
+    def __init__(self, log_dir: str, log_interval: int = 10000, max_stage: int = 4, verbose: int = 1):
         super().__init__(verbose)
         os.makedirs(log_dir, exist_ok=True)
         self.writer = SummaryWriter(log_dir)
