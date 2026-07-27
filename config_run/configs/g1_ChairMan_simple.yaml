@@ -7,11 +7,11 @@ robots: [g1_slider_simple]
 fix_base_link: true
 task: chairmansimplegrpo #chairmansimplegrpo
 decimation: 5
-num_envs: 1
-headless: false
+num_envs: 100
+headless: true
 add_table: true
 env_spacing: 4.0
-train_or_eval: eval_grpo_video  #load_and_train #train_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
+train_or_eval: eval_dagger  #load_and_train #train_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
 
 # Light configuration
 #---------------------------------------
@@ -67,14 +67,13 @@ force: false
 #------------------------------------------
 #load_model_path: ./config_run/output/ppo_model/run_2026-04-16_18_chairmansimple/model_50040000
 #load_model_path: ./config_run/output/ppo_model/run_2026-05-06_18_chairmansimple/
-#load_model_path: ./config_run/output/ppo_model/dagger4/student_model_step_70000.pth
+load_model_path: ./config_run/output/ppo_model/dagger4/ #student_model_step_70000.pth
 #load_model_path: ./config_run/output/ppo_model/run_2026-05-06_18_chairmansimple/model_560344000
 
-#load_model_path: ./config_run/output/ppo_model/dagger/student_model_step_760000.pth
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-04-16_18_chairman/
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-04-02_20_chairman/model_970776000
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-03-13_14_chairman_top/model_200070000
-load_model_path: ./config_run/output/grpo_model/student_grpo_step_145.pth
+#load_model_path: ./config_run/output/grpo_model/student_grpo_step_145.pth
 video_save_path: ./config_run/output/eval_videos/chair_man_16.mp4
 eval_episodes: 100
 eval_max_steps: 1000

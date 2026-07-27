@@ -3006,6 +3006,7 @@ def main():
         from grpo.grpo_trainer import collect_parallel_episodes, build_grpo_batch, grpo_update
         from torch.utils.tensorboard import SummaryWriter
         import gc
+        import copy
         scenario.dagger = 2
         metasim_env = MetaSimVecEnv(
             scenario,
@@ -3032,6 +3033,18 @@ def main():
         missing, unexpected = student_model.load_state_dict(ckpt, strict=False)
         log.info(f"Missing keys when loading DAgger checkpoint: {missing}")
         log.info(f"Unexpected keys when loading DAgger checkpoint: {unexpected}")
+
+        # Vytvoření referenčního modelu (původní DAgger politika)
+        ref_model = copy.deepcopy(student_model)
+
+        # Zmrazení vah referenčního modelu (nebudou se trénovat)
+        for param in ref_model.parameters():
+            param.requires_grad = False
+
+        # Přepnutí do eval módu pro jistotu (např. kvůli BatchNorm/Dropout, i když je síť možná nemá)
+        ref_model.eval()
+
+
 
         optimizer = torch.optim.Adam(
             student_model.parameters(),
@@ -3075,9 +3088,11 @@ def main():
 
             update_stats = grpo_update(
                 policy=student_model,
+                ref_model=ref_model,
                 optimizer=optimizer,
                 batch=batch,
                 device=device,
+                kl_coef=config.get("grpo_kl_coef", 0.05),
                 clip_eps=config.get("grpo_clip_eps", 0.2),
                 ent_coef=config.get("grpo_ent_coef", 1e-3),
                 epochs=config.get("grpo_update_epochs", 4),
@@ -3089,7 +3104,7 @@ def main():
             writer.add_scalar("GRPO/StdReturn", rollout_stats["std_return"], update)
             writer.add_scalar("GRPO/SuccessRate", rollout_stats["success_rate"], update)
             writer.add_scalar("GRPO/MeanEpisodeLength", rollout_stats["mean_length"], update)
-
+            writer.add_scalar("GRPO/KL_Divergence", update_stats["kl_div"], update)
             writer.add_scalar("GRPO/Loss", update_stats["loss"], update)
             writer.add_scalar("GRPO/PolicyLoss", update_stats["policy_loss"], update)
             writer.add_scalar("GRPO/Entropy", update_stats["entropy"], update)
@@ -3101,7 +3116,8 @@ def main():
                 f"success={rollout_stats['success_rate']:.3f} | "
                 f"len={rollout_stats['mean_length']:.1f} | "
                 f"loss={update_stats['loss']:.6f} | "
-                f"entropy={update_stats['entropy']:.6f}"
+                f"entropy={update_stats['entropy']:.6f} | "
+                f"kl_div={update_stats['kl_div']:.6f}"
             )
             del batch
             gc.collect()

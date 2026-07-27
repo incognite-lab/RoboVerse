@@ -212,12 +212,14 @@ def build_grpo_batch(episodes, group_size):
 
 def grpo_update(
     policy,
+    ref_model,
     optimizer,
     batch,
     device,
     clip_eps=0.2,
     ent_coef=1e-3,
     epochs=4,
+    kl_coef=0.01,
     minibatch_size=2048,
     max_grad_norm=1.0,
 ):
@@ -228,6 +230,7 @@ def grpo_update(
         "policy_loss": [],
         "entropy": [],
         "ratio_mean": [],
+        "kl_div": [],
     }
 
     for _ in range(epochs):
@@ -245,14 +248,30 @@ def grpo_update(
 
             new_logps, entropy, _ = policy.evaluate_actions(imgs, joints, actions)
 
-            ratio = torch.exp(new_logps - old_logps)
+            # --- NOVĚ PŘIDÁNO: Výpočet logps přes referenční model ---
+            with torch.no_grad():
+                ref_logps, _, _ = ref_model.evaluate_actions(imgs, joints, actions)
 
+            # PPO Policy Loss (zůstává stejná)
+            ratio = torch.exp(new_logps - old_logps)
             surr1 = ratio * advantages
             surr2 = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * advantages
             policy_loss = -torch.min(surr1, surr2).mean()
 
+            # --- NOVĚ PŘIDÁNO: Výpočet KL divergence ---
+            # Používáme stabilní Schulmanův odhad: exp(ref - new) - (ref - new) - 1
+            kl_div = torch.exp(ref_logps - new_logps) - (ref_logps - new_logps) - 1.0
+            kl_loss = kl_div.mean()
+
             entropy_mean = entropy.mean()
-            loss = policy_loss - ent_coef * entropy_mean
+
+            # --- UPRAVENÁ LOSS FUNKCE: Přidání KL penalizace ---
+            loss = policy_loss - ent_coef * entropy_mean + kl_coef * kl_loss
+
+            # Uložení do statistik pro Tensorboard
+            stats["kl_div"].append(kl_loss.item())
+
+
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -265,5 +284,5 @@ def grpo_update(
             stats["ratio_mean"].append(ratio.mean().item())
 
             del imgs, joints, actions, old_logps, advantages
-            del new_logps, entropy, ratio, surr1, surr2, policy_loss, entropy_mean, loss
+            del new_logps, entropy, ratio, surr1, surr2, policy_loss, entropy_mean, loss, ref_logps, kl_div, kl_loss
     return {k: float(np.mean(v)) for k, v in stats.items()}
