@@ -9,8 +9,10 @@ node_modules/
 wandb/
 *.ckpt
 GSNet
+__nyx_cache__/
 config_run/output/
 my_env/output/
+config_run/splat/
 config_run/snapshots_chair/
 deploy
 debug/

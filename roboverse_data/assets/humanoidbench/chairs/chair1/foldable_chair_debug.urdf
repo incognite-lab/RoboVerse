@@ -5,10 +5,10 @@
     <inertial>
       <mass value="1.0" /> <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01" />
     </inertial>
-    <visual>
+    <!-- <visual>
       <geometry><sphere radius="0.05"/></geometry>
       <material name="anchor_red"><color rgba="1 0 0 1"/></material>
-    </visual>
+    </visual> -->
   </link>
 
   <link name="slide_link_x">
@@ -51,15 +51,15 @@
 
   <link name="base_link">
     <visual>
-      <origin xyz="0 0 0.0006832693307789943" rpy="0 0 0" />
+      <origin xyz="0 0 0.0006832693307789943" rpy="1.5708 0 0" />
       <geometry>
-        <mesh filename="mesh/foldable_chair.dae" scale="0.1242771356260756 0.1242771356260756 0.1242771356260756" />
+        <mesh filename="mesh/foldable_chair.stl" scale="0.02 0.02 0.02" />
       </geometry>
     </visual>
     <collision>
-      <origin xyz="0 0 0.0006832693307789943" rpy="0 0 0" />
+      <origin xyz="0 0 0.0006832693307789943" rpy="1.5708 0 0" />
       <geometry>
-        <mesh filename="mesh/foldable_chair.dae" scale="0.1242771356260756 0.1242771356260756 0.1242771356260756" />
+        <mesh filename="mesh/foldable_chair.stl" scale="0.02 0.02 0.02" />
       </geometry>
     </collision>
     <inertial>
@@ -70,11 +70,11 @@
   </link>
 
   <link name="debug_top_center">
-    <visual>
+    <!-- <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry><sphere radius="0.04" /></geometry>
       <material name="m_debug_top_center"><color rgba="1 0 0 1" /></material>
-    </visual>
+    </visual> -->
   </link>
   <joint name="j_debug_top_center" type="fixed">
     <parent link="base_link" />
@@ -83,11 +83,11 @@
   </joint>
 
   <link name="target_hand_left">
-    <visual>
+    <!-- <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry><sphere radius="0.03" /></geometry>
       <material name="m_target_hand_left"><color rgba="1 1 0 1" /></material>
-    </visual>
+    </visual> -->
   </link>
   <joint name="j_target_hand_left" type="fixed">
     <parent link="base_link" />
@@ -96,11 +96,11 @@
   </joint>
 
   <link name="target_hand_right">
-    <visual>
+    <!-- <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry><sphere radius="0.03" /></geometry>
       <material name="m_target_hand_right"><color rgba="1 1 0 1" /></material>
-    </visual>
+    </visual> -->
   </link>
   <joint name="j_target_hand_right" type="fixed">
     <parent link="base_link" />
@@ -109,11 +109,11 @@
   </joint>
 
   <link name="debug_com">
-    <visual>
+    <!-- <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry><sphere radius="0.05" /></geometry>
       <material name="m_debug_com"><color rgba="0 0 1 1" /></material>
-    </visual>
+    </visual> -->
   </link>
   <joint name="j_debug_com" type="fixed">
     <parent link="base_link" />
@@ -122,11 +122,11 @@
   </joint>
 
   <link name="debug_vec">
-    <visual>
+    <!-- <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry><cylinder radius="0.01" length="0.5" /></geometry>
       <material name="m_debug_vec"><color rgba="0 0 1 0.5" /></material>
-    </visual>
+    </visual> -->
   </link>
   <joint name="j_debug_vec" type="fixed">
     <parent link="base_link" />
@@ -135,11 +135,11 @@
   </joint>
 
   <link name="debug_foot_0">
-    <visual>
+    <!-- <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry><sphere radius="0.04" /></geometry>
       <material name="m_debug_foot_0"><color rgba="0 1 0 1" /></material>
-    </visual>
+    </visual> -->
   </link>
   <joint name="j_debug_foot_0" type="fixed">
     <parent link="base_link" />
@@ -148,11 +148,11 @@
   </joint>
 
   <link name="debug_foot_1">
-    <visual>
+    <!-- <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry><sphere radius="0.04" /></geometry>
       <material name="m_debug_foot_1"><color rgba="0 1 0 1" /></material>
-    </visual>
+    </visual> -->
   </link>
   <joint name="j_debug_foot_1" type="fixed">
     <parent link="base_link" />
@@ -161,11 +161,11 @@
   </joint>
 
   <link name="debug_foot_2">
-    <visual>
+    <!-- <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry><sphere radius="0.04" /></geometry>
       <material name="m_debug_foot_2"><color rgba="0 1 0 1" /></material>
-    </visual>
+    </visual> -->
   </link>
   <joint name="j_debug_foot_2" type="fixed">
     <parent link="base_link" />
@@ -174,11 +174,11 @@
   </joint>
 
   <link name="debug_foot_3">
-    <visual>
+    <!-- <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry><sphere radius="0.04" /></geometry>
       <material name="m_debug_foot_3"><color rgba="0 1 0 1" /></material>
-    </visual>
+    </visual> -->
   </link>
   <joint name="j_debug_foot_3" type="fixed">
     <parent link="base_link" />

@@ -12,11 +12,16 @@ from genesis.vis.camera import Camera
 from loguru import logger as log
 
 
-from metasim.cfg.sensors import PinholeCameraCfg, GyroSensorCfg, CommandCfg
+from metasim.cfg.sensors import PinholeCameraCfg, NyxGaussianSplatCameraCfg, GyroSensorCfg, CommandCfg
 from metasim.cfg.objects import ArticulationObjCfg, PrimitiveCubeCfg, PrimitiveSphereCfg, RigidObjCfg, _FileBasedMixin
 from metasim.cfg.scenario import ScenarioCfg
 from metasim.queries.base import BaseQueryType
 from metasim.sim import BaseSimHandler, GymEnvWrapper
+from .gaussian_splat import (
+    NyxGaussianSplatRuntime,
+    patch_nyx_rigid_solver_compat,
+    prepare_urdfs_for_nyx,
+)
 from metasim.types import Action, EnvState
 from metasim.utils.state import CameraState, ObjectState, RobotState, TensorState
 
@@ -46,6 +51,8 @@ class GenesisHandler(BaseSimHandler):
         self._actions_cache: list[Action] = []
         self.object_inst_dict: dict[str, RigidEntity] = {}
         self.camera_inst_dict: dict[str, Camera] = {}
+        self.camera_debug_dots: dict[str, tuple[RigidEntity, object, tuple[float, float, float]]] = {}
+        self._nyx_splat = NyxGaussianSplatRuntime()
         self.cached_top_offsets: dict[str, torch.Tensor] = {}
         self._cache_joint_names: dict[str, list[str]] = {}
 
@@ -68,6 +75,7 @@ class GenesisHandler(BaseSimHandler):
             show_viewer=show_viewer,
         )
         #print(not self.headless)
+        prepare_urdfs_for_nyx(self.robot, self.scenario.objects, self.cameras)
         ## Add ground
         try:
             self.scene_inst.add_entity(gs.morphs.Plane())
@@ -133,6 +141,9 @@ class GenesisHandler(BaseSimHandler):
 
             attached_obj_name = getattr(camera, "mount_to", None)
             attached_link_name = getattr(camera, "mount_link", None)
+            if isinstance(camera, NyxGaussianSplatCameraCfg) and camera.debug_detach_from_mount:
+                attached_obj_name = None
+                attached_link_name = None
 
             if attached_obj_name and attached_obj_name in self.object_inst_dict:
                 mount_entity = self.object_inst_dict[attached_obj_name]
@@ -145,7 +156,23 @@ class GenesisHandler(BaseSimHandler):
                         mount_link = link
                         break
 
-            if mount_entity and mount_link:
+            if isinstance(camera, NyxGaussianSplatCameraCfg):
+                camera_inst = self._nyx_splat.make_camera(
+                    self.scene_inst,
+                    camera,
+                    mount_entity,
+                    mount_link,
+                    robot=self.robot,
+                    objects=self.scenario.objects,
+                )
+                if mount_link is not None:
+                    self._add_camera_debug_dot(
+                        camera.name,
+                        mount_link,
+                        getattr(camera, "mount_pos", None) or (0.05, 0.0, 0.0),
+                    )
+                log.info(f"Nyx Gaussian splat camera '{camera.name}' added")
+            elif mount_entity and mount_link:
                 camera_inst = self.scene_inst.add_camera(
                     res=(camera.width, camera.height),
                     fov=camera.vertical_fov,
@@ -161,12 +188,7 @@ class GenesisHandler(BaseSimHandler):
                 # Připojení kamery pomocí matice
                 camera_inst.attach(mount_link, offset_T=offset_T)
                 # --- NOVÉ: DEBUGOVACÍ KULIČKA (BEZ ROTACE) ---
-                debug_dot = self.scene_inst.add_entity(
-                    gs.morphs.Sphere(radius=0.03), # Kulička o poloměru 3 cm
-                    surface=gs.surfaces.Default(color=(1.0, 0.0, 0.0, 1.0)), # Červená
-                    material=gs.materials.Rigid(gravity_compensation=1.0)
-                )
-                self.camera_debug_dot = (debug_dot, mount_link, pos)
+                self._add_camera_debug_dot(camera.name, mount_link, pos)
 
                 log.info(f"Camera '{camera.name}' attached to {attached_obj_name}::{attached_link_name}")
             else:
@@ -184,10 +206,33 @@ class GenesisHandler(BaseSimHandler):
         self.scene_inst.build(
             n_envs=self.scenario.num_envs, env_spacing=(self.scenario.env_spacing, self.scenario.env_spacing)
         )
+        if any(isinstance(camera, NyxGaussianSplatCameraCfg) and camera.render_sim_geometry for camera in self.cameras):
+            patch_nyx_rigid_solver_compat(self.scene_inst)
         self._previous_dof_pos_target: dict[str, torch.Tensor] = {}
         self._previous_dof_vel_target: dict[str, torch.Tensor] = {}
 
         self._build_link_map()
+
+    def _add_camera_debug_dot(self, camera_name: str, mount_link, local_pos) -> None:
+        debug_dot = self.scene_inst.add_entity(
+            gs.morphs.Sphere(radius=0.03),
+            surface=gs.surfaces.Default(color=(1.0, 0.0, 0.0, 1.0)),
+            material=gs.materials.Rigid(gravity_compensation=1.0),
+        )
+        self.camera_debug_dots[camera_name] = (debug_dot, mount_link, tuple(float(v) for v in local_pos))
+
+    def _update_camera_debug_dot(self, camera_name: str, env_ids: list[int] | None = None) -> None:
+        if camera_name not in self.camera_debug_dots:
+            return
+
+        debug_dot, link, local_pos = self.camera_debug_dots[camera_name]
+        link_pos = link.get_pos(envs_idx=env_ids)
+        link_quat = link.get_quat(envs_idx=env_ids)
+        link_T = gu.trans_quat_to_T(link_pos, link_quat)
+        pos_t = torch.tensor(local_pos, dtype=gs.tc_float, device=gs.device)
+        pos_homogeneous = torch.nn.functional.pad(pos_t, (0, 1), value=1.0)
+        new_pos = torch.matmul(link_T, pos_homogeneous)[:, :3]
+        debug_dot.set_pos(new_pos, envs_idx=env_ids)
 
 
     def _build_link_map(self):
@@ -336,7 +381,7 @@ class GenesisHandler(BaseSimHandler):
             joints_names_arr = np.array(self.get_joint_names(obj.name))
             #joints_names_reindexed = joints_names_arr[joint_reindex].tolist()
             obj_inst = self.object_inst_dict[obj.name]
-            raw_contact = obj_inst.get_contacts()
+            #raw_contact = obj_inst.get_contacts()
             #readable_contacts = self.get_contact(raw_contact)
             if self._previous_dof_pos_target is None or obj.name not in self._previous_dof_pos_target:
                 self._previous_dof_pos_target[obj.name] = torch.zeros_like(obj_inst.get_dofs_position(envs_idx=env_ids))
@@ -364,7 +409,7 @@ class GenesisHandler(BaseSimHandler):
                 joint_vel=joint_vel,
                 joint_pos_target=self._previous_dof_pos_target[obj.name],
                 joint_effort_target=self._get_effort_targets(),
-                contact=raw_contact,
+                #contact=raw_contact,
                 joint_vel_target=None # TODO
 
 
@@ -388,29 +433,40 @@ class GenesisHandler(BaseSimHandler):
         for camera in self.cameras:
             camera_inst = self.camera_inst_dict[camera.name]
 
+            if isinstance(camera, NyxGaussianSplatCameraCfg):
+                if camera.render_sim_geometry:
+                    patch_nyx_rigid_solver_compat(self.scene_inst, camera_inst)
+                else:
+                    self._nyx_splat.step_standalone_scene(camera.name, self.object_inst_dict, camera_inst)
+                self._update_camera_debug_dot(camera.name, env_ids)
+                camera_inst._stale = True
+                rgb = camera_inst.read().rgb
+                self._nyx_splat.show_debug_frame(camera_inst, camera, rgb)
+                if rgb.dim() == 3:
+                    rgb = rgb.unsqueeze(0)
+                if camera.render_sim_geometry and rgb.shape[0] != self.num_envs:
+                    raise RuntimeError(
+                        f"Nyx camera '{camera.name}' returned {rgb.shape[0]} env frame(s), "
+                        f"but scenario.num_envs={self.num_envs}. "
+                        "For parallel visual training, render_sim_geometry=true must return one RGB frame per env."
+                    )
+                if not camera.render_sim_geometry and self.num_envs > 1 and rgb.shape[0] != self.num_envs:
+                    log.warning(
+                        f"Nyx standalone camera '{camera.name}' returned {rgb.shape[0]} frame(s) for "
+                        f"num_envs={self.num_envs}; standalone mode is intended for single-env debug/eval."
+                    )
+                state = CameraState(
+                    rgb=rgb,
+                    depth=None,
+                )
+                camera_states[camera.name] = state
+                continue
+
             if getattr(camera_inst, "_attached_link", None) is not None:
                 camera_inst.move_to_attach()
 
                 # --- NOVÉ: PŘESUN KULIČKY (JEN POZICE) ---
-                if hasattr(self, "camera_debug_dot"):
-                    debug_dot, link, local_pos = self.camera_debug_dot
-
-                    # 1. Pozice a rotace hlavy
-                    link_pos = link.get_pos(envs_idx=env_ids)
-                    link_quat = link.get_quat(envs_idx=env_ids)
-
-                    # 2. Vytvoření matice a výpočet nové pozice
-                    link_T = gu.trans_quat_to_T(link_pos, link_quat)
-                    pos_t = torch.tensor(local_pos, dtype=gs.tc_float, device=gs.device)
-
-                    # Přidáme 1.0 na konec vektoru, abychom ho mohli násobit 4x4 maticí
-                    pos_homogenous = torch.nn.functional.pad(pos_t, (0, 1), value=1.0)
-
-                    # Vynásobíme: Tím získáme přesnou globální pozici bodíku
-                    new_pos = torch.matmul(link_T, pos_homogenous)[:, :3]
-
-                    # 3. Nastavíme pouze pozici kuličky, rotaci ignorujeme
-                    debug_dot.set_pos(new_pos, envs_idx=env_ids)
+                self._update_camera_debug_dot(camera.name, env_ids)
                 # -----------------------------------------
 
             # Render obrazu

@@ -891,7 +891,7 @@
     </collision>
   </link>
 <link name="left_ee_x_axis">
-    <visual>
+    <!-- <visual>
       <origin xyz="0.03 0 0" rpy="0 1.57079632679 0"/>
       <geometry>
         <cylinder length="0.06" radius="0.002"/>
@@ -899,11 +899,11 @@
       <material name="red">
         <color rgba="1 0 0 1"/>
       </material>
-    </visual>
+    </visual> -->
   </link>
 
   <link name="left_ee_y_axis">
-    <visual>
+    <!-- <visual>
       <origin xyz="0 0.03 0" rpy="-1.57079632679 0 0"/>
       <geometry>
         <cylinder length="0.06" radius="0.002"/>
@@ -911,11 +911,11 @@
       <material name="green">
         <color rgba="0 1 0 1"/>
       </material>
-    </visual>
+    </visual> -->
   </link>
 
   <link name="left_ee_z_axis">
-    <visual>
+    <!-- <visual>
       <origin xyz="0 0 -0.03" rpy="0 0 0"/>
       <geometry>
         <cylinder length="0.06" radius="0.002"/>
@@ -923,11 +923,11 @@
       <material name="blue">
         <color rgba="0 0 1 1"/>
       </material>
-    </visual>
+    </visual> -->
   </link>
 
   <link name="left_endeffector">
-    <visual>
+    <!-- <visual>
       <origin xyz="0 0 0.0" rpy="0 0 0"/>
       <geometry>
         <sphere radius="0.005"/>
@@ -935,7 +935,7 @@
       <material name="yellow">
         <color rgba="1 1 0 1"/>
       </material>
-    </visual>
+    </visual> -->
   </link>
 
   <joint name="left_endeffector_joint" type="fixed">
@@ -1403,7 +1403,7 @@
 
   </link>
    <link name="ee_x_axis">
-    <visual>
+    <!-- <visual>
     <origin xyz="0.03 0 0" rpy="0 1.57079632679 0"/>
     <geometry>
       <cylinder length="0.06" radius="0.002"/>
@@ -1411,10 +1411,10 @@
     <material name="red">
       <color rgba="1 0 0 1"/>
     </material>
-  </visual>
+  </visual> -->
     </link>
     <link name="ee_y_axis">
-  <visual>
+  <!-- <visual>
     <origin xyz="0 0.03 0" rpy="-1.57079632679 0 0"/>
     <geometry>
       <cylinder length="0.06" radius="0.002"/>
@@ -1422,10 +1422,10 @@
     <material name="green">
       <color rgba="0 1 0 1"/>
     </material>
-  </visual>
+  </visual> -->
     </link>
     <link name="ee_z_axis">
-  <visual>
+  <!-- <visual>
     <origin xyz="0 0 0.03" rpy="0 0 0"/>
     <geometry>
       <cylinder length="0.06" radius="0.002"/>
@@ -1433,10 +1433,10 @@
     <material name="blue">
       <color rgba="0 0 1 1"/>
     </material>
-  </visual>
+  </visual> -->
 </link>
     <link name="endeffector">
-  <visual>
+  <!-- <visual>
     <origin xyz="0 0 0.0" rpy="0 0 0"/>
     <geometry>
       <sphere radius="0.005"/>
@@ -1444,7 +1444,7 @@
     <material name="yellow">
       <color rgba="1 1 0 1"/>
     </material>
-  </visual>
+  </visual> -->
 </link>
 <joint name="endeffector_joint" type="fixed">
     	<parent link="gripper"/>

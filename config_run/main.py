@@ -9,7 +9,7 @@ from loguru import logger as log
 from metasim.cfg.objects import ArticulationObjCfg, PrimitiveCubeCfg, PrimitiveSphereCfg, RigidObjCfg
 from metasim.cfg.robots.base_robot_cfg import BaseActuatorCfg, BaseRobotCfg
 from metasim.cfg.scenario import ScenarioCfg
-from metasim.cfg.sensors import PinholeCameraCfg, GyroSensorCfg, CommandCfg
+from metasim.cfg.sensors import PinholeCameraCfg, NyxGaussianSplatCameraCfg, GyroSensorCfg, CommandCfg
 from metasim.constants import PhysicStateType, SimType
 from metasim.wrapper.gym_vec_env import MetaSimVecEnv
 from stable_baselines3 import PPO
@@ -93,6 +93,8 @@ def get_cameras_from_config(cameras: dict):
             camera = PinholeCameraCfg(**params)
             #camera.pos = tuple(map(float, camera.pos.strip("()").split(",")))
             #camera.look_at = tuple(map(float, camera.look_at.strip("()").split(",")))
+        elif camera_type == "NyxGaussianSplatCameraCfg":
+            camera = NyxGaussianSplatCameraCfg(**params)
         else:
             log.warning(f"Unknown camera type: {camera_type}, skipping...")
             continue
@@ -177,9 +179,14 @@ def main():
         if scenario.robots[0].fix_base_link == False:
             scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
             scenario.robots[0].fix_base_link = False
-    elif config.get("task") == "chairmansimple" or config.get("task") == "chairmansimplegrpo":
+    elif config.get("task") in [
+        "chairmansimple",
+        "chairmansimplegrpo",
+        "chairmansimplegaussian",
+        "chairmansimplegaussiangrpo",
+    ]:
         from SB3_chairman_env import StableBaseline3VecEnv
-        if scenario.robots[0].fix_base_link == False:
+        if scenario.robots[0].fix_base_link == False and "gaussian" not in config.get("task"):
             scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
             scenario.robots[0].fix_base_link = False
 
@@ -1925,7 +1932,7 @@ def main():
         )
 
         num_actions = env.action_space.shape[0]
-        num_joints = env.action_space.shape[0]
+        num_joints = env.action_space.shape[0] - 3
 
         student_model = VisionStudent(
             num_actions=num_actions,
@@ -1986,7 +1993,7 @@ def main():
 
             # Jointy z observation; ve wrapperu jsou na začátku observation
             joint_obs_tensor = torch.as_tensor(
-                expert_obs[:, :num_joints],
+                expert_obs[:, 3:num_joints+3],
                 device=device,
                 dtype=torch.float32
             )
@@ -2184,7 +2191,7 @@ def main():
         from dagger_vp.student_net import VisionStudent
         import cv2
 
-        #scenario.dagger = 2
+        scenario.dagger = 2
 
         metasim_env = MetaSimVecEnv(
             scenario,
@@ -2196,7 +2203,7 @@ def main():
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
         num_actions = env.action_space.shape[0]
-        num_joints = env.action_space.shape[0]
+        num_joints = env.action_space.shape[0] - 3
 
         student_model = VisionStudent(
             num_actions=num_actions,
@@ -2236,7 +2243,7 @@ def main():
                 student_obs_net_input = rgb_permuted / 255.0
 
                 joint_obs_tensor = torch.as_tensor(
-                    obs[:, :num_joints],
+                    obs[:, 3:num_joints + 3],
                     device=device,
                     dtype=torch.float32
                 )
@@ -2346,7 +2353,7 @@ def main():
         obs = env.reset()
 
         num_actions = env.action_space.shape[0]
-        num_joints = env.action_space.shape[0]
+        num_joints = env.action_space.shape[0] - 3
 
         requested_eval_episodes = config.get("eval_episodes", env.num_envs)
 
@@ -2476,7 +2483,7 @@ def main():
                 student_obs_net_input = rgb_permuted / 255.0
 
                 joint_obs_tensor = torch.as_tensor(
-                    obs[:, :num_joints],
+                    obs[:, 3:num_joints + 3],
                     device=device,
                     dtype=torch.float32
                 )

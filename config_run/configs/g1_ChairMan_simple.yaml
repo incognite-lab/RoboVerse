@@ -5,13 +5,13 @@
 sim: genesis
 robots: [g1_slider_simple]
 fix_base_link: true
-task: chairmansimplegrpo #chairmansimplegrpo
+task: chairmansimplegaussian #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
 decimation: 5
-num_envs: 100
+num_envs: 150
 headless: true
 add_table: true
 env_spacing: 4.0
-train_or_eval: eval_dagger  #load_and_train #train_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
+train_or_eval: train_dagger  #load_and_train #train_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
 
 # Light configuration
 #---------------------------------------
@@ -44,20 +44,65 @@ train_or_eval: eval_dagger  #load_and_train #train_dagger #eval_video #eval_dagg
       #  mount_pos: [0.09, 0.0, 0.5]
       #  mount_quat: [0.5, 0.5, -0.5, -0.5]
 
+# cameras:
+#    camera1:
+#      type: PinholeCameraCfg
+#      params:
+#        name: camera0
+#        pos: [3.0, -3.0, 3.0]
+#        look_at: [0.0, 0.0, 0.0]
+#        width: 128
+#        height: 128
+#        focal_length: 6.0 #6
+#        mount_to: g1_slider_simple
+#        mount_link: head_link
+#        mount_pos: [0.09, 0.0, 0.5]
+#        mount_quat: [0.5, 0.5, -0.5, -0.5]
+
+# Gaussian-splat camera with a small standalone Genesis floor for alignment.
+# Keep render_sim_geometry=false for now: Nyx renders the splat plus this
+# controlled standalone geometry, not the full MetaSim robot/ground scene yet.
 cameras:
    camera1:
-     type: PinholeCameraCfg
+     type: NyxGaussianSplatCameraCfg
      params:
        name: camera0
-       pos: [3.0, -3.0, 3.0]
-       look_at: [0.0, 0.0, 0.0]
        width: 128
        height: 128
-       focal_length: 6.0 #6
+       fov: 70.0
+       clipping_range: [0.1, 100.0]
+       pos: [0.0, 0.0, 0.8]
+       look_at: [1.0, 0.0, 0.35]
        mount_to: g1_slider_simple
        mount_link: head_link
-       mount_pos: [0.09, 0.0, 0.5]
+       mount_pos: [0.0, 0.0, 0.5]
        mount_quat: [0.5, 0.5, -0.5, -0.5]
+       gaussian_splat_path: ./config_run/splat/splat_2.ply
+       gaussian_position: [0.0, 0.0, 1.5]
+       gaussian_rotation_xyzw: [0.0, 0.0, -0.70710678, 0.70710678]
+       gaussian_scale: [3.0, 3.0, 3.0]
+       spp: 8
+       render_mode: FastPathTracer
+       tone_mapper: "Off"
+       render_sim_geometry: true
+       standalone_floor: false
+       standalone_floor_pos: [0.0, 0.0, -0.03]
+       standalone_floor_size: [20.0, 20.0, 0.04]
+       standalone_floor_color: [0.55, 0.55, 0.55, 1.0]
+       standalone_light_dir: [-0.4, -0.5, -1.0]
+       standalone_light_intensity: 5.0
+       standalone_metasim_objects: false
+       standalone_metasim_robot: false
+       gaussian_z_up: true
+       open_nyx_window: false
+       debug_image_stats: false
+       debug_show: false
+       debug_show_all_envs: false
+       debug_calibrate: false
+       debug_detach_from_mount: false
+       debug_control_target: camera
+       debug_translation_step: 0.05
+       debug_rotation_step_deg: 5.0
 
 # Train or Eval settings
 #-------------------------------------------
@@ -67,26 +112,27 @@ force: false
 #------------------------------------------
 #load_model_path: ./config_run/output/ppo_model/run_2026-04-16_18_chairmansimple/model_50040000
 #load_model_path: ./config_run/output/ppo_model/run_2026-05-06_18_chairmansimple/
-load_model_path: ./config_run/output/ppo_model/dagger4/ #student_model_step_70000.pth
-#load_model_path: ./config_run/output/ppo_model/run_2026-05-06_18_chairmansimple/model_560344000
+#load_model_path: ./config_run/output/ppo_model/dagger4/student_model_step_70000.pth
+load_model_path: ./config_run/output/ppo_model/run_2026-05-06_18_chairmansimple/model_560344000
 
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-04-16_18_chairman/
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-04-02_20_chairman/model_970776000
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-03-13_14_chairman_top/model_200070000
 #load_model_path: ./config_run/output/grpo_model/student_grpo_step_145.pth
-video_save_path: ./config_run/output/eval_videos/chair_man_16.mp4
-eval_episodes: 100
+#load_model_path: ./config_run/output/ppo_model/dagger6/student_model_step_310000.pth
+video_save_path: ./config_run/output/eval_videos/chair_man_17.mp4
+eval_episodes: 1000
 eval_max_steps: 1000
-eval_total_step_cap: 1000
+eval_total_step_cap: 100
 eval_count_timeouts_as_failures: true
 
 
 # PPO training settings
 #-------------------------------------------
 total_timesteps: 100_000_000
-#model_save_path: ./config_run/output/ppo_model/dagger4
-#model_save_freq: 10_000
-#tensorboard_log: ./config_run/output/tensorboard_dagger
+model_save_path: ./config_run/output/dagger/dagger_7
+model_save_freq: 5000
+tensorboard_log: ./config_run/output/tensorboard_dagger
 
 
 # PPO parameters
@@ -109,7 +155,7 @@ max_grad_norm: 1.0
 #-------------------------------------------
 
 
-dagger_store_per_step: 32
+dagger_store_per_step: 50
 dagger_train_every: 20
 dagger_updates_per_train: 10
 dagger_batch_size: 512
@@ -134,6 +180,6 @@ grpo_minibatch_size: 2048
 grpo_max_grad_norm: 1.0
 
 
-model_save_path: ./config_run/output/grpo_model
-tensorboard_log: ./config_run/output/grpo_tensorboard
-model_save_freq: 5
+#model_save_path: ./config_run/output/grpo_model
+#tensorboard_log: ./config_run/output/grpo_tensorboard
+#model_save_freq: 5

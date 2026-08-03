@@ -1221,3 +1221,35 @@ class ChairmansimplegrpoCfg(HumanoidTaskCfg):
 
     def extra_spec(self):
         return {}
+
+
+@configclass
+class ChairmansimplegaussianCfg(ChairmansimpleCfg):
+    """ChairMan simple task with the room supplied by a Gaussian splat camera."""
+
+    objects = [
+        ArticulationObjCfg(
+            name="chair",
+            urdf_path="roboverse_data/assets/humanoidbench/chairs/chair1/foldable_chair_debug.urdf",
+            default_position=[0.0, 0.0, 0.0],
+            fix_base_link=True,
+            colapse_fixed_joints=False,
+            batch_fixed_verts=True,
+        ),
+    ]
+
+
+@configclass
+class ChairmansimplegaussiangrpoCfg(ChairmansimplegrpoCfg):
+    """ChairMan GRPO task with the room supplied by a Gaussian splat camera."""
+
+    objects = [
+        ArticulationObjCfg(
+            name="chair",
+            urdf_path="roboverse_data/assets/humanoidbench/chairs/chair1/foldable_chair_debug.urdf",
+            default_position=[0.0, 0.0, 0.0],
+            fix_base_link=True,
+            colapse_fixed_joints=False,
+            batch_fixed_verts=True,
+        ),
+    ]
