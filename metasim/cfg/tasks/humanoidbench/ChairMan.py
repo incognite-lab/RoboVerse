@@ -1356,17 +1356,11 @@ class ChairmanCfg(HumanoidTaskCfg):
     objects = [
         ArticulationObjCfg(
             name="chair",
-            urdf_path="roboverse_data/assets/humanoidbench/chairs/chair1/foldable_chair_debug.urdf",
+            urdf_path="roboverse_data/assets/humanoidbench/chairs/chair3/foldable_chair_debug.urdf",
             default_position=[0.0, 0.0, 0.0],
             fix_base_link=True,
             colapse_fixed_joints=False,
             batch_fixed_verts=True,
-        ),
-        RigidObjCfg(
-            name="room",
-            urdf_path="/home/roboversepc/Documents/rooms/room5/room.urdf",
-            default_position= [0.0, 0.0, 0.0],
-            fix_base_link=True
         )
     ]
 

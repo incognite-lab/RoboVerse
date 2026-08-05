@@ -1128,18 +1128,11 @@ class ChairmansimpleCfg(HumanoidTaskCfg):
     objects = [
         ArticulationObjCfg(
             name="chair",
-            urdf_path="roboverse_data/assets/humanoidbench/chairs/chair1/foldable_chair_debug.urdf",
+            urdf_path="roboverse_data/assets/humanoidbench/chairs/chair3/foldable_chair_debug.urdf",
             default_position=[0.0, 0.0, 0.0],
             fix_base_link=True,
             colapse_fixed_joints=False,
             batch_fixed_verts=True,
-        ),
-        RigidObjCfg(
-            name="room",
-            urdf_path="/home/roboversepc/Documents/rooms/room5/room.urdf",
-            default_position=[0.0, 0.0, 0.0],
-            fix_base_link=True,
-            batch_fixed_verts=True
         )
     ]
 
@@ -1188,19 +1181,12 @@ class ChairmansimplegrpoCfg(HumanoidTaskCfg):
     objects = [
         ArticulationObjCfg(
             name="chair",
-            urdf_path="roboverse_data/assets/humanoidbench/chairs/chair1/foldable_chair_debug.urdf",
+            urdf_path="roboverse_data/assets/humanoidbench/chairs/chair3/foldable_chair_debug.urdf",
             default_position=[0.0, 0.0, 0.0],
             fix_base_link=True,
             colapse_fixed_joints=False,
             batch_fixed_verts=True,
-        ),
-        RigidObjCfg(
-            name="room",
-            urdf_path="/home/roboversepc/Documents/rooms/room5/room.urdf",
-            default_position=[0.0, 0.0, 0.0],
-            fix_base_link=True,
-            batch_fixed_verts=True
-        ),
+        )
     ]
 
     traj_filepath = "roboverse_data/trajs/humanoidbench/chair/initial_state_v2.json"
@@ -1230,7 +1216,7 @@ class ChairmansimplegaussianCfg(ChairmansimpleCfg):
     objects = [
         ArticulationObjCfg(
             name="chair",
-            urdf_path="roboverse_data/assets/humanoidbench/chairs/chair1/foldable_chair_debug.urdf",
+            urdf_path="roboverse_data/assets/humanoidbench/chairs/chair3/foldable_chair_debug.urdf",
             default_position=[0.0, 0.0, 0.0],
             fix_base_link=True,
             colapse_fixed_joints=False,
@@ -1246,7 +1232,7 @@ class ChairmansimplegaussiangrpoCfg(ChairmansimplegrpoCfg):
     objects = [
         ArticulationObjCfg(
             name="chair",
-            urdf_path="roboverse_data/assets/humanoidbench/chairs/chair1/foldable_chair_debug.urdf",
+            urdf_path="roboverse_data/assets/humanoidbench/chairs/chair3/foldable_chair_debug.urdf",
             default_position=[0.0, 0.0, 0.0],
             fix_base_link=True,
             colapse_fixed_joints=False,

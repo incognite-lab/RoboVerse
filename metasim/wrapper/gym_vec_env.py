@@ -58,6 +58,7 @@ class MetaSimVecEnv(VectorEnv):
         if env_ids is None:
             env_ids = list(range(self.num_envs))
         init_states = self.unwrapped._get_default_states(seed)
+        #self.env.handler.checker.reset(self.env.handler)
         #tic = time.time()
         self.env.reset(states=init_states, env_ids=env_ids)
         #toc = time.time()

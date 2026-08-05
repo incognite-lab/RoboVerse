@@ -62,6 +62,7 @@
         <mesh filename="mesh/foldable_chair.stl" scale="0.02 0.02 0.02" />
       </geometry>
     </collision>
+
     <inertial>
       <mass value="5.0" />
       <origin xyz="1.2356480307692006e-17 0.04918193924989267 0.5275596101737766" />

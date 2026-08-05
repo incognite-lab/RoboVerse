@@ -5,6 +5,7 @@ import random
 
 from dataclasses import MISSING
 from typing import Literal
+from xml.sax import handler
 
 import torch
 from loguru import logger as log
@@ -856,89 +857,7 @@ class _DoorManChecker(BaseChecker):
         print("reset door checker")
 
 class _ChairManChecker(BaseChecker):
-    # def reset_counters(self, handler: BaseSimHandler,env):
-    #     idx = handler.task.function_index_success_save_time #TODO součást debilního řešení potřeba předělat
-    #     handler.task.reward_functions[idx].reset_steps(env)
 
-    def check_not_optimazed(self, handler: BaseSimHandler) -> torch.BoolTensor:
-        from metasim.utils.humanoid_robot_util import robot_position
-        from metasim.utils.humanoid_robot_util import right_palm_orientation
-        from metasim.utils.humanoid_robot_util import right_palm_position
-        from metasim.cfg.checkers.stages_chairman import (
-            stege0_chacker,
-            stege1_chacker,
-            stege2_chacker,
-            stege3_chacker,
-            stege4_chacker,
-            stege5_chacker,
-            save_snapshot_chairman,
-            load_snapshot_chairman,
-        )
-        num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
-        terminated = torch.zeros(num_envs, dtype=torch.bool, device=handler.device)
-        states = handler.get_states()
-
-        for env in range(num_envs):
-            stage = handler.task.reward_functions[0].actual_stage[env]
-            if stage == 0:
-                terminated[env],success = stege0_chacker(states,handler, env)
-                if success:
-                    save_snapshot_chairman(handler, env, 1)
-                    #handler.task.reward_functions[0].reset_steps(env) #reset steps
-                    terminated[env] = False
-                    handler.task.reward_functions[0].actual_stage[env] = 1
-                    handler.task.reward_functions[0].completed_stages[env] = 1
-                # if terminated[env]:
-                #     self.reset_counters(handler, env)
-
-
-
-            elif stage == 1:
-                terminated[env],success = stege1_chacker(states,handler, env)
-                if success:
-                    save_snapshot_chairman(handler, env, 2)
-                    terminated[env] = False
-                    handler.task.reward_functions[0].actual_stage[env] = 2
-                    handler.task.reward_functions[0].completed_stages[env] = 1
-                # if terminated[env]:
-                #     self.reset_counters(handler, env)
-            elif stage == 2:
-                terminated[env],success = stege2_chacker(states,handler, env)
-                if success:
-                    save_snapshot_chairman(handler, env, 3)
-                    terminated[env] = False
-                    handler.task.reward_functions[0].actual_stage[env] = 3
-                    handler.task.reward_functions[0].completed_stages[env] = 1
-                # if terminated[env]:
-                #     self.reset_counters(handler, env)
-            elif stage == 3:
-                terminated[env],success = stege3_chacker(states,handler, env)
-                if success:
-                    save_snapshot_chairman(handler, env, 4)
-                    terminated[env] = False
-                    handler.task.reward_functions[0].actual_stage[env] = 4
-                    handler.task.reward_functions[0].completed_stages[env] = 1
-                if terminated[env]:
-                    self.reset_counters(handler, env)
-            elif stage == 4:
-                terminated[env],success  = stege4_chacker(states,handler, env)
-                if success:
-                    save_snapshot_chairman(handler, env, 5)
-                    terminated[env] = False
-                    handler.task.reward_functions[0].actual_stage[env] = 5
-                    handler.task.reward_functions[0].completed_stages[env] = 1
-                if terminated[env]:
-                    self.reset_counters(handler, env)
-            elif stage == 5:
-                terminated[env],success = stege5_chacker(states,handler, env)
-                if success:
-                    handler.task.reward_functions[0].actual_stage[env] = 6
-                    handler.task.reward_functions[0].completed_stages[env] = 1
-                    terminated[env] = False
-                    print(f"env {env} finished the door task")
-            elif stage == 6:
-                terminated[env] = True
-        return terminated
     def check(self, handler: BaseSimHandler) -> torch.BoolTensor:
         from metasim.cfg.checkers.stages_chairman import (
             stege0_chacker, stege1_chacker, stege2_chacker,
@@ -959,27 +878,38 @@ class _ChairManChecker(BaseChecker):
         states = handler.get_states()
         # Získáme tenzor se všemi aktuálními stages [num_envs]
         stages = handler.task.reward_functions[0].actual_stage
+        num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
+        device = handler.device if hasattr(handler, "device") else torch.device("cpu")
+
+        # pomocné flagy pro wrapper
+        if not hasattr(handler.task, "just_finished"):
+            handler.task.just_finished = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        if not hasattr(handler.task, "stage_success"):
+            handler.task.stage_success = torch.zeros(num_envs, dtype=torch.bool, device=device)
+
+        handler.task.just_finished[:] = False
+        handler.task.stage_success[:] = False
 
         # --- 1. VYTVOŘENÍ MASEK ---
         mask_0 = (stages == 0)
         mask_1 = (stages == 1)
         mask_2 = (stages == 2)
         mask_3 = (stages == 3)
-        # mask_4 = (stages == 4)
-        # mask_5 = (stages == 5)
-        # mask_6 = (stages == 6)
+        mask_4 = (stages == 4)
+        mask_5 = (stages == 5)
+        mask_6 = (stages == 6)
 
         # --- 2. HROMADNÝ VÝPOČET PRO KAŽDOU STAGE ---
         term_0, succ_0 = stege0_chacker(states, handler, mask_0)
         term_1, succ_1 = stege1_chacker(states, handler, mask_1)
         term_2, succ_2 = stege2_chacker(states, handler, mask_2)
         term_3, succ_3 = stege3_chacker(states, handler, mask_3)
-        # term_4, succ_4 = stege4_chacker(states, handler, mask_4)
-        # term_5, succ_5 = stege5_chacker(states, handler, mask_5)
+        term_4, succ_4 = stege4_chacker(states, handler, mask_4)
+        term_5, succ_5 = stege5_chacker(states, handler, mask_5)
 
         # --- 3. SPOJENÍ VÝSLEDKŮ ---
-        all_terminated = term_0 | term_1 | term_2 #| term_3 | term_4 | term_5 | mask_6
-        all_success = succ_0 | succ_1 | succ_2 #| succ_3 | succ_4 | succ_5
+        all_terminated = term_0 | term_1 | term_2 | term_3 | term_4 | term_5 | mask_6
+        all_success = succ_0 | succ_1 | succ_2 | succ_3 | succ_4 | succ_5
 
         # --- 4. ZPRACOVÁNÍ ÚSPĚCHŮ ---
         if all_success.any():
@@ -994,6 +924,9 @@ class _ChairManChecker(BaseChecker):
 
         # A) Finále (Stage 6) - Jelikož se Stage 6 neukládá do snapshotů, vypíšeme průlom rovnou
         just_finished = all_success & (stages == 6) # (protože jsme v kroku 4 zvedli stages na 6)
+        handler.task.stage_success[:] = just_finished
+        handler.task.just_finished[:] = just_finished
+
         if just_finished.any():
             if 6 not in self.announced_stages:
                 print("\n" + "="*50)
@@ -1037,7 +970,17 @@ class _ChairManChecker(BaseChecker):
         from metasim.cfg.checkers.stages_chairman import reset_chairman
         import time
         reset_chairman(handler, env_ids)
+        if hasattr(handler.task, "just_finished"):
+            if env_ids is None:
+                handler.task.just_finished[:] = False
+            else:
+                handler.task.just_finished[env_ids] = False
 
+        if hasattr(handler.task, "stage_success"):
+            if env_ids is None:
+                handler.task.stage_success[:] = False
+            else:
+                handler.task.stage_success[env_ids] = False
         #print("reset chairman checker")
 class _ChairManCheckerSimple(BaseChecker):
 

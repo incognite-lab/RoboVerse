@@ -7,11 +7,11 @@ robots: [g1_slider]
 fix_base_link: true
 task: chairman
 decimation: 5
-num_envs: 100
-headless: true
+num_envs: 1
+headless: false
 add_table: true
 env_spacing: 4.0
-train_or_eval: train_dagger #load_and_train #train_dagger #eval_video
+train_or_eval: train #load_and_train #train_dagger #eval_video
 
 # Light configuration
 #---------------------------------------

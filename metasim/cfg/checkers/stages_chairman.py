@@ -27,7 +27,7 @@ STAGE_TIMEOUTS = {
     4: 100,  # Zastavení židle
     5: 100   # Svěšení rukou
 }
-VELOCITY_THRESHOLD = 0.06
+VELOCITY_THRESHOLD = 0.2
 HEIGHT_THRESHOLD = 0.4
 DISTANCE_TO_CHAIR_X_THRESHOLD = 0.8
 DISTANCE_TO_CHAIR_Y_THRESHOLD = 0.4
@@ -1056,9 +1056,9 @@ def stage0_init(robot_name: str):
                         "baseslide_joint": 0.0,
                         "baseslide_joint2": -1.5,
                         "baserot_joint": 0.0,
-                        "waist_yaw_joint": 0.0,
-                        "waist_roll_joint": 0.0,
-                        "waist_pitch_joint": 0.0,
+                        #"waist_yaw_joint": 0.0,
+                        #"waist_roll_joint": 0.0,
+                        #"waist_pitch_joint": 0.0,
                         "left_shoulder_pitch_joint": 0.0,
                         "left_shoulder_roll_joint": 0.0,
                         "left_shoulder_yaw_joint": 0.0,

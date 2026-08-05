@@ -119,7 +119,8 @@ def main():
         #config_name = "g1_door_IK"
         #config_name = "g1_door_open_stand_train"
         #config_name = "g1_door_stand_IK"
-        config_name = "g1_ChairMan_simple"
+        config_name = "chairman_simple/eval_dagger"
+        #config_name = "g1_ChairMan"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
     elif len(sys.argv) == 2:
@@ -174,9 +175,9 @@ def main():
     elif config.get("task") == "door_stand":
         from SB3_door_stand_env import StableBaseline3VecEnv
         scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
-    elif config.get("task") == "chairman":
+    elif config.get("task") in ["chairman", "chairmangrpo", "chairmangaussian", "chairmangaussiangrpo"]:
         from SB3_chairman_env import StableBaseline3VecEnv
-        if scenario.robots[0].fix_base_link == False:
+        if scenario.robots[0].fix_base_link == False and "gaussian" not in config.get("task"):
             scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
             scenario.robots[0].fix_base_link = False
     elif config.get("task") in [
@@ -185,7 +186,7 @@ def main():
         "chairmansimplegaussian",
         "chairmansimplegaussiangrpo",
     ]:
-        from SB3_chairman_env import StableBaseline3VecEnv
+        from SB3_chairman_simple_env import StableBaseline3VecEnv
         if scenario.robots[0].fix_base_link == False and "gaussian" not in config.get("task"):
             scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
             scenario.robots[0].fix_base_link = False

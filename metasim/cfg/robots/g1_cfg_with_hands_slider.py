@@ -44,9 +44,9 @@ class G1SliderCfg(BaseRobotCfg):
         "baserot_joint": BaseActuatorCfg(stiffness=200, damping=200),
 
         # --- Waist (Torso) ---
-        "waist_yaw_joint": BaseActuatorCfg(stiffness=200, damping=5),
-        "waist_roll_joint": BaseActuatorCfg(stiffness=200, damping=5),
-        "waist_pitch_joint": BaseActuatorCfg(stiffness=200, damping=5),
+        # "waist_yaw_joint": BaseActuatorCfg(stiffness=200, damping=5),
+        # "waist_roll_joint": BaseActuatorCfg(stiffness=200, damping=5),
+        # "waist_pitch_joint": BaseActuatorCfg(stiffness=200, damping=5),
 
         # -- Left Arm ---
         "left_shoulder_pitch_joint": BaseActuatorCfg(stiffness=40, damping=10),
@@ -93,9 +93,9 @@ class G1SliderCfg(BaseRobotCfg):
         "baseslide_joint2": (-2.0, 0.2),
         "baserot_joint": (-2.618, 2.618),
 
-        "waist_yaw_joint": (-2.618, 2.618),
-        "waist_roll_joint": (-0.52, 0.52),
-        "waist_pitch_joint": (-0.52, 0.52),
+        #"waist_yaw_joint": (-2.618, 2.618),
+        #"waist_roll_joint": (-0.52, 0.52),
+        #"waist_pitch_joint": (-0.52, 0.52),
         "left_shoulder_pitch_joint": (-3.0892, 2.6704),
         "left_shoulder_roll_joint": (-1.5882, 2.2515),
         "left_shoulder_yaw_joint": (-2.618, 2.618),
@@ -133,9 +133,9 @@ class G1SliderCfg(BaseRobotCfg):
         "baseslide_joint2": 100,
         "baserot_joint": 100,
 
-        "waist_yaw_joint": 88,
-        "waist_roll_joint": 88,
-        "waist_pitch_joint": 88,
+        #"waist_yaw_joint": 88,
+        #"waist_roll_joint": 88,
+        #"waist_pitch_joint": 88,
         "left_shoulder_pitch_joint": 25,
         "left_shoulder_roll_joint": 25,
         "left_shoulder_yaw_joint": 25,
@@ -172,9 +172,9 @@ class G1SliderCfg(BaseRobotCfg):
         "baseslide_joint": 0.0, #y
         "baseslide_joint2": 0.6, #x
         "baserot_joint": 0.0,
-        "waist_yaw_joint": 0.0,
-        "waist_roll_joint": 0.0,
-        "waist_pitch_joint": 0.0,
+        #"waist_yaw_joint": 0.0,
+        #"waist_roll_joint": 0.0,
+        #"waist_pitch_joint": 0.0,
         "left_shoulder_pitch_joint": 0.0,
         "left_shoulder_roll_joint": 0.0,
         "left_shoulder_yaw_joint": 0.0,

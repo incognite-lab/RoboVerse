@@ -284,30 +284,29 @@ class StableBaseline3VecEnv(VecEnv):
         #------------------------------------
         #--------------DEBUG-----------------
         #------------------------------------
-        # debug = 3
-        # if debug == 0:
-        #     actions = self.debug0()
-        #     obs, rewards, unsuccess, timeout, _ = self.env.step(actions)
-        # elif debug == 1:
-        #     if self.timesteps[0] % 20 == 0:
-        #         self.action = self.ik_solver()
-        #     obs, rewards, unsuccess, timeout, _ = self.env.step([{"g1_slider": {"dof_pos_target": self.action}}])
-        # elif debug == 2:
-        #     obs, rewards, unsuccess, timeout, _ = self.env.step(self.debug2())
-        # elif debug == 3:
-        #     obs, rewards, unsuccess, timeout, _ = self.env.step(self.debug_hold_still_arms_up())
+        debug = 0
+        if debug == 0:
+            actions = self.debug0()
+            obs, rewards, unsuccess, timeout, _ = self.env.step(actions)
+        elif debug == 1:
+            if self.timesteps[0] % 20 == 0:
+                self.action = self.ik_solver()
+            obs, rewards, unsuccess, timeout, _ = self.env.step([{"g1_slider": {"dof_pos_target": self.action}}])
+        elif debug == 2:
+            obs, rewards, unsuccess, timeout, _ = self.env.step(self.debug2())
+        elif debug == 3:
+            obs, rewards, unsuccess, timeout, _ = self.env.step(self.debug_hold_still_arms_up())
         #end debug
 
-        if self.env.scenario.sim == 'genesis' and self.raw_actions is not None:
-            actions_to_pass = self.raw_actions
-        else:
-            actions_to_pass = self.action_dicts
+        # if self.env.scenario.sim == 'genesis' and self.raw_actions is not None:
+        #     actions_to_pass = self.raw_actions
+        # else:
+        #     actions_to_pass = self.action_dicts
 
-        # Provedení kroku s vybraným formátem akcí
-        obs, rewards, unsuccess, timeout, _ = self.env.step(actions_to_pass)
+        # # Provedení kroku s vybraným formátem akcí
+        # obs, rewards, unsuccess, timeout, _ = self.env.step(actions_to_pass)
         obs = obs.cpu().numpy()
         obs = self.add_extra_to_obs(obs)
-        #obs = self._combine_obs(obs)
 
         # --- Done flag ---
         dones = timeout.to(unsuccess.device) | unsuccess
