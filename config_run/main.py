@@ -119,7 +119,7 @@ def main():
         #config_name = "g1_door_IK"
         #config_name = "g1_door_open_stand_train"
         #config_name = "g1_door_stand_IK"
-        config_name = "chairman_simple/eval_dagger"
+        config_name = "chairman/train_ppo"
         #config_name = "g1_ChairMan"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
@@ -1929,7 +1929,13 @@ def main():
         expert_model = PPO.load(
             config.get("load_model_path"),
             env=env,
-            device=device
+            device=device,
+            custom_objects={
+                "observation_space": env.observation_space,
+                "action_space": env.action_space,
+                "_last_obs": None,
+                "_last_episode_starts": None,
+            },
         )
 
         num_actions = env.action_space.shape[0]
@@ -1945,13 +1951,26 @@ def main():
             lr=config.get("learning_rate", 3e-4)
         )
 
+        dagger_buffer_device = config.get("dagger_buffer_device", "cpu")
+        dagger_buffer_pin_memory = config.get(
+            "dagger_buffer_pin_memory",
+            dagger_buffer_device == "cpu" and device.startswith("cuda")
+        )
+
         buffer = DAggerBuffer(
             max_samples=config.get("dagger_buffer_steps", 4000)
             * config.get("dagger_store_per_step", 32),
             img_shape=(3, 128, 128),
             num_joints=num_joints,
             num_actions=num_actions,
-            device=device
+            device=device,
+            storage_device=dagger_buffer_device,
+            pin_memory=dagger_buffer_pin_memory,
+        )
+        log.info(
+            f"DAgger buffer storage: {buffer.storage_device} | "
+            f"train device: {device} | "
+            f"pin_memory: {buffer.pin_memory}"
         )
 
         total_iterations = config.get("total_timesteps", 100_000)

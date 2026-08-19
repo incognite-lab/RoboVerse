@@ -1,4 +1,4 @@
-"""ChairMan task rewards - version focused only up to Stage 2."""
+"""ChairMan task rewards for the full staged chair task."""
 
 from __future__ import annotations
 
@@ -1192,6 +1192,340 @@ class GraspForceReward(HumanoidBaseReward):
 
 
 # =============================================================================
+# STAGE 3
+# =============================================================================
+
+class MaintainAnyGraspReward(HumanoidBaseReward):
+    """
+    Stage 3:
+    Reward for keeping at least one fingertip on the chair with each hand.
+
+    Output: <0, 1>
+    """
+    def __init__(self, robot_name="g1_slider"):
+        super().__init__(robot_name)
+        self.active_stages = [3]
+        self.force_threshold = 2.0
+
+        self.tip_map = {
+            "left_hand_thumb_2": (0, 0),
+            "left_hand_index_1": (0, 1),
+            "left_hand_middle_1": (0, 2),
+            "right_hand_thumb_2": (1, 0),
+            "right_hand_index_1": (1, 1),
+            "right_hand_middle_1": (1, 2),
+        }
+
+        self.base_idx_to_hand = None
+        self.base_idx_to_tip = None
+        self.chair_ids = None
+        self.num_bodies = None
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        robot = states.robots[robot_name]
+        device = robot.joint_pos.device
+        num_envs = robot.joint_pos.shape[0]
+
+        if self.actual_stage is None:
+            return torch.zeros(num_envs, device=device)
+
+        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        if not stage_mask.any():
+            return torch.zeros(num_envs, device=device)
+
+        contact_data = robot.contact
+        if contact_data is None:
+            return torch.zeros(num_envs, device=device)
+
+        if self.base_idx_to_hand is None:
+            global_map = states.extras.get("global_link_map", {})
+            num_bodies = states.extras.get("num_bodies_per_env", 1000)
+
+            idx_to_hand = torch.full((num_bodies,), -1, dtype=torch.long, device=device)
+            idx_to_tip = torch.full((num_bodies,), -1, dtype=torch.long, device=device)
+            chair_ids = []
+
+            for idx, (o_name, l_name) in global_map.items():
+                if o_name == robot_name:
+                    for tip_name, (hand_id, tip_id) in self.tip_map.items():
+                        if tip_name in l_name:
+                            idx_to_hand[idx] = hand_id
+                            idx_to_tip[idx] = tip_id
+                elif o_name == "chair":
+                    chair_ids.append(idx)
+
+            self.base_idx_to_hand = idx_to_hand
+            self.base_idx_to_tip = idx_to_tip
+            self.chair_ids = torch.tensor(chair_ids, device=device, dtype=torch.long)
+            self.num_bodies = num_bodies
+
+        link_a = contact_data["link_a"]
+        if link_a.shape[1] == 0 or self.chair_ids.numel() == 0:
+            return torch.zeros(num_envs, device=device)
+
+        link_b = contact_data["link_b"]
+        valid_mask = contact_data["valid_mask"]
+
+        forces = contact_data.get("force_b", contact_data.get("force", None))
+        if forces is None:
+            forces = torch.zeros((*link_a.shape, 3), device=device)
+
+        force_mags = torch.norm(forces, dim=-1)
+        base_a = link_a % self.num_bodies
+        base_b = link_b % self.num_bodies
+
+        a_is_chair = torch.isin(base_a, self.chair_ids)
+        b_is_chair = torch.isin(base_b, self.chair_ids)
+
+        hand_a = self.base_idx_to_hand[base_a]
+        hand_b = self.base_idx_to_hand[base_b]
+        tip_a = self.base_idx_to_tip[base_a]
+        tip_b = self.base_idx_to_tip[base_b]
+
+        contact_hand = torch.where(
+            b_is_chair,
+            hand_a,
+            torch.where(a_is_chair, hand_b, torch.tensor(-1, device=device)),
+        )
+        contact_tip = torch.where(
+            b_is_chair,
+            tip_a,
+            torch.where(a_is_chair, tip_b, torch.tensor(-1, device=device)),
+        )
+
+        valid_interaction = (contact_hand >= 0) & (contact_tip >= 0) & valid_mask
+        contact_rewards = torch.clamp(force_mags / self.force_threshold, min=0.0, max=1.0)
+
+        best_tip_rewards = torch.zeros((num_envs, 2, 3), device=device)
+        for hand_id in range(2):
+            for tip_id in range(3):
+                tip_mask = valid_interaction & (contact_hand == hand_id) & (contact_tip == tip_id)
+                max_reward, _ = torch.max(contact_rewards * tip_mask.float(), dim=1)
+                best_tip_rewards[:, hand_id, tip_id] = max_reward
+
+        left_any = torch.max(best_tip_rewards[:, 0, :], dim=1)[0]
+        right_any = torch.max(best_tip_rewards[:, 1, :], dim=1)[0]
+        reward = torch.sqrt(left_any * right_any + 1e-8)
+        return torch.clamp(reward, 0.0, 1.0) * stage_mask.float()
+
+
+class PullChairReward(HumanoidBaseReward):
+    """
+    Stage 3:
+    Reward for pulling the chair from x=0.75 to x=-0.25, then stopping.
+
+    Output: <0, 1>
+    """
+    def __init__(self, robot_name="g1_slider"):
+        super().__init__(robot_name)
+        self.active_stages = [3]
+        self.initial_chair_pos = torch.tensor([0.75, 0.0, 0.1])
+        self.target_chair_pos = torch.tensor([-0.25, 0.0, 0.1])
+        self.pull_distance = 1.0
+        self.target_pull_speed = 0.45
+        self.vel_sigma = 0.25
+        self.stop_zone = 0.15
+        self.prev_progress = None
+
+    def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
+        if self.prev_progress is not None:
+            self.prev_progress[env_ids] = 0.0
+
+        if hasattr(super(), "reset"):
+            super().reset(env_ids, states)
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        robot = states.robots[robot_name]
+        chair = states.objects["chair"]
+        device = robot.joint_pos.device
+        num_envs = robot.joint_pos.shape[0]
+
+        if self.actual_stage is None:
+            return torch.zeros(num_envs, device=device)
+
+        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        if not stage_mask.any():
+            return torch.zeros(num_envs, device=device)
+
+        initial = self.initial_chair_pos.to(device)
+        target = self.target_chair_pos.to(device)
+        chair_idx = chair.body_names.index("base_link")
+        chair_pos = chair.body_state[:, chair_idx, :3]
+        chair_vel = chair.body_state[:, chair_idx, 7:10]
+
+        pulled_x = initial[0] - chair_pos[:, 0]
+        progress = torch.clamp(pulled_x / self.pull_distance, min=0.0, max=1.0)
+
+        if self.prev_progress is None:
+            self.prev_progress = progress.clone()
+            progress_delta_reward = torch.zeros(num_envs, device=device)
+        else:
+            delta = progress - self.prev_progress
+            progress_delta_reward = torch.clamp(delta / 0.015, min=0.0, max=1.0)
+            self.prev_progress = progress.clone()
+
+        lateral_error = torch.norm(chair_pos[:, 1:3] - target[1:3], dim=-1)
+        lateral_reward = torch.clamp(1.0 - lateral_error / 0.35, min=0.0, max=1.0)
+
+        pull_speed = torch.clamp(-chair_vel[:, 0], min=0.0)
+        speed_factor = torch.clamp((1.0 - progress) / 0.35, min=0.0, max=1.0)
+        desired_speed = self.target_pull_speed * speed_factor
+        speed_reward = torch.exp(-torch.square(pull_speed - desired_speed) / (2.0 * self.vel_sigma ** 2))
+
+        target_error = torch.norm(chair_pos - target, dim=-1)
+        near_target = torch.clamp(1.0 - target_error / self.stop_zone, min=0.0, max=1.0)
+
+        chair_speed = torch.norm(chair_vel, dim=-1)
+        stop_reward = torch.clamp(1.0 - chair_speed / 0.20, min=0.0, max=1.0)
+
+        base_idx = robot.body_names.index("pelvis")
+        robot_speed = torch.norm(robot.body_state[:, base_idx, 7:10], dim=-1)
+        robot_stop_reward = torch.clamp(1.0 - robot_speed / 0.25, min=0.0, max=1.0)
+
+        moving_part = (
+            0.45 * progress +
+            0.25 * progress_delta_reward +
+            0.20 * speed_reward +
+            0.10 * lateral_reward
+        )
+        finish_part = near_target * (0.60 * stop_reward + 0.40 * robot_stop_reward)
+        reward = torch.where(near_target > 0.0, 0.55 * moving_part + 0.45 * finish_part, moving_part)
+        return torch.clamp(reward, 0.0, 1.0) * stage_mask.float()
+
+
+# =============================================================================
+# STAGE 4 AND 5
+# =============================================================================
+
+class PulledChairStillnessReward(HumanoidBaseReward):
+    """
+    Stage 4 and 5:
+    Reward for keeping the pulled chair and robot still.
+
+    Output: <0, 1>
+    """
+    def __init__(self, robot_name="g1_slider"):
+        super().__init__(robot_name)
+        self.active_stages = [4, 5]
+        self.target_chair_pos = torch.tensor([-0.25, 0.0, 0.1])
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        robot = states.robots[robot_name]
+        chair = states.objects["chair"]
+        device = robot.joint_pos.device
+        num_envs = robot.joint_pos.shape[0]
+
+        if self.actual_stage is None:
+            return torch.zeros(num_envs, device=device)
+
+        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        if not stage_mask.any():
+            return torch.zeros(num_envs, device=device)
+
+        target = self.target_chair_pos.to(device)
+        chair_idx = chair.body_names.index("base_link")
+        chair_pos = chair.body_state[:, chair_idx, :3]
+        chair_vel = chair.body_state[:, chair_idx, 7:10]
+
+        base_idx = robot.body_names.index("pelvis")
+        robot_vel = robot.body_state[:, base_idx, 7:10]
+
+        pos_reward = torch.clamp(1.0 - torch.norm(chair_pos - target, dim=-1) / 0.40, min=0.0, max=1.0)
+        chair_still = torch.clamp(1.0 - torch.norm(chair_vel, dim=-1) / 0.20, min=0.0, max=1.0)
+        robot_still = torch.clamp(1.0 - torch.norm(robot_vel, dim=-1) / 0.20, min=0.0, max=1.0)
+
+        reward = pos_reward * chair_still * robot_still
+        return reward * stage_mask.float()
+
+
+class ReleaseFingersReward(HumanoidBaseReward):
+    """
+    Stage 4:
+    Reward for opening fingers after the chair is pulled and stopped.
+
+    Output: <0, 1>
+    """
+    def __init__(self, robot_name="g1_slider"):
+        super().__init__(robot_name)
+        self.active_stages = [4]
+        self.finger_keywords = ["thumb", "index", "middle"]
+        self.finger_indices = None
+        self.open_threshold = 0.15
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        robot = states.robots[robot_name]
+        device = robot.joint_pos.device
+        num_envs = robot.joint_pos.shape[0]
+
+        if self.actual_stage is None:
+            return torch.zeros(num_envs, device=device)
+
+        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        if not stage_mask.any():
+            return torch.zeros(num_envs, device=device)
+
+        if self.finger_indices is None:
+            indices = [
+                i for i, name in enumerate(robot.joint_names)
+                if any(keyword in name for keyword in self.finger_keywords)
+            ]
+            if not indices:
+                return torch.zeros(num_envs, device=device)
+            self.finger_indices = torch.tensor(indices, device=device, dtype=torch.long)
+
+        q_fingers = robot.joint_pos[:, self.finger_indices]
+        max_finger_angle = torch.max(torch.abs(q_fingers), dim=-1)[0]
+        reward = torch.clamp(1.0 - max_finger_angle / self.open_threshold, min=0.0, max=1.0)
+        return reward * stage_mask.float()
+
+
+class ArmDownReward(HumanoidBaseReward):
+    """
+    Stage 5:
+    Reward for placing both arms in the resting pose checked by the final stage.
+
+    Output: <0, 1>
+    """
+    def __init__(self, robot_name="g1_slider"):
+        super().__init__(robot_name)
+        self.active_stages = [5]
+        self.arm_joints_to_check = [
+            "left_shoulder_pitch_joint", "right_shoulder_pitch_joint",
+            "left_shoulder_roll_joint", "right_shoulder_roll_joint",
+            "left_shoulder_yaw_joint", "right_shoulder_yaw_joint",
+            "left_elbow_joint", "right_elbow_joint",
+        ]
+        self.arm_indices = None
+        self.rest_threshold = 0.35
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        robot = states.robots[robot_name]
+        device = robot.joint_pos.device
+        num_envs = robot.joint_pos.shape[0]
+
+        if self.actual_stage is None:
+            return torch.zeros(num_envs, device=device)
+
+        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        if not stage_mask.any():
+            return torch.zeros(num_envs, device=device)
+
+        if self.arm_indices is None:
+            indices = [
+                i for i, name in enumerate(robot.joint_names)
+                if name in self.arm_joints_to_check
+            ]
+            if not indices:
+                return torch.zeros(num_envs, device=device)
+            self.arm_indices = torch.tensor(indices, device=device, dtype=torch.long)
+
+        q_arms = robot.joint_pos[:, self.arm_indices]
+        max_arm_angle = torch.max(torch.abs(q_arms), dim=-1)[0]
+        reward = torch.clamp(1.0 - max_arm_angle / self.rest_threshold, min=0.0, max=1.0)
+        return reward * stage_mask.float()
+
+
+# =============================================================================
 # OPTIONAL / DISABLED REWARDS
 # =============================================================================
 
@@ -1274,9 +1608,13 @@ class StageProgressCfg(HumanoidBaseReward):
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         # Pokud není actual_stage inicializováno, vrátíme 0
+        if self.actual_stage is None or self.completed_stages is None:
+            robot = states.robots[robot_name]
+            return torch.zeros(robot.joint_pos.shape[0], device=robot.joint_pos.device)
+
         if self.completed_stages.any():
-            ret = self.completed_stages * self.actual_stage.float()
-            self.completed_stages = torch.zeros_like(self.completed_stages) # Reset pro další výpočet
+            ret = self.completed_stages.float() * self.actual_stage.float()
+            self.completed_stages.zero_()
             return ret
         else:
             return torch.zeros_like(self.completed_stages)
@@ -1341,6 +1679,17 @@ STAY_NEAR_ANCHOR_REWARD_WEIGHT = 1.5
 CLOSE_GRASP_REWARD_WEIGHT = 5.5
 FORCE_GRASP_REWARD_WEIGHT = 4.0
 
+# Stage 3
+MAINTAIN_ANY_GRASP_REWARD_WEIGHT = 3.0
+PULL_CHAIR_REWARD_WEIGHT = 7.0
+
+# Stage 4
+PULLED_CHAIR_STILLNESS_REWARD_WEIGHT = 4.0
+RELEASE_FINGERS_REWARD_WEIGHT = 5.0
+
+# Stage 5
+ARM_DOWN_REWARD_WEIGHT = 6.0
+
 
 # =============================================================================
 # TASK CONFIG
@@ -1348,7 +1697,7 @@ FORCE_GRASP_REWARD_WEIGHT = 4.0
 
 @configclass
 class ChairmanCfg(HumanoidTaskCfg):
-    """Chair task for humanoid robots - tuned only up to Stage 2."""
+    """Chair task for humanoid robots - full staged reward shaping."""
 
     success_bar = 0.9
     episode_length = 1000
@@ -1386,10 +1735,17 @@ class ChairmanCfg(HumanoidTaskCfg):
         CLOSE_GRASP_REWARD_WEIGHT,
         FORCE_GRASP_REWARD_WEIGHT,
 
+        MAINTAIN_ANY_GRASP_REWARD_WEIGHT,
+        PULL_CHAIR_REWARD_WEIGHT,
+
+        PULLED_CHAIR_STILLNESS_REWARD_WEIGHT,
+        RELEASE_FINGERS_REWARD_WEIGHT,
+        ARM_DOWN_REWARD_WEIGHT,
+
         FACE_CHAIR_REWARD_WEIGHT,
         ARM_RESTING_POSE_PENALTY_WEIGHT,
         STAGE_PROGRESS_WEIGHT,
-        #CONTINUOUS_STAGE_REWARD_WEIGHT,
+        CONTINUOUS_STAGE_REWARD_WEIGHT,
     ]
 
     reward_functions = [
@@ -1411,10 +1767,17 @@ class ChairmanCfg(HumanoidTaskCfg):
         CloseGraspReward(),
         GraspForceReward(),
 
+        MaintainAnyGraspReward(),
+        PullChairReward(),
+
+        PulledChairStillnessReward(),
+        ReleaseFingersReward(),
+        ArmDownReward(),
+
         FaceChairReward(),
         ArmRestingPosePenaltyCfg(),
         StageProgressCfg(),
-        #ContinuousStageReward(),
+        ContinuousStageReward(),
     ]
 
     def extra_spec(self):

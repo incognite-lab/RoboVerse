@@ -5,13 +5,13 @@
 sim: genesis
 robots: [g1_slider_simple]
 fix_base_link: true
-task: chairmansimplegaussian #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
+task: chairmansimplegaussiangrpo #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
 decimation: 5
 num_envs: 100
 headless: true
 add_table: true
 env_spacing: 4.0
-train_or_eval: eval_dagger  #load_and_train #train_dagger #eval_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
+train_or_eval: eval_grpo  #load_and_train #train_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
 
 # Gaussian-splat camera with a small standalone Genesis floor for alignment.
 # Keep render_sim_geometry=false for now: Nyx renders the splat plus this
@@ -62,9 +62,24 @@ cameras:
 #-------------------------------------------
 force: false
 
-#Eveluation settings
-load_model_path: "./config_run/output/dagger/dagger_0/student_model_final.pth"
+load_model_path: ./config_run/output/dagger/dagger_7/student_model_step_65000.pth
 eval_episodes: 100
 eval_max_steps: 1000
 eval_total_step_cap: 1000
 eval_count_timeouts_as_failures: true
+
+
+
+#GRPO parameters
+#--------------------------
+grpo_learning_rate: 1.0e-5
+grpo_total_updates: 200
+grpo_group_size: 5
+grpo_rollouts_per_batch: 200
+grpo_success_bonus: 20.0
+
+grpo_clip_eps: 0.2
+grpo_ent_coef: 0.001
+grpo_update_epochs: 4
+grpo_minibatch_size: 2048
+grpo_max_grad_norm: 1.0

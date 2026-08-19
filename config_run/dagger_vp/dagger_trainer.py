@@ -3,15 +3,39 @@ import torch
 import torch.nn as nn
 
 class DAggerBuffer:
-    def __init__(self, max_samples, img_shape, num_joints, num_actions, device):
+    def __init__(
+        self,
+        max_samples,
+        img_shape,
+        num_joints,
+        num_actions,
+        device,
+        storage_device="cpu",
+        pin_memory=False,
+    ):
         self.max_samples = max_samples
-        self.device = device
+        self.device = torch.device(device)
+        self.storage_device = torch.device(storage_device)
+        self.pin_memory = bool(pin_memory and self.storage_device.type == "cpu")
 
         c, h, w = img_shape
 
-        self.imgs = torch.empty((max_samples, c, h, w), dtype=torch.uint8, device=device)
-        self.joints = torch.empty((max_samples, num_joints), dtype=torch.float32, device=device)
-        self.expert_actions = torch.empty((max_samples, num_actions), dtype=torch.float32, device=device)
+        try:
+            alloc_kwargs = {"device": self.storage_device}
+            if self.storage_device.type == "cpu":
+                alloc_kwargs["pin_memory"] = self.pin_memory
+
+            self.imgs = torch.empty((max_samples, c, h, w), dtype=torch.uint8, **alloc_kwargs)
+            self.joints = torch.empty((max_samples, num_joints), dtype=torch.float32, **alloc_kwargs)
+            self.expert_actions = torch.empty((max_samples, num_actions), dtype=torch.float32, **alloc_kwargs)
+        except RuntimeError:
+            if not self.pin_memory:
+                raise
+
+            self.pin_memory = False
+            self.imgs = torch.empty((max_samples, c, h, w), dtype=torch.uint8, device=self.storage_device)
+            self.joints = torch.empty((max_samples, num_joints), dtype=torch.float32, device=self.storage_device)
+            self.expert_actions = torch.empty((max_samples, num_actions), dtype=torch.float32, device=self.storage_device)
 
         self.ptr = 0
         self.size = 0
@@ -29,11 +53,23 @@ class DAggerBuffer:
 
         store_count = min(store_count, num_envs)
 
-        indices = torch.randperm(num_envs, device=self.device)[:store_count]
+        indices = torch.randperm(num_envs, device=batch_imgs_uint8.device)[:store_count]
 
-        imgs = batch_imgs_uint8[indices]
-        joints = batch_joints[indices]
-        actions = batch_actions[indices]
+        imgs = batch_imgs_uint8[indices].detach().to(
+            device=self.storage_device,
+            dtype=torch.uint8,
+            non_blocking=self.pin_memory,
+        )
+        joints = batch_joints[indices].detach().to(
+            device=self.storage_device,
+            dtype=torch.float32,
+            non_blocking=self.pin_memory,
+        )
+        actions = batch_actions[indices].detach().to(
+            device=self.storage_device,
+            dtype=torch.float32,
+            non_blocking=self.pin_memory,
+        )
 
         end = self.ptr + store_count
         if end <= self.max_samples:
@@ -60,11 +96,15 @@ class DAggerBuffer:
             return None, None, None
 
         batch_size = min(batch_size, self.size)
-        idx = torch.randint(0, self.size, (batch_size,), device=self.device)
+        idx = torch.randint(0, self.size, (batch_size,), device=self.storage_device)
 
-        imgs = self.imgs[idx].float() / 255.0
-        joints = self.joints[idx]
-        acts = self.expert_actions[idx]
+        imgs = self.imgs[idx].to(
+            device=self.device,
+            dtype=torch.float32,
+            non_blocking=self.pin_memory,
+        ) / 255.0
+        joints = self.joints[idx].to(device=self.device, non_blocking=self.pin_memory)
+        acts = self.expert_actions[idx].to(device=self.device, non_blocking=self.pin_memory)
         return imgs, joints, acts
 
 

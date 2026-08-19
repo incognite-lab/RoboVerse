@@ -39,9 +39,39 @@ class StableBaseline3VecEnv(VecEnv):
 
         states = env.env.handler.get_states()
         self.main_robot_link_names = [
-                                "pelvis",
-                                'left_shoulder_pitch_link',
-                                 'right_shoulder_pitch_link',
+            'left_shoulder_pitch_link',
+            'left_shoulder_roll_link',
+            'left_shoulder_yaw_link',
+            'left_elbow_link',
+            'left_wrist_roll_link',
+            'left_wrist_pitch_link',
+            'left_wrist_yaw_link',
+            'left_hand_palm_link',
+            'left_hand_thumb_0_link',
+            'left_hand_thumb_1_link',
+            'left_hand_thumb_2_link',
+            'left_hand_middle_0_link',
+            'left_hand_middle_1_link',
+            'left_hand_index_0_link',
+            'left_hand_index_1_link',
+            'right_shoulder_pitch_link',
+            'right_shoulder_roll_link',
+            'right_shoulder_yaw_link',
+            'right_elbow_link',
+            'right_wrist_roll_link',
+            'right_wrist_pitch_link',
+            'right_wrist_yaw_link',
+            #'right_hand_palm_link',
+            'endeffector',
+            'left_endeffector',
+            'right_hand_thumb_0_link',
+            'right_hand_thumb_1_link',
+            'right_hand_thumb_2_link',
+            'right_hand_middle_0_link',
+            'right_hand_middle_1_link',
+            'right_hand_index_0_link',
+            'right_hand_index_1_link',
+            'torso_link',
                                  ]
         self.indexes = [states.robots[robot_name].body_names.index(link) for link in self.main_robot_link_names]
 
@@ -72,8 +102,8 @@ class StableBaseline3VecEnv(VecEnv):
             self.num_stages +
             2
         )
-        self.left_shoulder_idx = None
-        self.right_shoulder_idx = None
+        self.left_endffector = None
+        self.right_endffector = None
         obs_shape = num_joints + extra_obs_dim
 
         self.observation_space = spaces.Box(
@@ -195,31 +225,21 @@ class StableBaseline3VecEnv(VecEnv):
         # --------------------------------------------------
         # 7) arm posture errors vůči cíli podle stage
         # --------------------------------------------------
-        if self.left_shoulder_idx is None:
-            joint_names = robot.joint_names.tolist() if hasattr(robot.joint_names, "tolist") else list(robot.joint_names)
-            self.left_shoulder_idx = joint_names.index("left_shoulder_pitch_joint")
-            self.right_shoulder_idx = joint_names.index("right_shoulder_pitch_joint")
+        if self.left_endffector is None:
+            self.left_endffector = robot.body_names.index("left_endeffector")
+            self.right_endffector = robot.body_names.index("endeffector")
 
-        q_left = robot.joint_pos[:, self.left_shoulder_idx]
-        q_right = robot.joint_pos[:, self.right_shoulder_idx]
+        pos_left = robot.body_state[:, self.left_endffector, :3]
+        pos_right = robot.body_state[:, self.right_endffector, :3]
 
-        # simple task targets
-        up_target = -1.86
-        down_target = -1.32
+        target_left_idx = chair.body_names.index("target_hand_left")
+        target_right_idx = chair.body_names.index("target_hand_right")
 
-        target_left = torch.full_like(q_left, up_target)
-        target_right = torch.full_like(q_right, up_target)
+        target_left_pos = chair.body_state[:, target_left_idx, :3]
+        target_right_pos = chair.body_state[:, target_right_idx, :3]
 
-        # stage 1,2 -> ruce dole
-        down_mask = torch.isin(
-            torch.as_tensor(safe_stages, device=q_left.device),
-            torch.tensor([1, 2], device=q_left.device)
-        )
-        target_left[down_mask] = down_target
-        target_right[down_mask] = down_target
-
-        arm_err_left = torch.abs(q_left - target_left).unsqueeze(-1)
-        arm_err_right = torch.abs(q_right - target_right).unsqueeze(-1)
+        arm_err_left = torch.norm(pos_left - target_left_pos, dim=-1, keepdim=True)
+        arm_err_right = torch.norm(pos_right - target_right_pos, dim=-1, keepdim=True)
         arm_err_np = torch.cat([arm_err_left, arm_err_right], dim=-1).cpu().numpy()
 
         # --------------------------------------------------
@@ -284,27 +304,27 @@ class StableBaseline3VecEnv(VecEnv):
         #------------------------------------
         #--------------DEBUG-----------------
         #------------------------------------
-        debug = 0
-        if debug == 0:
-            actions = self.debug0()
-            obs, rewards, unsuccess, timeout, _ = self.env.step(actions)
-        elif debug == 1:
-            if self.timesteps[0] % 20 == 0:
-                self.action = self.ik_solver()
-            obs, rewards, unsuccess, timeout, _ = self.env.step([{"g1_slider": {"dof_pos_target": self.action}}])
-        elif debug == 2:
-            obs, rewards, unsuccess, timeout, _ = self.env.step(self.debug2())
-        elif debug == 3:
-            obs, rewards, unsuccess, timeout, _ = self.env.step(self.debug_hold_still_arms_up())
+        # debug = 0
+        # if debug == 0:
+        #     actions = self.debug0()
+        #     obs, rewards, unsuccess, timeout, _ = self.env.step(actions)
+        # elif debug == 1:
+        #     if self.timesteps[0] % 20 == 0:
+        #         self.action = self.ik_solver()
+        #     obs, rewards, unsuccess, timeout, _ = self.env.step([{"g1_slider": {"dof_pos_target": self.action}}])
+        # elif debug == 2:
+        #     obs, rewards, unsuccess, timeout, _ = self.env.step(self.debug2())
+        # elif debug == 3:
+        #     obs, rewards, unsuccess, timeout, _ = self.env.step(self.debug_hold_still_arms_up())
         #end debug
 
-        # if self.env.scenario.sim == 'genesis' and self.raw_actions is not None:
-        #     actions_to_pass = self.raw_actions
-        # else:
-        #     actions_to_pass = self.action_dicts
+        if self.env.scenario.sim == 'genesis' and self.raw_actions is not None:
+            actions_to_pass = self.raw_actions
+        else:
+            actions_to_pass = self.action_dicts
 
         # # Provedení kroku s vybraným formátem akcí
-        # obs, rewards, unsuccess, timeout, _ = self.env.step(actions_to_pass)
+        obs, rewards, unsuccess, timeout, _ = self.env.step(actions_to_pass)
         obs = obs.cpu().numpy()
         obs = self.add_extra_to_obs(obs)
 
