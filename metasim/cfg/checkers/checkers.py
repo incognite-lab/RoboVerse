@@ -412,10 +412,14 @@ class _SlideChecker(BaseChecker):
 @configclass
 class _WalkChecker(BaseChecker):
     def check(self, handler: BaseSimHandler) -> torch.BoolTensor:
-        from metasim.utils.humanoid_robot_util import robot_position_tensor
+        robot_name = handler.robot.name
+        if hasattr(handler, "object_inst_dict") and robot_name in handler.object_inst_dict:
+            robot_inst = handler.object_inst_dict[robot_name]
+            return robot_inst.get_pos()[:, 2] < 0.4
 
+        from metasim.utils.humanoid_robot_util import robot_position_tensor
         states = handler.get_states()
-        terminated = robot_position_tensor(states, handler.robot.name)[:, 2] < 0.4
+        terminated = robot_position_tensor(states, robot_name)[:, 2] < 0.4
         return terminated
 
 

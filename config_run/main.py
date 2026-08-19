@@ -39,6 +39,22 @@ def load_config_from_yaml(config_name: str) -> dict:
         config = yaml.safe_load(f)
 
     return config
+
+
+def get_config_float(config: dict, key: str, default: float) -> float:
+    value = config.get(key, default)
+    if isinstance(value, bool):
+        raise ValueError(f"Config value '{key}' must be a float, got bool")
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError as exc:
+            raise ValueError(f"Config value '{key}' must be a float, got {value!r}") from exc
+    raise ValueError(f"Config value '{key}' must be a float, got {type(value).__name__}")
+
+
 def get_lights_from_config(lights_config: dict):
     lights = []
     for light_config in lights_config.values():
@@ -110,7 +126,7 @@ def main():
         #config_name = "g1_door_open_train"
         #config_name = "g1_door_open_eval"
         #config_name = "g1_reach_IK"
-        #config_name = "g1_walk_new_train"
+        config_name = "g1_walk_new_train"
         #config_name = "g1_reach_pos_ori_train"
         #config_name = "g1_reach_pos_ori_eval"
         #config_name = "g1_stand_eval"
@@ -146,11 +162,16 @@ def main():
         force_x_max = config.get("force_x_max", 0.0),
         force_y_min = config.get("force_y_min", 0.0),
         force_y_max = config.get("force_y_max", 0.0),
+        force_interval_steps = config.get("force_interval_steps", 50),
+        force_duration_steps = config.get("force_duration_steps", 1),
+        force_resample_on_impulse = config.get("force_resample_on_impulse", True),
 
         )
     scenario.env_spacing = config.get("env_spacing", 2.0)
     scenario.robots[0].fix_base_link = config.get("fix_base_link", False)
     scenario.task.decimation = config.get("decimation", 1)
+    if "sim_dt" in config:
+        scenario.sim_params.dt = get_config_float(config, "sim_dt", scenario.sim_params.dt)
 
 
     #TODO import correct StableBaseline3VecEnv
@@ -251,11 +272,19 @@ def main():
         metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
         env = StableBaseline3VecEnv(metasim_env)
 
+        initial_learning_rate = get_config_float(config, "learning_rate", 3e-4)
+        final_learning_rate = get_config_float(config, "final_learning_rate", 0.0)
+        learning_rate = (
+            lr_schedule(initial_learning_rate, final_learning_rate)
+            if config.get("learning_schedule", "constant") == "linear"
+            else initial_learning_rate
+        )
+
         model = PPO(
             "MlpPolicy",
             env,
             verbose=1,
-            learning_rate=config.get("learning_rate", 3e-4),
+            learning_rate=learning_rate,
             n_steps=config.get("n_steps", 128),
             batch_size=config.get("batch_size", 256),
             n_epochs=config.get("n_epochs", 4),
@@ -1625,8 +1654,8 @@ def main():
             # Uložení stavu do videa
             # -----------------------------------------------------
             states = metasim_env.env.handler.get_states()
-            for _ in range(slow):
-                observation.add(states)
+            # for _ in range(slow):
+            #     observation.add(states)
 
             print(
                 f"Step reward: {rewards} at step {step}, "
@@ -1809,6 +1838,136 @@ def main():
         env.close()
         quit()
 
+    elif config.get("train_or_eval") == "eval_keyboard":
+        import select
+        import termios
+        import tty
+
+        scenario.headless = False
+        scenario.num_envs = int(config.get("eval_keyboard_num_envs", 1))
+        if config.get("eval_keyboard_disable_forces", True):
+            scenario.force = False
+
+        metasim_env = MetaSimVecEnv(
+            scenario,
+            task_name=config.get("task"),
+            num_envs=scenario.num_envs,
+            sim=config.get("sim")
+        )
+        env = StableBaseline3VecEnv(metasim_env)
+        env.command_mode = "fixed"
+        env.command_duration = 10**9
+
+        sys.modules['numpy._core'] = np.core
+        sys.modules['numpy._core.numeric'] = np.core.numeric
+
+        log.info(f"Loading model from {config.get('load_model_path')}")
+        model = PPO.load(
+            config.get("load_model_path"),
+            env=env,
+            device="cuda" if torch.cuda.is_available() else "cpu"
+        )
+
+        device = env.timesteps.device
+        command = torch.tensor(
+            config.get("eval_keyboard_initial_command", [0.0, 0.0, 0.0]),
+            dtype=torch.float32,
+            device=device,
+        )
+        command_step = float(config.get("eval_keyboard_command_step", 0.1))
+        yaw_step = float(config.get("eval_keyboard_yaw_step", 0.1))
+        max_xy = float(config.get("eval_keyboard_max_xy", 1.5))
+        max_yaw = float(config.get("eval_keyboard_max_yaw", 1.5))
+        max_steps = int(config.get("eval_max_steps", 1000000))
+        print_every = int(config.get("eval_keyboard_print_every", 20))
+
+        def apply_keyboard_command(obs):
+            env.fixed_command = command.detach().clone()
+            env.current_commands[:] = command.unsqueeze(0).repeat(env.num_envs, 1)
+            env.set_command(env.current_commands)
+
+            num_actions = env.action_space.shape[0]
+            cmd_start = (2 * num_actions) + 3
+            obs[:, cmd_start:cmd_start + 3] = command.detach().cpu().numpy()
+            return obs
+
+        def handle_key(key: str) -> bool:
+            nonlocal command
+            should_quit = False
+            if key == "w":
+                command[0] += command_step
+            elif key == "s":
+                command[0] -= command_step
+            elif key == "a":
+                command[1] += command_step
+            elif key == "d":
+                command[1] -= command_step
+            elif key == "q":
+                command[2] += yaw_step
+            elif key == "e":
+                command[2] -= yaw_step
+            elif key == " ":
+                command.zero_()
+            elif key == "r":
+                return False
+            elif key in ("\x03", "\x1b"):
+                should_quit = True
+
+            command[0:2] = torch.clamp(command[0:2], -max_xy, max_xy)
+            command[2] = torch.clamp(command[2], -max_yaw, max_yaw)
+            return should_quit
+
+        obs = env.reset()
+        obs = apply_keyboard_command(obs)
+
+        log.info(
+            "Keyboard eval controls: W/S forward-back, A/D left-right, "
+            "Q/E yaw, Space zero command, R reset, Esc or Ctrl-C quit."
+        )
+
+        old_terminal_settings = termios.tcgetattr(sys.stdin)
+        tty.setcbreak(sys.stdin.fileno())
+        try:
+            for step in range(max_steps):
+                reset_requested = False
+                while select.select([sys.stdin], [], [], 0.0)[0]:
+                    key = sys.stdin.read(1)
+                    if key == "r":
+                        reset_requested = True
+                    elif handle_key(key):
+                        log.info("Keyboard eval interrupted by user.")
+                        return
+
+                if reset_requested:
+                    obs = env.reset()
+                    obs = apply_keyboard_command(obs)
+                    log.info("Environment reset from keyboard.")
+
+                obs = apply_keyboard_command(obs)
+                actions, _ = model.predict(obs, deterministic=True)
+                obs, rewards, dones, infos = env.step(actions)
+                obs = apply_keyboard_command(obs)
+
+                if step % print_every == 0:
+                    reward0 = float(np.asarray(rewards)[0])
+                    done0 = bool(np.asarray(dones)[0])
+                    cmd_np = command.detach().cpu().numpy()
+                    print(
+                        f"[KeyboardEval] step={step} "
+                        f"cmd=[{cmd_np[0]:+.2f}, {cmd_np[1]:+.2f}, {cmd_np[2]:+.2f}] "
+                        f"reward0={reward0:+.3f} done0={int(done0)}",
+                        flush=True,
+                    )
+
+                if np.any(dones):
+                    done_ids = np.nonzero(np.asarray(dones, dtype=bool))[0].tolist()
+                    log.info(f"Episode done for envs={done_ids}")
+
+        finally:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_terminal_settings)
+            env.close()
+        quit()
+
 
     elif config.get("train_or_eval") == "load_and_train":
         metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
@@ -1853,44 +2012,141 @@ def main():
         env.close()
         quit()
     elif config.get("train_or_eval") == "train_rsl":
-        from rsl_rl.algorithms.ppo import PPO as RSLPPO
-        from rsl_rl.runners import OnPolicyRunner
-        from RSL_walk_new_env import RSLRLMetaSimEnv
-        from rsl_rl.modules import ActorCritic, ActorCriticCNN, ActorCriticRecurrent
-        from rsl_rl.storage import RolloutStorage
 
-        # wrapper pro RSL-RL prostředí
+        profile_timing = bool(config.get("profile_timing", True))
+        profile_interval = int(config.get("profile_timing_interval", 1000))
+        profile_sync_cuda = bool(config.get("profile_timing_sync_cuda", False))
+        os.environ["ROBO_WALK_PROFILE"] = "1" if profile_timing else "0"
+        os.environ["ROBO_WALK_PROFILE_INTERVAL"] = str(profile_interval)
+        os.environ["ROBO_WALK_PROFILE_SYNC"] = "1" if profile_sync_cuda else "0"
+
+        if config.get("rsl_use_wandb", False) is False:
+            try:
+                import wandb  # noqa: F401
+            except ImportError:
+                import types
+
+                sys.modules["wandb"] = types.SimpleNamespace(log=lambda *args, **kwargs: None)
+
+        from RSL_walk_new_env import RSLRLMetaSimEnv
+        from rsl_rl.runners import OnPolicyRunner
+
         metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
         env = RSLRLMetaSimEnv(metasim_env)
 
-        storage = RolloutStorage(
-            training_type="rl",
-            num_envs=config.get("num_envs", 1),
-            num_transitions_per_env=config.get("n_steps", 128),
-            obs=env.obs_dict,
-            actions_shape=env.num_actions,
-            device="cuda" if torch.cuda.is_available() else "cpu",
-        )
-        policy = ActorCritic(
-            obs = env.obs_space,
-            obs_groups = {"policy": ["joint_pos", "gyro_obs", "command_obs"],
-                          "critic": ["joint_pos", "gyro_obs", "command_obs", "right_ankle_roll_link", "left_ankle_roll_link", "torso_link"]},
-            num_actions=env.num_actions,
-        )
-        algo = RSLPPO(
-            policy=policy,
-            storage=storage,
-        )
+        n_steps = int(config.get("n_steps", 128))
+        rollout_size = max(1, env.num_envs * n_steps)
+        batch_size = int(config.get("batch_size", rollout_size))
+        num_mini_batches = max(1, rollout_size // max(1, batch_size))
+        num_mini_batches = int(config.get("rsl_num_mini_batches", num_mini_batches))
 
-        # runner config – kolik kroků a počet envs
-        runner_cfg = {
-            "num_envs": env.num_envs,
-            "num_steps_per_iter": config.get("n_steps", 128),
-            "total_iters": config.get("total_iterations", 5000),
+        actor_hidden_dims = config.get("net_arch_pi", config.get("net_arch", [256, 256, 128]))
+        critic_hidden_dims = config.get("net_arch_vf", config.get("net_arch", [256, 256, 128]))
+        train_cfg = {
+            "num_steps_per_env": n_steps,
+            "save_interval": int(config.get("rsl_save_interval", 100)),
+            "logger": config.get("rsl_logger", "tensorboard"),
+            "obs_groups": {
+                "actor": ["policy"],
+                "critic": ["critic"],
+            },
+            "algorithm": {
+                "class_name": "PPO",
+                "num_learning_epochs": int(config.get("n_epochs", 4)),
+                "num_mini_batches": num_mini_batches,
+                "clip_param": float(config.get("clip_range", 0.2)),
+                "gamma": float(config.get("gamma", 0.99)),
+                "lam": float(config.get("gae_lambda", 0.95)),
+                "value_loss_coef": float(config.get("vf_coef", 0.5)),
+                "entropy_coef": float(config.get("ent_coef", 0.0)),
+                "learning_rate": get_config_float(config, "learning_rate", 3e-4),
+                "max_grad_norm": float(config.get("max_grad_norm", 0.5)),
+                "use_clipped_value_loss": True,
+                "schedule": config.get("rsl_schedule", "fixed"),
+                "desired_kl": float(config.get("desired_kl", 0.01)),
+                "rnd_cfg": None,
+                "symmetry_cfg": None,
+                "normalize_advantage_per_mini_batch": bool(config.get("rsl_normalize_advantage_per_mini_batch", False)),
+                "optimizer": config.get("rsl_optimizer", "adam"),
+            },
+            "actor": {
+                "class_name": "MLPModel",
+                "hidden_dims": actor_hidden_dims,
+                "activation": config.get("rsl_activation", "elu"),
+                "obs_normalization": bool(config.get("rsl_obs_normalization", False)),
+                "distribution_cfg": {
+                    "class_name": "GaussianDistribution",
+                    "init_std": float(config.get("rsl_init_noise_std", 1.0)),
+                    "std_type": config.get("rsl_std_type", "scalar"),
+                    "learn_std": bool(config.get("rsl_learn_std", True)),
+                },
+            },
+            "critic": {
+                "class_name": "MLPModel",
+                "hidden_dims": critic_hidden_dims,
+                "activation": config.get("rsl_activation", "elu"),
+                "obs_normalization": bool(config.get("rsl_obs_normalization", False)),
+            },
+            "check_for_nan": bool(config.get("rsl_check_for_nan", True)),
+            "torch_compile_mode": config.get("rsl_torch_compile_mode", None),
         }
 
-        runner = OnPolicyRunner(env, algo, runner_cfg)
-        runner.learn()
+        if "total_iterations" in config:
+            total_iterations = int(config.get("total_iterations"))
+        else:
+            total_iterations = max(1, int(config.get("total_timesteps", 1_000_000)) // rollout_size)
+
+        task_name = scenario.task.__class__.__name__[:-3]
+        log_dir = config.get(
+            "rsl_log_dir",
+            os.path.join(
+                config.get("model_save_path", "./config_run/output/rsl_model"),
+                f"rsl_{task_name}_{config.get('sim', 'unknown_sim')}",
+            ),
+        )
+        os.makedirs(log_dir, exist_ok=True)
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        log.info(
+            f"Starting RSL-RL training: iterations={total_iterations}, "
+            f"num_envs={env.num_envs}, n_steps={n_steps}, mini_batches={num_mini_batches}, log_dir={log_dir}"
+        )
+        runner = OnPolicyRunner(env, train_cfg, log_dir=log_dir, device=device)
+
+        if profile_timing and bool(config.get("rsl_profile_policy", True)):
+            original_act = runner.alg.act
+            policy_profile_total = 0.0
+            policy_profile_steps = 0
+
+            def _profile_sync():
+                if profile_sync_cuda and torch.cuda.is_available() and str(device).startswith("cuda"):
+                    torch.cuda.synchronize()
+
+            def profiled_act(obs):
+                nonlocal policy_profile_total, policy_profile_steps
+                _profile_sync()
+                policy_t0 = time.perf_counter()
+                actions = original_act(obs)
+                _profile_sync()
+
+                policy_profile_total += time.perf_counter() - policy_t0
+                policy_profile_steps += 1
+                if policy_profile_steps >= profile_interval:
+                    avg_ms = 1000.0 * policy_profile_total / max(policy_profile_steps, 1)
+                    print(
+                        f"[RSLPolicyProfile] envs={env.num_envs} steps={policy_profile_steps} "
+                        f"policy_act={avg_ms:.3f}ms sync_cuda={int(profile_sync_cuda)}",
+                        flush=True,
+                    )
+                    policy_profile_total = 0.0
+                    policy_profile_steps = 0
+                return actions
+
+            runner.alg.act = profiled_act
+
+        runner.learn(num_learning_iterations=total_iterations, init_at_random_ep_len=True)
+        env.close()
+        quit()
 
     elif config.get("train_or_eval") == "train_dagger":
         VIZUALIZATION = config.get("visualization", False)

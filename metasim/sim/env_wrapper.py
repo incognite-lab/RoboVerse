@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import os
 from typing import Generic, TypeVar
 
 import gymnasium as gym
@@ -86,45 +87,102 @@ def GymEnvWrapper(cls: type[THandler]) -> type[EnvWrapper[THandler]]:
             self.handler = cls(*args, **kwargs)
             self.handler.launch()
             self._episode_length_buf = torch.zeros(self.handler.num_envs, dtype=torch.int32, device=self.handler.device)
+            self._profile_enabled = os.getenv("ROBO_WALK_PROFILE", "1") != "0"
+            self._profile_interval = int(os.getenv("ROBO_WALK_PROFILE_INTERVAL", "1000"))
+            self._profile_sync_cuda = os.getenv("ROBO_WALK_PROFILE_SYNC", "0") == "1"
+            self._profile_totals = {}
+            self._profile_steps = 0
+            self._profile_total_time = 0.0
+
+        def _profile_now(self) -> float:
+            if self._profile_enabled and self._profile_sync_cuda:
+                device = getattr(self.handler, "device", None)
+                if device is not None and torch.device(device).type == "cuda":
+                    torch.cuda.synchronize(device)
+            return time.perf_counter()
+
+        def _profile_add(self, name: str, elapsed: float) -> None:
+            if self._profile_enabled:
+                self._profile_totals[name] = self._profile_totals.get(name, 0.0) + elapsed
+
+        def _profile_report(self, elapsed: float) -> None:
+            if not self._profile_enabled:
+                return
+            self._profile_steps += 1
+            self._profile_total_time += elapsed
+            if self._profile_steps < self._profile_interval:
+                return
+
+            steps = self._profile_steps
+            parts = []
+            for name, value in sorted(self._profile_totals.items(), key=lambda item: item[1], reverse=True):
+                avg_ms = 1000.0 * value / steps
+                pct = 100.0 * value / max(self._profile_total_time, 1e-9)
+                parts.append(f"{name}={avg_ms:.3f}ms/{pct:.0f}%")
+            avg_total_ms = 1000.0 * self._profile_total_time / steps
+            print(
+                f"[EnvWrapperProfile] envs={self.handler.num_envs} steps={steps} "
+                f"avg_step={avg_total_ms:.3f}ms | " + " ".join(parts),
+                flush=True,
+            )
+            self._profile_totals.clear()
+            self._profile_steps = 0
+            self._profile_total_time = 0.0
 
         def reset(self, states: list[EnvState] | None = None, env_ids: list[int] | None = None) -> tuple[Obs, Extra]:
+            profile_total_t0 = self._profile_now()
             if env_ids is None:
                 env_ids = list(range(self.handler.num_envs))
 
+            profile_t0 = self._profile_now()
             self._episode_length_buf[env_ids] = 0
+            self._profile_add("reset_episode_buf", self._profile_now() - profile_t0)
             if states is not None:
+                profile_t0 = self._profile_now()
                 self.handler.set_states(states, env_ids=env_ids)
-            self.handler.checker.reset(self.handler, env_ids=env_ids)
+                self._profile_add("reset_set_states", self._profile_now() - profile_t0)
+
+            profile_t0 = self._profile_now()
+            self.handler.checker.reset(self.handler, env_ids=env_ids) # zde reset přec checker
+            self._profile_add("reset_checker", self._profile_now() - profile_t0)
             #print(self.handler.physics.contexts)#zázračný print bez kterého to nefunguje
             if hasattr(self.handler, 'physics'):
                 contexts = self.handler.physics.contexts
+            profile_t0 = self._profile_now()
             self.handler.refresh_render()
+            self._profile_add("reset_refresh_render", self._profile_now() - profile_t0)
 
+            profile_t0 = self._profile_now()
             states = self.handler.get_states()
+            self._profile_add("reset_get_states_after", self._profile_now() - profile_t0)
+            self._profile_report(self._profile_now() - profile_total_t0)
             return states, None
 
         def step(self, actions: list[Action]) -> tuple[Obs, Reward, Success, TimeOut, Extra]:
+            profile_total_t0 = self._profile_now()
             self._episode_length_buf += 1
+
+            profile_t0 = self._profile_now()
             for robot in self.handler.robots:
                 self.handler.set_dof_targets(robot.name, actions)
-            tic = time.time()
+            self._profile_add("set_dof_targets", self._profile_now() - profile_t0)
+
+            profile_t0 = self._profile_now()
             self.handler.simulate()
-            toc = time.time()
-            log.trace(f"Time taken to handler.simulate(): {toc - tic:.4f}s")
-            #print(f"Simulate took {toc - tic:.2f} seconds")
+            simulate_elapsed = self._profile_now() - profile_t0
+            self._profile_add("simulate", simulate_elapsed)
+            log.trace(f"Time taken to handler.simulate(): {simulate_elapsed:.4f}s")
             reward = None
-            tic = time.time()
+
+            profile_t0 = self._profile_now()
             success = self.handler.checker.check(self.handler)
-            toc = time.time()
-            #print(f"Checker check took {toc - tic:.2f} seconds")
-            log.trace(f"Time taken to handler.checker.check(): {toc - tic:.4f}s")
-            tic = time.time()
-            states = self.handler.get_states()
-            toc = time.time()
-            #print(f"Get states took {toc - tic:.2f} seconds")
-            log.trace(f"Time taken to handler.get_states(): {toc - tic:.4f}s")
+            checker_elapsed = self._profile_now() - profile_t0
+            self._profile_add("checker_check", checker_elapsed)
+            log.trace(f"Time taken to handler.checker.check(): {checker_elapsed:.4f}s")
+
             time_out = self._episode_length_buf >= self.handler.scenario.episode_length
-            return states, reward, success, time_out, None
+            self._profile_report(self._profile_now() - profile_total_t0)
+            return None, reward, success, time_out, None
 
         def step_actions(self, actions) -> tuple[Obs, Reward, Success, TimeOut, Extra]:
             self._episode_length_buf += 1

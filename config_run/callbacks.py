@@ -144,6 +144,8 @@ class TensorboardMetricsCallback(BaseCallback):
         self.stage_completed_total_counts = np.zeros(self.max_stage + 1, dtype=np.int64)
 
         self.max_stage_seen = 0
+        self.tracking_metric_sums = {}
+        self.tracking_metric_count = 0
 
         log.info(
             f"TensorboardMetricsCallback started | "
@@ -170,6 +172,24 @@ class TensorboardMetricsCallback(BaseCallback):
             )
         except Exception:
             return None, None
+
+    def _get_command_tracking_metrics(self):
+        env = self.training_env
+        candidates = [env]
+        if hasattr(env, "env"):
+            candidates.append(env.env)
+
+        for candidate in candidates:
+            getter = getattr(candidate, "get_command_tracking_metrics", None)
+            if getter is None:
+                continue
+            try:
+                metrics = getter()
+            except Exception:
+                return {}
+            if metrics:
+                return metrics
+        return {}
 
     def _on_step(self) -> bool:
         rewards = np.array(self.locals["rewards"])
@@ -225,10 +245,24 @@ class TensorboardMetricsCallback(BaseCallback):
             self.prev_stages = current_stages.copy()
             self.prev_completed_flags = completed_flags.copy()
 
+        tracking_metrics = self._get_command_tracking_metrics()
+        if tracking_metrics:
+            for key, value in tracking_metrics.items():
+                self.tracking_metric_sums[key] = self.tracking_metric_sums.get(key, 0.0) + float(value)
+            self.tracking_metric_count += 1
+
         # =========================
         # LOGGING
         # =========================
         if self.num_timesteps % self.log_interval == 0 and self.num_timesteps != 0:
+            if self.tracking_metric_count > 0:
+                tracking_window_means = {
+                    key: value / self.tracking_metric_count
+                    for key, value in self.tracking_metric_sums.items()
+                }
+            else:
+                tracking_window_means = {}
+
             if len(self.completed_rewards) > 0:
                 mean_r = float(np.mean(self.completed_rewards))
                 mean_l = float(np.mean(self.completed_lengths))
@@ -260,6 +294,9 @@ class TensorboardMetricsCallback(BaseCallback):
             if len(self.completed_rewards) > 0:
                 self.writer.add_histogram("episode/reward_hist", np.array(self.completed_rewards), self.num_timesteps)
 
+            for key, value in tracking_window_means.items():
+                self.writer.add_scalar(key, value, self.num_timesteps)
+
             # stage logs
             if current_stages is not None:
                 n_envs = len(current_stages)
@@ -284,6 +321,9 @@ class TensorboardMetricsCallback(BaseCallback):
             self.logger.record("episode/success_count", success_count)
             self.logger.record("episode/fail_count", fail_count)
 
+            for key, value in tracking_window_means.items():
+                self.logger.record(key, value)
+
             if current_stages is not None:
                 n_envs = len(current_stages)
                 for s in range(self.max_stage + 1):
@@ -307,6 +347,13 @@ class TensorboardMetricsCallback(BaseCallback):
                     f"success_rate={success_rate:.2f}% | "
                     f"success={success_count} fail={fail_count}"
                 )
+
+                if tracking_window_means:
+                    msg += (
+                        f" | tracking_xy_err={tracking_window_means.get('tracking/xy_error_mean', 0.0):.3f}"
+                        f" | tracking_yaw_err={tracking_window_means.get('tracking/yaw_error_abs_mean', 0.0):.3f}"
+                        f" | tracking_score={tracking_window_means.get('tracking/score_mean', 0.0):.3f}"
+                    )
 
                 if current_stages is not None:
                     current_parts = []
@@ -340,6 +387,8 @@ class TensorboardMetricsCallback(BaseCallback):
             self.stage_presence_counts[:] = 0
             self.stage_completed_window_counts[:] = 0
             self.max_stage_seen = 0
+            self.tracking_metric_sums.clear()
+            self.tracking_metric_count = 0
 
             self.writer.flush()
 

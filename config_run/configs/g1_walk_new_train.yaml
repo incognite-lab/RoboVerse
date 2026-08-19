@@ -4,11 +4,24 @@
 sim: genesis
 robots: [g1_with_hands]
 task: walk_new
-decimation: 5
+sim_dt: 0.005
+decimation: 10
 num_envs: 1
 
-headless: true
+headless: false
 add_table: true
+
+
+
+eval_keyboard_num_envs: 1
+eval_keyboard_command_step: 0.1
+eval_keyboard_yaw_step: 0.1
+eval_keyboard_max_xy: 1.5
+eval_keyboard_max_yaw: 1.5
+eval_keyboard_disable_forces: true
+eval_keyboard_print_every: 20
+
+
 #sensors configuration
 sensors:
   sensor1:
@@ -26,40 +39,50 @@ sensors:
 
 
 force: true
-force_x_min: -10.0
-force_x_max: 50.0
-force_y_min: -5.0
-force_y_max: 5.0
+force_x_min: -100.0
+force_x_max: 100.0
+force_y_min: -100.0
+force_y_max: 100.0
+force_interval_steps: 100      # jak casto spustit impuls v policy krocich
+force_duration_steps: 4     # jak dlouho impuls drzet
+force_resample_on_impulse: true
 #camera configuration
 #---------------------------------------
 #(Pro evaluaci je potřeba odkomentovat)
 #---------------------------------------
 
-# cameras:
-#    camera1:
-#      type: PinholeCameraCfg
-#      params:
-#        name: camera0
-#        pos: (1.5, -1.5, 1.5)
-#        look_at: (0.0, 0.0, 0.0)
-#        width: 1024
-#        height: 1024
+cameras:
+   camera1:
+     type: PinholeCameraCfg
+     params:
+       name: camera0
+       pos: [-6.0, -6.0, 6.0]
+       look_at: [0.0, 0.0, 0.0]
+       width: 1024 #128
+       height: 640 #128
 
 
 
 # Training settings
-train_or_eval: train
+train_or_eval: eval_keyboard
+
+# Profiling prints for bottleneck hunting.
+# profile_timing_sync_cuda: true gives more accurate GPU timings, but slows training.
+profile_timing: false
+profile_timing_interval: 200
+profile_timing_sync_cuda: false
+rsl_profile_policy: false
 
 
 #eveluation settings
 #load_model_path: ./my_env/output/ppo_models/run_2025-10-16_13-59-07/model_80003072
-load_model_path: ./my_env/output/ppo_models/run_2025-10-15_20-22-31/model_80000000
-video_save_path: ./config_run/output/eval_videos/walk_eval.mp4
-eval_episodes: 1000
+load_model_path: ./config_run/output/ppo_model/run_2026-06-10_14_walk_new/model_370111000
+video_save_path: ./config_run/output/eval_videos/walk_eval2.mp4
+eval_episodes: 5000
 
 
 # PPO training settings
-total_timesteps: 800_000_000
+total_timesteps: 400_000_000
 model_save_path: ./config_run/output/ppo_model
 model_save_freq: 10_000_000
 
@@ -70,22 +93,24 @@ eval_model_path:
 #-------------------------------------------
 eval_freq: 10000000
 n_eval_episodes: 1
-eval_max_steps: 300
+eval_max_steps: 1000
 
 # PPO parameters
 net_arch_pivf: true
 net_arch_pi: [256,256,128]
 net_arch_vf: [256,256,128]
 learning_schedule: linear
-learning_rate: 3e-4
-n_steps: 2048
-batch_size: 512
-n_epochs: 10
+learning_rate: 0.001
+final_learning_rate: 0.00005
+
+n_steps: 128
+batch_size: 24000
+n_epochs: 4
 gamma: 0.99
-gae_lambda: 0.97
+gae_lambda: 0.95
 clip_range: 0.2
-ent_coef: 0.001
+ent_coef: 0.003
 vf_coef: 0.5
 max_grad_norm: 0.5
 
-tensorboard_log: ./config_run/output/tensorboard
+tensorboard_log: ./config_run/output/tensorboard/ppo

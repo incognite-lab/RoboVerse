@@ -48,6 +48,9 @@ class ScenarioCfg:
     force_x_max: float = 0.0
     force_y_min: float = 0.0
     force_y_max: float = 0.0
+    force_interval_steps: int = 50
+    force_duration_steps: int = 1
+    force_resample_on_impulse: bool = True
 
     ## Handlers
     sim: Literal["isaaclab", "isaacgym", "sapien2", "sapien3", "genesis", "pybullet", "mujoco"] = "isaaclab"

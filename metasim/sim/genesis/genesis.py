@@ -4,6 +4,8 @@ import genesis as gs
 import numpy as np
 import torch
 import random
+import os
+import time
 gs.init(backend=gs.gpu,logging_level=gs._logging.WARNING)  # TODO: add option for cpu
 
 import genesis.utils.geom as gu
@@ -58,7 +60,6 @@ class GenesisHandler(BaseSimHandler):
 
     def launch(self) -> None:
         show_viewer = not self.headless
-        print(show_viewer," show_viewer")
         # zde změna ve vypisování logů - genesis je moc hlučný (nevypisujíse info logy ani debug)
         self.scene_inst = gs.Scene(
             sim_options=gs.options.SimOptions(
@@ -381,7 +382,7 @@ class GenesisHandler(BaseSimHandler):
             joints_names_arr = np.array(self.get_joint_names(obj.name))
             #joints_names_reindexed = joints_names_arr[joint_reindex].tolist()
             obj_inst = self.object_inst_dict[obj.name]
-            #raw_contact = obj_inst.get_contacts()
+            raw_contact = obj_inst.get_contacts()
             #readable_contacts = self.get_contact(raw_contact)
             if self._previous_dof_pos_target is None or obj.name not in self._previous_dof_pos_target:
                 self._previous_dof_pos_target[obj.name] = torch.zeros_like(obj_inst.get_dofs_position(envs_idx=env_ids))
@@ -518,56 +519,102 @@ class GenesisHandler(BaseSimHandler):
             return None
 
     def _set_states(self, states: list[EnvState], env_ids: list[int] | None = None) -> None:
+        profile_enabled = os.getenv("ROBO_WALK_PROFILE", "1") != "0"
+        profile_sync_cuda = os.getenv("ROBO_WALK_PROFILE_SYNC", "0") == "1"
+        profile_totals = {}
+
+        def profile_now():
+            if profile_enabled and profile_sync_cuda and torch.device(self.device).type == "cuda":
+                torch.cuda.synchronize(self.device)
+            return time.perf_counter()
+
+        def profile_add(name: str, elapsed: float):
+            if profile_enabled:
+                profile_totals[name] = profile_totals.get(name, 0.0) + elapsed
+
+        profile_total_t0 = profile_now()
         if env_ids is None:
             env_ids = list(range(self.num_envs))
+
+        profile_t0 = profile_now()
         states_flat = [state["objects"] | state["robots"] for state in states]
-        if len(states) < self.num_envs:
-            states = states * self.num_envs
-        states_flat = [state["objects"] | state["robots"] for state in states]
+        use_local_state_indices = len(states_flat) == len(env_ids)
+        state_indices = range(len(env_ids)) if use_local_state_indices else env_ids
+        profile_add("set_states_flatten", profile_now() - profile_t0)
         for obj in self.objects + [self.robot]:
+            profile_obj_t0 = profile_now()
             obj_inst = self.object_inst_dict[obj.name]
             if isinstance(obj, RigidObjCfg) and obj.fix_base_link and not (len(env_ids) == self.num_envs):
                 continue  # Ignorujeme nastavení pozice pro pevné objekty, protože to může způsobit problémy se stabilitou simulace
             # --- Base link position ---
-            pos_tensor = torch.stack([states_flat[eid][obj.name]["pos"] for eid in env_ids])  # [N,3]
+            profile_t0 = profile_now()
+            pos_tensor = torch.stack([states_flat[state_idx][obj.name]["pos"] for state_idx in state_indices])  # [N,3]
             pos = pos_tensor.cpu().numpy()
+            profile_add("set_states_make_pos", profile_now() - profile_t0)
+            profile_t0 = profile_now()
             obj_inst.set_pos(pos, envs_idx=env_ids, relative=False)
+            profile_add("set_states_set_pos", profile_now() - profile_t0)
             # --- Base link rotation ---
-            quat_tensor = torch.stack([states_flat[eid][obj.name]["rot"] for eid in env_ids])  # [N,4]
+            profile_t0 = profile_now()
+            quat_tensor = torch.stack([states_flat[state_idx][obj.name]["rot"] for state_idx in state_indices])  # [N,4]
             #TODO toto se mi nelíbí
             quat = quat_tensor.cpu().numpy()
             # Normalize quaternions
             norms = np.linalg.norm(quat, axis=1, keepdims=True)
             norms[norms == 0] = 1.0
             quat = quat / norms
+            profile_add("set_states_make_quat", profile_now() - profile_t0)
+            profile_t0 = profile_now()
             obj_inst.set_quat(quat, envs_idx=env_ids, relative=False)
+            profile_add("set_states_set_quat", profile_now() - profile_t0)
 
             # --- Joint positions (only if articulation) ---
             if isinstance(obj, ArticulationObjCfg):
+                profile_t0 = profile_now()
                 joint_names = self.get_joint_names(obj.name, sort=False)
+                profile_add("set_states_joint_names", profile_now() - profile_t0)
                 if len(joint_names) == 0 or joint_names == ["root_joint"]:
                     #print("DEBUG: no joints for", obj.name)
                     continue
                 else:
-                    dof_pos = np.array(
-                        [
-                            [
-                                states_flat[env_id][obj.name]["dof_pos"][joint.name]
-                                for joint in obj_inst.joints
-                                if joint.name != "root_joint"
-                            ]
-                            for env_id in env_ids
-                        ],
-                        dtype=np.float32,
-                    )
-                    if dof_pos.dtype != np.float32:
-                        dof_pos = dof_pos.astype(np.float32)
+                    profile_t0 = profile_now()
+                    valid_joints_cache_key = f"_valid_reset_joints_{obj.name}"
+                    if not hasattr(self, valid_joints_cache_key):
+                        setattr(
+                            self,
+                            valid_joints_cache_key,
+                            [joint for joint in obj_inst.joints if joint.name != "root_joint"],
+                        )
+                    valid_joints = getattr(self, valid_joints_cache_key)
+
+                    dof_dicts = [states_flat[state_idx][obj.name]["dof_pos"] for state_idx in state_indices]
+                    unique_dof_dict_ids = {}
+                    unique_rows = []
+                    inverse = np.empty(len(dof_dicts), dtype=np.int64)
+
+                    for row_idx, dof_dict in enumerate(dof_dicts):
+                        dict_id = id(dof_dict)
+                        unique_idx = unique_dof_dict_ids.get(dict_id)
+                        if unique_idx is None:
+                            unique_idx = len(unique_rows)
+                            unique_dof_dict_ids[dict_id] = unique_idx
+                            unique_rows.append(
+                                [dof_dict.get(joint.name, 0.0) for joint in valid_joints]
+                            )
+                        inverse[row_idx] = unique_idx
+
+                    unique_dof_pos = np.asarray(unique_rows, dtype=np.float32)
+                    dof_pos = unique_dof_pos[inverse]
+                    profile_add("set_states_make_dof_pos", profile_now() - profile_t0)
+                    profile_t0 = profile_now()
                     base_pos = obj_inst.get_pos(envs_idx=env_ids)   # [N,3]
                     base_quat = obj_inst.get_quat(envs_idx=env_ids) # [N,4]
 
                     root_state = np.concatenate([base_pos.detach().cpu().numpy(), base_quat.detach().cpu().numpy()], axis=1)  # [N,7]
                     #full_qpos = np.concatenate([root_state, dof_pos], axis=1)   # [N, 7 + n_joints]
+                    profile_add("set_states_make_root_state", profile_now() - profile_t0)
 
+                    profile_t0 = profile_now()
                     expected_qs = getattr(obj_inst, "n_qs", None)
                     if expected_qs == dof_pos.shape[1]:
                         qpos_to_set = dof_pos
@@ -577,7 +624,13 @@ class GenesisHandler(BaseSimHandler):
                         qpos_to_set = root_state
                     else:
                         raise RuntimeError(...)
+                    profile_add("set_states_make_qpos", profile_now() - profile_t0)
+                    profile_t0 = profile_now()
                     obj_inst.set_qpos(qpos_to_set, envs_idx=env_ids)
+                    profile_add("set_states_set_qpos", profile_now() - profile_t0)
+            profile_add(f"set_states_obj:{obj.name}", profile_now() - profile_obj_t0)
+
+        profile_add("set_states_total", profile_now() - profile_total_t0)
 
 
     def _set_states_advanced(self, states: list[EnvState], env_ids: list[int] | None = None) -> None:
@@ -803,7 +856,7 @@ class GenesisHandler(BaseSimHandler):
         """Refresh the render."""
         if not self.headless:
             self.scene_inst.viewer.update()
-        self.scene_inst.visualizer.update()
+            self.scene_inst.visualizer.update()
 
     def close(self):
         pass
