@@ -1109,20 +1109,20 @@ def stage0_init(robot_name: str):
         state = {
             "robots": {
                 "g1_with_hands": {
-                    "pos" : torch.tensor([-0.1,0.0,0.8]),
+                    "pos" : torch.tensor([-2.5,0.0,0.8]),
                     "rot" : torch.tensor([1.0,0.0,0.0,0.0]),
                     "dof_pos": {
-                        "left_hip_pitch_joint": 0.0,
+                        "left_hip_pitch_joint": -0.1,
                         "left_hip_roll_joint": 0.0,
                         "left_hip_yaw_joint": 0.0,
-                        "left_knee_joint": 0.0,
-                        "left_ankle_pitch_joint": 0.0,
+                        "left_knee_joint": 0.3,
+                        "left_ankle_pitch_joint": -0.2,
                         "left_ankle_roll_joint": 0.0,
-                        "right_hip_pitch_joint": 0.0,
+                        "right_hip_pitch_joint": -0.1,
                         "right_hip_roll_joint": 0.0,
                         "right_hip_yaw_joint": 0.0,
-                        "right_knee_joint": 0.0,
-                        "right_ankle_pitch_joint": 0.0,
+                        "right_knee_joint": 0.3,
+                        "right_ankle_pitch_joint": -0.2,
                         "right_ankle_roll_joint": 0.0,
                         "waist_yaw_joint": 0.0,
                         "waist_roll_joint": 0.0,
@@ -1130,14 +1130,14 @@ def stage0_init(robot_name: str):
                         "left_shoulder_pitch_joint": 0.0,
                         "left_shoulder_roll_joint": 0.0,
                         "left_shoulder_yaw_joint": 0.0,
-                        "left_elbow_joint": 1.0,
+                        "left_elbow_joint": 0.0,
                         "left_wrist_roll_joint": 0.0,
                         "left_wrist_pitch_joint": 0.0,
                         "left_wrist_yaw_joint": 0.0,
                         "right_shoulder_pitch_joint": 0.0,
                         "right_shoulder_roll_joint": 0.0,
                         "right_shoulder_yaw_joint": 0.0,
-                        "right_elbow_joint": 1.0,
+                        "right_elbow_joint": 0.0,
                         "right_wrist_roll_joint": 0.0,
                         "right_wrist_pitch_joint": 0.0,
                         "right_wrist_yaw_joint": 0.0,
@@ -1162,28 +1162,28 @@ def stage0_init(robot_name: str):
                 }
             },
             "objects": {
-                "chair": {
-                        "pos": torch.tensor([
-                            0.0,
-                            0.0,
-                            0.5
-                        ]),
-                        "rot": torch.tensor([
-                            1.0,
-                            0.0,
-                            0.0,
-                            0.0
-                        ]),
-                        "dof_pos":{
-                            "floor_slide_x": 0.5,
-                            "floor_slide_y": 0.0,
-                            #"seat_swivel" : 0.0,
-                            "floor_rotate_z": 0.0
+                    "chair": {
+                            "pos": torch.tensor([
+                                0.0,
+                                0.0,
+                                0.03
+                            ]),
+                            "rot": torch.tensor([
+                                1.0,
+                                0.0,
+                                0.0,
+                                0.0
+                            ]),
+                            "dof_pos":{
+                                "floor_slide_x": 0.75,
+                                "floor_slide_y": 0.0,
+                                "floor_rotate_z": 1.57
 
 
-                        }
 
-                    }
+                            }
+
+                        },
             },
         }
 

@@ -41,7 +41,7 @@ class DeltaActionRateCfg(HumanoidBaseReward):
     Output: <0, 1>
     Use with NEGATIVE weight.
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.prev_actions = None
         self.scale = 0.35
@@ -79,7 +79,7 @@ class DoFVelocityAccelerationCfg(HumanoidBaseReward):
     Output: <0, 1>
     Use with NEGATIVE weight.
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.prev_joint_vel = None
         self.fingers = None
@@ -146,7 +146,7 @@ class DofPositionLimitsCfg(HumanoidBaseReward):
     Output: <0, 1>
     Use with NEGATIVE weight.
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.limit_buffer = 0.05
         self.joint_limits: dict[str, tuple[float, float]] = {
@@ -206,7 +206,7 @@ class HumanlyDofLimitCfg(HumanoidBaseReward):
     Output: <0, 1>
     Use with NEGATIVE weight.
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.dof_indices = None
         self.q_lower_tensor = None
@@ -281,7 +281,7 @@ class UprightPenaltyCfg(HumanoidBaseReward):
     Output: <0, 1>
     Use with NEGATIVE weight.
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.target_z = torch.tensor([0.0, 0.0, 1.0])
 
@@ -326,7 +326,7 @@ class WalkToChairProgressReward(HumanoidBaseReward):
 
     Output: <0, 1>
     """
-    def __init__(self, robot_name="g1_slider", target_speed=0.8):
+    def __init__(self, robot_name="g1_with_hands", target_speed=0.8):
         super().__init__(robot_name)
         self.active_stages = [0]
 
@@ -486,7 +486,7 @@ class KeepChairStillPenalty(HumanoidBaseReward):
     Output: <0, 1>
     Use with NEGATIVE weight.
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.active_stages = [0, 1]
         self.lin_scale_stage0 = 0.08
@@ -540,7 +540,7 @@ class OpenGraspReward(HumanoidBaseReward):
 
     Output: <0, 1>
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.active_stages = [0, 1]
 
@@ -596,7 +596,7 @@ class FaceChairReward(HumanoidBaseReward):
     Odměňuje robota za to, že osa X jeho hlavy směřuje k židli.
     Tvrdě penalizuje, pokud úhlová rychlost hlavy směřuje pohled pryč od židle.
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         # Může být aktivní ve všech fázích, kdy chceme, aby robot sledoval cíl
         self.active_stages = [0, 1, 2, 3, 4, 5]
@@ -700,7 +700,7 @@ class ReachChairProgressReward(HumanoidBaseReward):
 
     Output: <0, 1>
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.active_stages = [1]
 
@@ -772,7 +772,7 @@ class HandOrientationProgressReward(HumanoidBaseReward):
 
     Output: <0, 1>
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.active_stages = [1]
 
@@ -851,7 +851,7 @@ class HandTargetStillnessReward(HumanoidBaseReward):
 
     Output: <0, 1>
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.active_stages = [1,2]
 
@@ -914,7 +914,7 @@ class StayNearAnchorReward(HumanoidBaseReward):
 
     Output: <0, 1>
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.active_stages = [1, 2]
 
@@ -990,7 +990,7 @@ class CloseGraspReward(HumanoidBaseReward):
 
     Output: <0, 1>
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.active_stages = [2]
 
@@ -1088,7 +1088,7 @@ class GraspForceReward(HumanoidBaseReward):
 
     Output: <0, 1>
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
 
         self.active_stages = [2]
@@ -1202,7 +1202,7 @@ class MaintainAnyGraspReward(HumanoidBaseReward):
 
     Output: <0, 1>
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.active_stages = [3]
         self.force_threshold = 2.0
@@ -1316,7 +1316,7 @@ class PullChairReward(HumanoidBaseReward):
 
     Output: <0, 1>
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.active_stages = [3]
         self.initial_chair_pos = torch.tensor([0.75, 0.0, 0.1])
@@ -1404,7 +1404,7 @@ class PulledChairStillnessReward(HumanoidBaseReward):
 
     Output: <0, 1>
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.active_stages = [4, 5]
         self.target_chair_pos = torch.tensor([-0.25, 0.0, 0.1])
@@ -1445,7 +1445,7 @@ class ReleaseFingersReward(HumanoidBaseReward):
 
     Output: <0, 1>
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.active_stages = [4]
         self.finger_keywords = ["thumb", "index", "middle"]
@@ -1486,7 +1486,7 @@ class ArmDownReward(HumanoidBaseReward):
 
     Output: <0, 1>
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.active_stages = [5]
         self.arm_joints_to_check = [
@@ -1536,7 +1536,7 @@ class ArmRestingPosePenaltyCfg(HumanoidBaseReward):
     Output: <0, 1>
     Use with NEGATIVE weight.
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.active_stages = [0]
         self.dof_indices = None
@@ -1603,7 +1603,7 @@ class StageProgressCfg(HumanoidBaseReward):
     Formula: stage_current
     Funguje jako dense reward, který motivuje robota zůstat ve vyšších fázích.
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
@@ -1629,7 +1629,7 @@ class ContinuousStageReward(HumanoidBaseReward):
     Tímto robotovi jasně říkáme, že udržet se v pozdějších fázích je matematicky
     nejvýhodnější věc v celé hře.
     """
-    def __init__(self, robot_name="g1_slider"):
+    def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
@@ -1717,66 +1717,66 @@ class ChairmanCfg(HumanoidTaskCfg):
     checker = _ChairManChecker()
 
     reward_weights = [
-        DELTA_ACTION_RATE_WEIGHT,
-        DOF_VELOCITY_ACCELERATION_WEIGHT,
-        DOF_POSITION_LIMITS_WEIGHT,
-        HUMANLY_DOF_LIMIT_WEIGHT,
-        # UPRIGHT_PENALTY_WEIGHT,
+        # DELTA_ACTION_RATE_WEIGHT,
+        # DOF_VELOCITY_ACCELERATION_WEIGHT,
+        # DOF_POSITION_LIMITS_WEIGHT,
+        # HUMANLY_DOF_LIMIT_WEIGHT,
+        # # UPRIGHT_PENALTY_WEIGHT,
 
-        WALK_TO_CHAIR_REWARD_WEIGHT,
-        OPEN_GRASP_REWARD_WEIGHT,
-        KEEP_CHAIR_STILL_PENALTY_WEIGHT,
+        # WALK_TO_CHAIR_REWARD_WEIGHT,
+        # OPEN_GRASP_REWARD_WEIGHT,
+        # KEEP_CHAIR_STILL_PENALTY_WEIGHT,
 
-        REACH_CHAIR_REWARD_WEIGHT,
-        REACH_ORIENTATION_REWARD_WEIGHT,
-        HAND_TARGET_STILLNESS_REWARD_WEIGHT,
-        STAY_NEAR_ANCHOR_REWARD_WEIGHT,
+        # REACH_CHAIR_REWARD_WEIGHT,
+        # REACH_ORIENTATION_REWARD_WEIGHT,
+        # HAND_TARGET_STILLNESS_REWARD_WEIGHT,
+        # STAY_NEAR_ANCHOR_REWARD_WEIGHT,
 
-        CLOSE_GRASP_REWARD_WEIGHT,
-        FORCE_GRASP_REWARD_WEIGHT,
+        # CLOSE_GRASP_REWARD_WEIGHT,
+        # FORCE_GRASP_REWARD_WEIGHT,
 
-        MAINTAIN_ANY_GRASP_REWARD_WEIGHT,
-        PULL_CHAIR_REWARD_WEIGHT,
+        # MAINTAIN_ANY_GRASP_REWARD_WEIGHT,
+        # PULL_CHAIR_REWARD_WEIGHT,
 
-        PULLED_CHAIR_STILLNESS_REWARD_WEIGHT,
-        RELEASE_FINGERS_REWARD_WEIGHT,
-        ARM_DOWN_REWARD_WEIGHT,
+        # PULLED_CHAIR_STILLNESS_REWARD_WEIGHT,
+        # RELEASE_FINGERS_REWARD_WEIGHT,
+        # ARM_DOWN_REWARD_WEIGHT,
 
-        FACE_CHAIR_REWARD_WEIGHT,
-        ARM_RESTING_POSE_PENALTY_WEIGHT,
-        STAGE_PROGRESS_WEIGHT,
+        # FACE_CHAIR_REWARD_WEIGHT,
+        # ARM_RESTING_POSE_PENALTY_WEIGHT,
+        # STAGE_PROGRESS_WEIGHT,
         CONTINUOUS_STAGE_REWARD_WEIGHT,
     ]
 
     reward_functions = [
-        DeltaActionRateCfg(),
-        DoFVelocityAccelerationCfg(),
-        DofPositionLimitsCfg(),
-        HumanlyDofLimitCfg(),
-        # UprightPenaltyCfg(),
+        # DeltaActionRateCfg(),
+        # DoFVelocityAccelerationCfg(),
+        # DofPositionLimitsCfg(),
+        # HumanlyDofLimitCfg(),
+        # # UprightPenaltyCfg(),
 
-        WalkToChairProgressReward(),
-        OpenGraspReward(),
-        KeepChairStillPenalty(),
+        # WalkToChairProgressReward(),
+        # OpenGraspReward(),
+        # KeepChairStillPenalty(),
 
-        ReachChairProgressReward(),
-        HandOrientationProgressReward(),
-        HandTargetStillnessReward(),
-        StayNearAnchorReward(),
+        # ReachChairProgressReward(),
+        # HandOrientationProgressReward(),
+        # HandTargetStillnessReward(),
+        # StayNearAnchorReward(),
 
-        CloseGraspReward(),
-        GraspForceReward(),
+        # CloseGraspReward(),
+        # GraspForceReward(),
 
-        MaintainAnyGraspReward(),
-        PullChairReward(),
+        # MaintainAnyGraspReward(),
+        # PullChairReward(),
 
-        PulledChairStillnessReward(),
-        ReleaseFingersReward(),
-        ArmDownReward(),
+        # PulledChairStillnessReward(),
+        # ReleaseFingersReward(),
+        # ArmDownReward(),
 
-        FaceChairReward(),
-        ArmRestingPosePenaltyCfg(),
-        StageProgressCfg(),
+        # FaceChairReward(),
+        # ArmRestingPosePenaltyCfg(),
+        # StageProgressCfg(),
         ContinuousStageReward(),
     ]
 

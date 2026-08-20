@@ -3,12 +3,12 @@
 # Environment settings
 #-------------------------------------------
 sim: genesis
-robots: [g1_slider]
-fix_base_link: true
+robots: [g1_with_hands]
+fix_base_link: false
 task: chairman #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
 decimation: 5
-num_envs: 15000
-headless: true
+num_envs: 2
+headless: false
 add_table: true
 env_spacing: 4.0
 train_or_eval: train  #load_and_train #train_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video

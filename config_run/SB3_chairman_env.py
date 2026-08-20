@@ -18,62 +18,155 @@ from gymnasium import spaces
 from ikpy.chain import Chain
 from scipy.spatial.transform import Rotation as R
 
+try:
+    from .policy import G1MotionPolicy
+except ImportError:
+    # ``main.py`` is commonly executed directly from the config_run directory.
+    from policy import G1MotionPolicy
+
 VIZUALIZATION = False
 #from roboverse_learn.rl.rsl_rl.rsl_rl import env
 
 class StableBaseline3VecEnv(VecEnv):
     """Vectorized environment for Stable Baselines 3 that supports parallel RL training."""
 
+    LOCOMOTION_COMMAND_NAMES = ("walk_vx", "walk_vy", "walk_yaw_rate")
+    MAIN_ROBOT_LINK_NAMES = (
+        'left_shoulder_pitch_link',
+        'left_shoulder_roll_link',
+        'left_shoulder_yaw_link',
+        'left_elbow_link',
+        'left_wrist_roll_link',
+        'left_wrist_pitch_link',
+        'left_wrist_yaw_link',
+        'left_hand_palm_link',
+        'left_hand_thumb_0_link',
+        'left_hand_thumb_1_link',
+        'left_hand_thumb_2_link',
+        'left_hand_middle_0_link',
+        'left_hand_middle_1_link',
+        'left_hand_index_0_link',
+        'left_hand_index_1_link',
+        'right_shoulder_pitch_link',
+        'right_shoulder_roll_link',
+        'right_shoulder_yaw_link',
+        'right_elbow_link',
+        'right_wrist_roll_link',
+        'right_wrist_pitch_link',
+        'right_wrist_yaw_link',
+        'endeffector',
+        'left_endeffector',
+        'right_hand_thumb_0_link',
+        'right_hand_thumb_1_link',
+        'right_hand_thumb_2_link',
+        'right_hand_middle_0_link',
+        'right_hand_middle_1_link',
+        'right_hand_index_0_link',
+        'right_hand_index_1_link',
+        'torso_link',
+    )
+
     def __init__(self, env: MetaSimVecEnv):
         """Initialize the environment."""
-        joint_limits = env.scenario.robots[0].joint_limits
-        self.action_space = spaces.Box(
-            low=np.array([lim[0] for lim in joint_limits.values()]),
-            high=np.array([lim[1] for lim in joint_limits.values()]),
-            shape=(len(joint_limits),),
+        robot_cfg = env.scenario.robots[0]
+        joint_limits = robot_cfg.joint_limits
+        self.robot_name = robot_cfg.name
+        self.robot_joint_names = tuple(joint_limits.keys())
+        self.leg_joint_names = G1MotionPolicy.JOINT_NAMES
+        missing_leg_joints = [name for name in self.leg_joint_names if name not in joint_limits]
+        if missing_leg_joints:
+            raise ValueError(
+                "SB3_chairman_env requires a full G1 robot with the 12 walking-policy leg joints. "
+                f"Missing joints: {', '.join(missing_leg_joints)}"
+            )
+        if robot_cfg.fix_base_link:
+            raise ValueError(
+                "Walking cannot move a fixed pelvis. Set fix_base_link: false in the Chairman YAML config."
+            )
+
+        leg_joint_set = set(self.leg_joint_names)
+        self.upper_body_joint_names = tuple(
+            name for name in self.robot_joint_names if name not in leg_joint_set
+        )
+        self.action_names = self.upper_body_joint_names + self.LOCOMOTION_COMMAND_NAMES
+        self._upper_default_targets = np.asarray(
+            [robot_cfg.default_joint_positions[name] for name in self.upper_body_joint_names],
             dtype=np.float32,
         )
-        robot_name = env.scenario.robots[0].name
+
+        upper_low = [joint_limits[name][0] for name in self.upper_body_joint_names]
+        upper_high = [joint_limits[name][1] for name in self.upper_body_joint_names]
+        self.action_space = spaces.Box(
+            low=np.asarray(upper_low + (-G1MotionPolicy.MAX_COMMAND).tolist(), dtype=np.float32),
+            high=np.asarray(upper_high + G1MotionPolicy.MAX_COMMAND.tolist(), dtype=np.float32),
+            shape=(len(self.action_names),),
+            dtype=np.float32,
+        )
 
         num_joints = len(joint_limits)
 
         states = env.env.handler.get_states()
-        self.main_robot_link_names = [
-            'left_shoulder_pitch_link',
-            'left_shoulder_roll_link',
-            'left_shoulder_yaw_link',
-            'left_elbow_link',
-            'left_wrist_roll_link',
-            'left_wrist_pitch_link',
-            'left_wrist_yaw_link',
-            'left_hand_palm_link',
-            'left_hand_thumb_0_link',
-            'left_hand_thumb_1_link',
-            'left_hand_thumb_2_link',
-            'left_hand_middle_0_link',
-            'left_hand_middle_1_link',
-            'left_hand_index_0_link',
-            'left_hand_index_1_link',
-            'right_shoulder_pitch_link',
-            'right_shoulder_roll_link',
-            'right_shoulder_yaw_link',
-            'right_elbow_link',
-            'right_wrist_roll_link',
-            'right_wrist_pitch_link',
-            'right_wrist_yaw_link',
-            #'right_hand_palm_link',
-            'endeffector',
-            'left_endeffector',
-            'right_hand_thumb_0_link',
-            'right_hand_thumb_1_link',
-            'right_hand_thumb_2_link',
-            'right_hand_middle_0_link',
-            'right_hand_middle_1_link',
-            'right_hand_index_0_link',
-            'right_hand_index_1_link',
-            'torso_link',
-                                 ]
-        self.indexes = [states.robots[robot_name].body_names.index(link) for link in self.main_robot_link_names]
+        robot_state = states.robots[self.robot_name]
+        self.main_robot_link_names = list(self.MAIN_ROBOT_LINK_NAMES)
+        self.indexes = [robot_state.body_names.index(link) for link in self.main_robot_link_names]
+
+        state_joint_names = (
+            robot_state.joint_names.tolist()
+            if hasattr(robot_state.joint_names, "tolist")
+            else list(robot_state.joint_names)
+        )
+        self.sim_joint_names = tuple(str(name) for name in state_joint_names)
+        missing_sim_joints = [name for name in self.robot_joint_names if name not in self.sim_joint_names]
+        if missing_sim_joints:
+            raise ValueError(
+                "Configured G1 joints are missing from the simulator state: "
+                f"{', '.join(missing_sim_joints)}"
+            )
+        self._leg_state_indices = np.asarray(
+            [self.sim_joint_names.index(name) for name in self.leg_joint_names], dtype=np.int64
+        )
+        self._upper_state_indices = np.asarray(
+            [self.sim_joint_names.index(name) for name in self.upper_body_joint_names], dtype=np.int64
+        )
+        self._leg_state_indices_torch = torch.as_tensor(
+            self._leg_state_indices, dtype=torch.long, device=env.env.handler.device
+        )
+        self._pelvis_index = robot_state.body_names.index("pelvis")
+
+        physics_dt = getattr(env.scenario.sim_params, "dt", None)
+        if physics_dt is None:
+            physics_dt = 0.01 if env.scenario.sim == "genesis" else G1MotionPolicy.CONTROL_DT
+        self._physics_dt = float(physics_dt)
+        self._env_control_dt = self._physics_dt * int(env.scenario.decimation)
+        self._motion_decimation = max(
+            1, int(round(G1MotionPolicy.CONTROL_DT / self._env_control_dt))
+        )
+        self._effective_motion_dt = self._env_control_dt * self._motion_decimation
+        if not np.isclose(self._effective_motion_dt, G1MotionPolicy.CONTROL_DT, rtol=0.0, atol=1e-6):
+            log.warning(
+                "The simulator control period ({:.6f}s) cannot reproduce the motion policy's "
+                "20ms period exactly; using {:.6f}s.",
+                self._env_control_dt,
+                self._effective_motion_dt,
+            )
+        self.motion_policy = G1MotionPolicy(
+            device=env.env.handler.device,
+            control_dt=self._effective_motion_dt,
+        )
+        self._motion_step = 0
+        self._cached_leg_targets = np.tile(
+            G1MotionPolicy.DEFAULT_ANGLES[None, :], (env.num_envs, 1)
+        ).astype(np.float32)
+        self.last_requested_locomotion_command = np.zeros((env.num_envs, 3), dtype=np.float32)
+        self.last_locomotion_command = np.zeros((env.num_envs, 3), dtype=np.float32)
+        self._printed_motion_step = False
+        log.info(
+            "Chairman action layout: {} upper-body joints + 3 walking commands = {} actions; "
+            "motion.pt runs every {} environment step(s).",
+            len(self.upper_body_joint_names),
+            len(self.action_names),
+            self._motion_decimation,
+        )
 
         self.num_stages = 4  # simple task: stage 0,1,2,3
 
@@ -114,12 +207,63 @@ class StableBaseline3VecEnv(VecEnv):
         )
         self.env = env
         self.render_mode = None
-        self.timesteps = torch.zeros(env.num_envs, dtype=torch.float32, device=("cuda" if env.scenario.sim == 'isaaclab' or env.scenario.sim == 'genesis' else "cpu"))
+        self.timesteps = torch.zeros(
+            env.num_envs,
+            dtype=torch.float32,
+            device=env.env.handler.device,
+        )
         self.action = None #TODO debug holder
         self.finger_current_positions = {} #TODO debug holder
         super().__init__(env.num_envs, self.observation_space, self.action_space)
+        self._log_motion_configuration_once(robot_cfg)
         if VIZUALIZATION:
             self._init_joint_viz()
+
+    def _log_motion_configuration_once(self, robot_cfg) -> None:
+        """Print the effective locomotion timing and leg controller values once."""
+        decimation = int(self.env.scenario.decimation)
+        log.info(
+            "G1 motion timing (printed once): URDF={}, fixed_base={}, physics dt={:.6f}s "
+            "({:.1f} Hz), env decimation={}, env dt={:.6f}s ({:.1f} Hz), "
+            "motion stride={}, motion dt={:.6f}s ({:.1f} Hz)",
+            robot_cfg.urdf_path,
+            robot_cfg.fix_base_link,
+            self._physics_dt,
+            1.0 / self._physics_dt,
+            decimation,
+            self._env_control_dt,
+            1.0 / self._env_control_dt,
+            self._motion_decimation,
+            self._effective_motion_dt,
+            1.0 / self._effective_motion_dt,
+        )
+
+        applied = getattr(self.env.env.handler, "applied_actuator_properties", {})
+        rows = [
+            "joint | sim index | policy default | reset default | limits | "
+            "configured Kp/Kd | Genesis Kp/Kd | torque range"
+        ]
+        for policy_index, name in enumerate(self.leg_joint_names):
+            actuator = robot_cfg.actuators[name]
+            actual = applied.get(name)
+            if actual is None:
+                actual_gains = "not available"
+                actual_torque = "not available"
+            else:
+                actual_gains = f"{actual['kp']:.3f}/{actual['kd']:.3f}"
+                actual_torque = (
+                    f"[{actual['force_lower']:.3f}, {actual['force_upper']:.3f}]"
+                )
+            lower, upper = robot_cfg.joint_limits[name]
+            rows.append(
+                f"{name} | {self._leg_state_indices[policy_index]} | "
+                f"{G1MotionPolicy.DEFAULT_ANGLES[policy_index]:.3f} | "
+                f"{robot_cfg.default_joint_positions[name]:.3f} | "
+                f"[{lower:.3f}, {upper:.3f}] | "
+                f"{actuator.stiffness:.3f}/{actuator.damping:.3f} | "
+                f"{actual_gains} | {actual_torque}"
+            )
+        log.info("G1 leg controller configuration (printed once):\n{}", "\n".join(rows))
 
     def add_extra_to_obs(self, obs: np.ndarray) -> np.ndarray:
         """
@@ -273,6 +417,7 @@ class StableBaseline3VecEnv(VecEnv):
     def reset(self):
         """Reset the environment."""
         obs, _ = self.env.reset()
+        self._reset_motion_state()
         obs = obs.cpu().numpy()
         #obs = self._combine_obs(obs)
         obs = self.add_extra_to_obs(obs)
@@ -281,11 +426,15 @@ class StableBaseline3VecEnv(VecEnv):
 
     def step_async(self, actions: np.ndarray) -> None:
         """Asynchronously step the environment."""
+        #DEBUG set all uper body joint to default position
+        actions = np.zeros_like(actions)
+        actions[:, :len(self.upper_body_joint_names)] = self._upper_default_targets
+        robot_targets = self._compose_robot_targets(actions)
 
         # --- RYCHLÁ CESTA PRO GENESIS ---
         if self.env.scenario.sim == 'genesis':
             # Akce si uložíme rovnou jako numpy array, žádné slovníky!
-            self.raw_actions = actions
+            self.raw_actions = robot_targets
             self.action_dicts = None
 
         # --- POMALÁ CESTA PRO OSTATNÍ SIMULÁTORY ---
@@ -293,12 +442,113 @@ class StableBaseline3VecEnv(VecEnv):
             self.raw_actions = None
             self.action_dicts = [
                 {
-                    self.env.scenario.robots[0].name: {
-                        "dof_pos_target": dict(zip(self.env.scenario.robots[0].joint_limits.keys(), action))
+                    self.robot_name: {
+                        "dof_pos_target": dict(zip(self.sim_joint_names, target))
                     }
                 }
-                for action in actions
+                for target in robot_targets
             ]
+
+    def _compose_robot_targets(self, actions: np.ndarray) -> np.ndarray:
+        """Combine SB3 upper-body targets with leg targets produced by motion.pt."""
+        actions = np.asarray(actions, dtype=np.float32)
+        expected_shape = (self.num_envs, len(self.action_names))
+        if actions.shape != expected_shape:
+            raise ValueError(f"Expected Chairman actions with shape {expected_shape}, got {actions.shape}")
+        if not np.all(np.isfinite(actions)):
+            raise ValueError("Chairman policy produced NaN or infinite actions")
+
+        actions = np.clip(actions, self.action_space.low, self.action_space.high)
+        upper_targets = actions[:, :len(self.upper_body_joint_names)]
+        requested_command = np.zeros((self.num_envs, 3), dtype=np.float32)
+        requested_command[:, 0] = 0.1
+        requested_command[0, 0] = 0.5
+        command = np.clip(
+            requested_command,
+            -G1MotionPolicy.MAX_COMMAND,
+            G1MotionPolicy.MAX_COMMAND,
+        )
+        self.last_requested_locomotion_command = requested_command.copy()
+        self.last_locomotion_command = command.copy()
+
+        states = self.env.env.handler.get_states()
+        robot_state = states.robots[self.robot_name]
+
+        if self._motion_step % self._motion_decimation == 0:
+            joint_positions = robot_state.joint_pos.index_select(1, self._leg_state_indices_torch)
+            joint_velocities = robot_state.joint_vel.index_select(1, self._leg_state_indices_torch)
+            pelvis_state = robot_state.body_state[:, self._pelvis_index, :]
+
+            self._cached_leg_targets = self.motion_policy.predict_joint_positions(
+                joint_positions=joint_positions,
+                joint_velocities=joint_velocities,
+                angular_velocity=pelvis_state[:, 10:13],
+                angular_velocity_frame="world",
+                base_quaternion_wxyz=pelvis_state[:, 3:7],
+                command=command,
+            )
+            self._log_first_motion_step_once(
+                joint_positions,
+                joint_velocities,
+                requested_command,
+                command,
+            )
+        self._motion_step += 1
+
+        full_targets = robot_state.joint_pos.detach().cpu().numpy().astype(np.float32, copy=True)
+        full_targets[:, self._leg_state_indices] = self._cached_leg_targets
+        full_targets[:, self._upper_state_indices] = upper_targets
+        return full_targets
+
+    def _log_first_motion_step_once(
+        self,
+        joint_positions: torch.Tensor,
+        joint_velocities: torch.Tensor,
+        requested_command: np.ndarray,
+        applied_command: np.ndarray,
+    ) -> None:
+        """Print the first actual policy input/output for at most two envs."""
+        if self._printed_motion_step:
+            return
+        self._printed_motion_step = True
+
+        q = joint_positions.detach().cpu().numpy()
+        dq = joint_velocities.detach().cpu().numpy()
+        action = self.motion_policy.last_action
+        rows = []
+        for env_id in range(min(self.num_envs, 2)):
+            rows.append(
+                f"env {env_id}: requested command={requested_command[env_id].tolist()}, "
+                f"applied command={applied_command[env_id].tolist()}"
+            )
+            rows.append("joint | q [rad] | dq [rad/s] | policy action | target [rad]")
+            for joint_index, name in enumerate(self.leg_joint_names):
+                rows.append(
+                    f"{name} | {q[env_id, joint_index]:.5f} | "
+                    f"{dq[env_id, joint_index]:.5f} | "
+                    f"{action[env_id, joint_index]:.5f} | "
+                    f"{self._cached_leg_targets[env_id, joint_index]:.5f}"
+                )
+        log.info("First G1 motion-policy step (printed once):\n{}", "\n".join(rows))
+
+    def _reset_motion_state(self, env_ids=None) -> None:
+        """Reset recurrent walking-policy state together with simulator environments."""
+        if env_ids is None:
+            self.motion_policy.reset()
+            self._cached_leg_targets[:] = G1MotionPolicy.DEFAULT_ANGLES
+            self.last_requested_locomotion_command.fill(0.0)
+            self.last_locomotion_command.fill(0.0)
+            self._motion_step = 0
+            return
+
+        env_ids = np.asarray(env_ids, dtype=np.int64).reshape(-1)
+        if env_ids.size == 0:
+            return
+        self.motion_policy.reset(env_ids.tolist())
+        self._cached_leg_targets[env_ids] = G1MotionPolicy.DEFAULT_ANGLES
+        self.last_requested_locomotion_command[env_ids] = 0.0
+        self.last_locomotion_command[env_ids] = 0.0
+
     def step_wait(self):
         """Wait for the step to complete."""
         #------------------------------------
@@ -346,6 +596,7 @@ class StableBaseline3VecEnv(VecEnv):
             self.timesteps[unsuccess_mask] = 0.0
             unsuccess_ids = np.nonzero(unsuccess_mask)[0].tolist()
             obs, _ = self.env.reset(env_ids=unsuccess_ids)
+            self._reset_motion_state(unsuccess_ids)
             obs = obs.cpu().numpy()
             obs = self.add_extra_to_obs(obs)
             for i in unsuccess_ids:
@@ -357,6 +608,7 @@ class StableBaseline3VecEnv(VecEnv):
             self.timesteps[success] = 0.0
             success_ids = success.nonzero(as_tuple=False).squeeze(-1).cpu().tolist()
             obs, _ = self.env.reset(env_ids=success_ids)
+            self._reset_motion_state(success_ids)
             obs = obs.cpu().numpy()
             obs = self.add_extra_to_obs(obs)
             for i in success_ids:
@@ -368,6 +620,7 @@ class StableBaseline3VecEnv(VecEnv):
             self.timesteps[timeout_mask] = 0.0
             timeout_ids = np.nonzero(timeout_mask)[0].tolist()
             obs, _ = self.env.reset(env_ids=timeout_ids)
+            self._reset_motion_state(timeout_ids)
             obs = obs.cpu().numpy()
             obs = self.add_extra_to_obs(obs)
             for i in timeout_ids:

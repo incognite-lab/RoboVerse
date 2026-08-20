@@ -178,7 +178,10 @@ def main():
     elif config.get("task") in ["chairman", "chairmangrpo", "chairmangaussian", "chairmangaussiangrpo"]:
         from SB3_chairman_env import StableBaseline3VecEnv
         if scenario.robots[0].fix_base_link == False and "gaussian" not in config.get("task"):
-            scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
+            # The full G1 walking setup selects its Genesis-compatible URDF.
+            # Do not replace it with the explicit ``world``-root variant.
+            if scenario.robots[0].name != "g1_with_hands":
+                scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
             scenario.robots[0].fix_base_link = False
     elif config.get("task") in [
         "chairmansimple",

@@ -206,12 +206,118 @@ class GenesisHandler(BaseSimHandler):
         self.scene_inst.build(
             n_envs=self.scenario.num_envs, env_spacing=(self.scenario.env_spacing, self.scenario.env_spacing)
         )
+        self._apply_robot_actuator_properties()
         if any(isinstance(camera, NyxGaussianSplatCameraCfg) and camera.render_sim_geometry for camera in self.cameras):
             patch_nyx_rigid_solver_compat(self.scene_inst)
         self._previous_dof_pos_target: dict[str, torch.Tensor] = {}
         self._previous_dof_vel_target: dict[str, torch.Tensor] = {}
 
         self._build_link_map()
+
+    def _actuated_dof_indices(self, obj_name: str) -> list[int]:
+        """Return local DOF indices in the same order as ``get_joint_names``."""
+        cache_key = f"_dof_idx_local_{obj_name}"
+        if hasattr(self, cache_key):
+            return getattr(self, cache_key)
+
+        obj_inst = self.object_inst_dict[obj_name]
+        dof_idx_local = []
+        for joint in obj_inst.joints:
+            indices = joint.dofs_idx_local
+            if len(indices) > 0 and indices[0] is not None and joint.name != obj_inst.base_joint.name:
+                dof_idx_local.append(indices[0])
+        setattr(self, cache_key, dof_idx_local)
+        return dof_idx_local
+
+    @staticmethod
+    def _first_property_row(values: torch.Tensor) -> torch.Tensor:
+        """Normalize a global/per-environment Genesis property to one row."""
+        values = values.detach().cpu()
+        return values[0] if values.ndim > 1 else values
+
+    def _apply_robot_actuator_properties(self) -> None:
+        """Apply configured PD gains and torque limits after Genesis is built.
+
+        Genesis does not import :class:`BaseActuatorCfg` by itself. Position
+        targets therefore used Genesis/URDF defaults before this explicit
+        setup, even though stiffness and damping were present in the MetaSim
+        robot configuration.
+        """
+        joint_names = self.get_joint_names(self.robot.name, sort=False)
+        dof_indices = self._actuated_dof_indices(self.robot.name)
+        if len(joint_names) != len(dof_indices):
+            raise RuntimeError(
+                f"Genesis joint/DOF mapping mismatch for {self.robot.name}: "
+                f"{len(joint_names)} joints, {len(dof_indices)} DOFs"
+            )
+
+        joint_to_dof = dict(zip(joint_names, dof_indices))
+        missing_actuators = [name for name in joint_names if name not in self.robot.actuators]
+        if missing_actuators:
+            log.warning(
+                "No actuator configuration for Genesis joints: {}",
+                ", ".join(missing_actuators),
+            )
+
+        def configured(property_name: str):
+            names, indices, values = [], [], []
+            for name in joint_names:
+                actuator = self.robot.actuators.get(name)
+                value = getattr(actuator, property_name, None) if actuator is not None else None
+                if value is not None:
+                    names.append(name)
+                    indices.append(joint_to_dof[name])
+                    values.append(float(value))
+            return names, indices, values
+
+        _, kp_indices, kp_values = configured("stiffness")
+        _, kd_indices, kd_values = configured("damping")
+        if kp_indices:
+            self.robot_inst.set_dofs_kp(kp_values, dofs_idx_local=kp_indices)
+        if kd_indices:
+            self.robot_inst.set_dofs_kv(kd_values, dofs_idx_local=kd_indices)
+
+        torque_names, torque_indices, torque_values = configured("torque_limit")
+        configured_torque = set(torque_names)
+        for name in joint_names:
+            if name in configured_torque:
+                continue
+            value = getattr(self.robot, "torque_limits", {}).get(name)
+            if value is not None:
+                torque_indices.append(joint_to_dof[name])
+                torque_values.append(float(value))
+        if torque_indices:
+            self.robot_inst.set_dofs_force_range(
+                [-value for value in torque_values],
+                torque_values,
+                dofs_idx_local=torque_indices,
+            )
+
+        # Read the values back from Genesis. This is deliberately logged once
+        # at launch so the output shows what the simulator actually received.
+        all_kp = self._first_property_row(self.robot_inst.get_dofs_kp(dofs_idx_local=dof_indices))
+        all_kd = self._first_property_row(self.robot_inst.get_dofs_kv(dofs_idx_local=dof_indices))
+        force_lower, force_upper = self.robot_inst.get_dofs_force_range(dofs_idx_local=dof_indices)
+        force_lower = self._first_property_row(force_lower)
+        force_upper = self._first_property_row(force_upper)
+        self.applied_actuator_properties = {
+            name: {
+                "dof_index": int(dof_index),
+                "kp": float(all_kp[i]),
+                "kd": float(all_kd[i]),
+                "force_lower": float(force_lower[i]),
+                "force_upper": float(force_upper[i]),
+            }
+            for i, (name, dof_index) in enumerate(zip(joint_names, dof_indices))
+        }
+        rows = ["joint | dof | Kp | Kd | force range [Nm]"]
+        for name in joint_names:
+            values = self.applied_actuator_properties[name]
+            rows.append(
+                f"{name} | {values['dof_index']} | {values['kp']:.3f} | "
+                f"{values['kd']:.3f} | [{values['force_lower']:.3f}, {values['force_upper']:.3f}]"
+            )
+        log.info("Genesis actuator properties applied (printed once):\n{}", "\n".join(rows))
 
     def _add_camera_debug_dot(self, camera_name: str, mount_link, local_pos) -> None:
         debug_dot = self.scene_inst.add_entity(
@@ -700,70 +806,13 @@ class GenesisHandler(BaseSimHandler):
                 # POZOR: RigidEntity nemá set_vel/set_ang, toto je jediný způsob jak nastavit rychlost báze.
                 obj_inst.set_dofs_velocity(qvel_to_set, envs_idx=env_ids)
 
-    # def set_dof_targets(self, obj_name: str, actions: list[Action]) -> None:
-    #     self._actions_cache = actions
 
-    #     control_mode = self._get_control_mode(obj_name)
-    #     joint_names = self.get_joint_names(obj_name, sort=False)
-
-    #     if control_mode == "effort":
-    #         effort = [
-    #             [actions[env_id][self.robot.name]["dof_effort_target"][jn] for jn in joint_names]
-    #             for env_id in range(self.num_envs)
-    #         ]
-    #         if self.object_dict[obj_name].fix_base_link:
-    #             self.robot_inst.control_dofs_force(
-    #                 force=effort,
-    #                 dofs_idx_local=[j.dof_idx_local for j in self.robot_inst.joints if j.dof_idx_local is not None],
-    #             )
-    #         else:
-    #             self.robot_inst.control_dofs_force(
-    #                 force=effort,
-    #                 dofs_idx_local=[
-    #                     j.dof_idx_local
-    #                     for j in self.robot_inst.joints
-    #                     if j.dof_idx_local is not None and j.name != self.robot_inst.base_joint.name
-    #                 ],
-    #             )
-    #     else:
-    #         position = [
-    #             [actions[env_id][self.robot.name]["dof_pos_target"][jn] for jn in joint_names]
-    #             for env_id in range(self.num_envs)
-    #         ]
-    #         dof_idx_local = []
-    #         for j in self.robot_inst.joints:
-    #             if j.name == "door_hinge":
-    #                 print("bagr")
-    #             try:
-    #                 if j.dofs_idx_local[0] is not None and j.name != self.robot_inst.base_joint.name:
-    #                     dof_idx_local.append(j.dofs_idx_local[0])
-    #             except IndexError:
-    #                 if j.dofs_idx_local[0] is not None and j.name != "root_joint":
-    #                     dof_idx_local.append(j.dofs_idx_local[0])
-    #         self.robot_inst.control_dofs_position(
-    #                 position=position,
-    #                 dofs_idx_local=dof_idx_local,
-    #             )
-    #     self._previous_dof_pos_target[obj_name] = torch.tensor(position, dtype=torch.float32)
     def set_dof_targets(self, obj_name: str, actions: list[Action] | torch.Tensor | np.ndarray) -> None:
         self._actions_cache = actions
         control_mode = self._get_control_mode(obj_name)
 
         # --- 1. CACHE INDEXŮ (odstranění for-cyklu z každého kroku simulace) ---
-        cache_key = f"_dof_idx_local_{obj_name}"
-        if not hasattr(self, cache_key):
-            dof_idx_local = []
-            obj_inst = self.object_inst_dict[obj_name]
-            for j in obj_inst.joints:
-                try:
-                    if j.dofs_idx_local[0] is not None and j.name != obj_inst.base_joint.name:
-                        dof_idx_local.append(j.dofs_idx_local[0])
-                except IndexError:
-                    if j.dofs_idx_local[0] is not None and j.name != "root_joint":
-                        dof_idx_local.append(j.dofs_idx_local[0])
-            setattr(self, cache_key, dof_idx_local)
-
-        dof_idx_local = getattr(self, cache_key)
+        dof_idx_local = self._actuated_dof_indices(obj_name)
 
         # --- 2. OPTIMALIZOVANÝ PŘEVOD NA TORCH TENSOR ---
         # A) Přišel rovnou PyTorch Tensor (Nejrychlejší)
@@ -808,21 +857,7 @@ class GenesisHandler(BaseSimHandler):
     def close(self):
         pass
 
-    # def _get_effort_targets(self) -> torch.Tensor | None:
-    #     """Get the effort targets from cached actions."""
-    #     if not hasattr(self, "_actions_cache") or not self._actions_cache:
-    #         return None
 
-    #     joint_names = self.get_joint_names(self.robot.name, sort=False)
-    #     effort_targets = []
-    #     for action in self._actions_cache:
-    #         if "dof_effort_target" in action[self.robot.name] and action[self.robot.name]["dof_effort_target"]:
-    #             effort_values = [action[self.robot.name]["dof_effort_target"][jn] for jn in joint_names]
-    #             effort_targets.append(effort_values)
-
-    #     if effort_targets:
-    #         return torch.tensor(effort_targets, dtype=torch.float32)
-    #     return None
     def _get_effort_targets(self) -> torch.Tensor | None:
         """Get the effort targets from cached actions."""
         # Bezpečný check, zda cache existuje a není None (zabrání ValueError u numpy polí)

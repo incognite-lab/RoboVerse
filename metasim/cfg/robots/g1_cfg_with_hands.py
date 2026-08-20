@@ -11,14 +11,16 @@ from metasim.cfg.sensors.gyro import GyroSensorCfg
 @configclass
 class G1WithHandsCfg(BaseRobotCfg):
     name: str = "g1_with_hands"
-    num_joints: int = 41,
+    num_joints: int = 43
     usd_path: str = "urdf2usd_convert/g1/usd/g1_mygym.usd"
     xml_path: str = "roboverse_data/robots/g1/mjcf/g1_mygym.xml"
     #mjcf_path: str = "roboverse_data/robots/g1/mjcf/g1_mygym.xml"
     mjcf_path: str = "roboverse_data/robots/g1/urdf/g1_29dof_with_hand_rev_1_0.xml"
 
+    # Genesis creates the 6-DoF floating root when ``fixed=False``.  The
+    # ``with_world`` variant adds a massless world root and is intended for
+    # conversions that require an explicit parent, not for a free Genesis G1.
     urdf_path: str = "roboverse_data/robots/g1/urdf/g1_mygym.urdf"
-    #urdf_path: str = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
 
     #urdf to chain pelvis --> right_hand_palm_link
     ik_urdf_path: str = "roboverse_data/robots/g1/IK_data/urdf_pelvis_to_RHPL.urdf"
@@ -38,35 +40,36 @@ class G1WithHandsCfg(BaseRobotCfg):
 
 
     actuators: dict[str, BaseActuatorCfg] = {
-        "left_hip_pitch_joint": BaseActuatorCfg(stiffness=200, damping=5),
-        "left_hip_roll_joint": BaseActuatorCfg(stiffness=150, damping=5),
-        "left_hip_yaw_joint": BaseActuatorCfg(stiffness=150, damping=5),
-        "left_knee_joint": BaseActuatorCfg(stiffness=200, damping=5),
-        "left_ankle_pitch_joint": BaseActuatorCfg(stiffness=20, damping=4),
-        "left_ankle_roll_joint": BaseActuatorCfg(stiffness=20, damping=4),
-        "right_hip_pitch_joint": BaseActuatorCfg(stiffness=200, damping=5),
-        "right_hip_roll_joint": BaseActuatorCfg(stiffness=150, damping=5),
-        "right_hip_yaw_joint": BaseActuatorCfg(stiffness=150, damping=5),
-        "right_knee_joint": BaseActuatorCfg(stiffness=200, damping=5),
-        "right_ankle_pitch_joint": BaseActuatorCfg(stiffness=20, damping=4),
-        "right_ankle_roll_joint": BaseActuatorCfg(stiffness=20, damping=4),
-        "waist_yaw_joint": BaseActuatorCfg(stiffness=200, damping=5),
-        "waist_roll_joint": BaseActuatorCfg(stiffness=200, damping=5),
-        "waist_pitch_joint": BaseActuatorCfg(stiffness=200, damping=5),
-        "left_shoulder_pitch_joint": BaseActuatorCfg(stiffness=40, damping=10),
-        "left_shoulder_roll_joint": BaseActuatorCfg(stiffness=40, damping=10),
-        "left_shoulder_yaw_joint": BaseActuatorCfg(stiffness=40, damping=10),
-        "left_elbow_joint": BaseActuatorCfg(stiffness=40, damping=10),
-        "left_wrist_roll_joint": BaseActuatorCfg(stiffness=40, damping=10),
-        "left_wrist_pitch_joint": BaseActuatorCfg(stiffness=40, damping=10),
-        "left_wrist_yaw_joint": BaseActuatorCfg(stiffness=40, damping=10),
-        "right_shoulder_pitch_joint": BaseActuatorCfg(stiffness=40, damping=10),
-        "right_shoulder_roll_joint": BaseActuatorCfg(stiffness=40, damping=10),
-        "right_shoulder_yaw_joint": BaseActuatorCfg(stiffness=40, damping=10),
-        "right_elbow_joint": BaseActuatorCfg(stiffness=40, damping=10),
-        "right_wrist_roll_joint": BaseActuatorCfg(stiffness=40, damping=10),
-        "right_wrist_pitch_joint": BaseActuatorCfg(stiffness=40, damping=10),
-        "right_wrist_yaw_joint": BaseActuatorCfg(stiffness=40, damping=10),
+        # Values used by Unitree's pretrained G1 motion.pt deployment.
+        "left_hip_pitch_joint": BaseActuatorCfg(stiffness=100, damping=2),
+        "left_hip_roll_joint": BaseActuatorCfg(stiffness=100, damping=2),
+        "left_hip_yaw_joint": BaseActuatorCfg(stiffness=100, damping=2),
+        "left_knee_joint": BaseActuatorCfg(stiffness=150, damping=4),
+        "left_ankle_pitch_joint": BaseActuatorCfg(stiffness=40, damping=2),
+        "left_ankle_roll_joint": BaseActuatorCfg(stiffness=40, damping=2),
+        "right_hip_pitch_joint": BaseActuatorCfg(stiffness=100, damping=2),
+        "right_hip_roll_joint": BaseActuatorCfg(stiffness=100, damping=2),
+        "right_hip_yaw_joint": BaseActuatorCfg(stiffness=100, damping=2),
+        "right_knee_joint": BaseActuatorCfg(stiffness=150, damping=4),
+        "right_ankle_pitch_joint": BaseActuatorCfg(stiffness=40, damping=2),
+        "right_ankle_roll_joint": BaseActuatorCfg(stiffness=40, damping=2),
+        "waist_yaw_joint": BaseActuatorCfg(stiffness=300, damping=3),
+        "waist_roll_joint": BaseActuatorCfg(stiffness=300, damping=3),
+        "waist_pitch_joint": BaseActuatorCfg(stiffness=300, damping=3),
+        "left_shoulder_pitch_joint": BaseActuatorCfg(stiffness=100, damping=2),
+        "left_shoulder_roll_joint": BaseActuatorCfg(stiffness=100, damping=2),
+        "left_shoulder_yaw_joint": BaseActuatorCfg(stiffness=50, damping=2),
+        "left_elbow_joint": BaseActuatorCfg(stiffness=50, damping=2),
+        "left_wrist_roll_joint": BaseActuatorCfg(stiffness=20, damping=1),
+        "left_wrist_pitch_joint": BaseActuatorCfg(stiffness=20, damping=1),
+        "left_wrist_yaw_joint": BaseActuatorCfg(stiffness=20, damping=1),
+        "right_shoulder_pitch_joint": BaseActuatorCfg(stiffness=100, damping=2),
+        "right_shoulder_roll_joint": BaseActuatorCfg(stiffness=100, damping=2),
+        "right_shoulder_yaw_joint": BaseActuatorCfg(stiffness=50, damping=2),
+        "right_elbow_joint": BaseActuatorCfg(stiffness=50, damping=2),
+        "right_wrist_roll_joint": BaseActuatorCfg(stiffness=20, damping=1),
+        "right_wrist_pitch_joint": BaseActuatorCfg(stiffness=20, damping=1),
+        "right_wrist_yaw_joint": BaseActuatorCfg(stiffness=20, damping=1),
         # Left hand fingers
         "left_hand_thumb_0_joint": BaseActuatorCfg(stiffness=5, damping=0.5),
         "left_hand_thumb_1_joint": BaseActuatorCfg(stiffness=5, damping=0.5),
@@ -183,17 +186,17 @@ class G1WithHandsCfg(BaseRobotCfg):
     }
 
     default_joint_positions: dict[str, float] = {  # = target angles [rad] when action = 0.0
-        "left_hip_pitch_joint": 0.0,
+        "left_hip_pitch_joint": -0.1,
         "left_hip_roll_joint": 0.0,
         "left_hip_yaw_joint": 0.0,
-        "left_knee_joint": 0.0,
-        "left_ankle_pitch_joint": 0.0,
+        "left_knee_joint": 0.3,
+        "left_ankle_pitch_joint": -0.2,
         "left_ankle_roll_joint": 0.0,
-        "right_hip_pitch_joint": 0.0,
+        "right_hip_pitch_joint": -0.1,
         "right_hip_roll_joint": 0.0,
         "right_hip_yaw_joint": 0.0,
-        "right_knee_joint": 0.0,
-        "right_ankle_pitch_joint": 0.0,
+        "right_knee_joint": 0.3,
+        "right_ankle_pitch_joint": -0.2,
         "right_ankle_roll_joint": 0.0,
         "waist_yaw_joint": 0.0,
         "waist_roll_joint": 0.0,
@@ -201,14 +204,14 @@ class G1WithHandsCfg(BaseRobotCfg):
         "left_shoulder_pitch_joint": 0.0,
         "left_shoulder_roll_joint": 0.0,
         "left_shoulder_yaw_joint": 0.0,
-        "left_elbow_joint": -1.0,
+        "left_elbow_joint": 0.0,
         "left_wrist_roll_joint": 0.0,
         "left_wrist_pitch_joint": 0.0,
         "left_wrist_yaw_joint": 0.0,
         "right_shoulder_pitch_joint": 0.0,
         "right_shoulder_roll_joint": 0.0,
         "right_shoulder_yaw_joint": 0.0,
-        "right_elbow_joint": -1.0,
+        "right_elbow_joint": 0.0,
         "right_wrist_roll_joint": 0.0,
         "right_wrist_pitch_joint": 0.0,
         "right_wrist_yaw_joint": 0.0,
