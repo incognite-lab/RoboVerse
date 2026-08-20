@@ -106,7 +106,7 @@ def test_chairman_composes_upper_and_motion_policy_targets(monkeypatch):
     np.testing.assert_allclose(full_targets[:, wrapped._upper_state_indices], upper_targets)
     np.testing.assert_allclose(
         wrapped.motion_policy.calls[0]["command"],
-        [[RealG1MotionPolicy.MAX_COMMAND[0], 0.0, 0.0], [0.5, 0.0, 0.0]],
+        [[0.5, 0.0, 0.0], [0.1, 0.0, 0.0]],
     )
     assert wrapped.motion_policy.calls[0]["angular_velocity_frame"] == "world"
 

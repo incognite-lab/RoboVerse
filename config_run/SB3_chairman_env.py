@@ -160,6 +160,30 @@ class StableBaseline3VecEnv(VecEnv):
         self.last_requested_locomotion_command = np.zeros((env.num_envs, 3), dtype=np.float32)
         self.last_locomotion_command = np.zeros((env.num_envs, 3), dtype=np.float32)
         self._printed_motion_step = False
+        self._printed_one_second_motion_diagnostic = False
+        self._printed_motion_failure_diagnostic = False
+        applied_properties = getattr(env.env.handler, "applied_actuator_properties", {})
+        self._leg_dof_indices = [
+            int(applied_properties[name]["dof_index"])
+            for name in self.leg_joint_names
+            if name in applied_properties
+        ]
+        self._leg_torque_limits = np.asarray(
+            [
+                max(
+                    abs(float(applied_properties[name]["force_lower"])),
+                    abs(float(applied_properties[name]["force_upper"])),
+                )
+                for name in self.leg_joint_names
+                if name in applied_properties
+            ],
+            dtype=np.float32,
+        )
+        self._motion_diagnostic_steps = np.zeros(env.num_envs, dtype=np.int64)
+        self._max_leg_tracking_error = np.zeros(
+            (env.num_envs, len(self.leg_joint_names)), dtype=np.float32
+        )
+        self._max_leg_torque_utilization = np.zeros_like(self._max_leg_tracking_error)
         log.info(
             "Chairman action layout: {} upper-body joints + 3 walking commands = {} actions; "
             "motion.pt runs every {} environment step(s).",
@@ -521,6 +545,19 @@ class StableBaseline3VecEnv(VecEnv):
                 f"env {env_id}: requested command={requested_command[env_id].tolist()}, "
                 f"applied command={applied_command[env_id].tolist()}"
             )
+            last_observation = getattr(self.motion_policy, "last_observation", None)
+            if last_observation is not None:
+                observation = last_observation[env_id]
+                body_angular_velocity = (
+                    observation[0:3] / G1MotionPolicy.ANGULAR_VELOCITY_SCALE
+                ).tolist()
+                rows.append(
+                    "policy IMU observation: "
+                    f"body angular velocity={body_angular_velocity}, "
+                    f"projected gravity={observation[3:6].tolist()}, "
+                    f"scaled command={observation[6:9].tolist()}, "
+                    f"phase sin/cos={observation[45:47].tolist()}"
+                )
             rows.append("joint | q [rad] | dq [rad/s] | policy action | target [rad]")
             for joint_index, name in enumerate(self.leg_joint_names):
                 rows.append(
@@ -531,6 +568,104 @@ class StableBaseline3VecEnv(VecEnv):
                 )
         log.info("First G1 motion-policy step (printed once):\n{}", "\n".join(rows))
 
+    def _update_motion_diagnostics(self, unsuccessful: torch.Tensor) -> None:
+        """Measure PD tracking and torque saturation, and print concise snapshots.
+
+        One snapshot is emitted after one simulated second and another at the
+        first unsuccessful termination.  This distinguishes a bad IMU input
+        from a controller that cannot follow the policy targets.
+        """
+        handler = self.env.env.handler
+        if (
+            len(self._leg_dof_indices) != len(self.leg_joint_names)
+            or not hasattr(handler, "robot_inst")
+            or not hasattr(handler.robot_inst, "get_dofs_control_force")
+        ):
+            return
+
+        states = handler.get_states()
+        robot_state = states.robots[self.robot_name]
+        q = (
+            robot_state.joint_pos.index_select(1, self._leg_state_indices_torch)
+            .detach()
+            .cpu()
+            .numpy()
+        )
+        dq = (
+            robot_state.joint_vel.index_select(1, self._leg_state_indices_torch)
+            .detach()
+            .cpu()
+            .numpy()
+        )
+        torque = (
+            handler.robot_inst.get_dofs_control_force(
+                dofs_idx_local=self._leg_dof_indices
+            )
+            .detach()
+            .cpu()
+            .numpy()
+        )
+        tracking_error = np.abs(self._cached_leg_targets - q)
+        torque_utilization = np.abs(torque) / np.maximum(self._leg_torque_limits[None, :], 1e-6)
+        self._motion_diagnostic_steps += 1
+        self._max_leg_tracking_error = np.maximum(
+            self._max_leg_tracking_error, tracking_error
+        )
+        self._max_leg_torque_utilization = np.maximum(
+            self._max_leg_torque_utilization, torque_utilization
+        )
+
+        unsuccessful_np = unsuccessful.detach().cpu().numpy().astype(bool)
+        one_second_steps = max(1, int(round(1.0 / self._env_control_dt)))
+        report_one_second = (
+            not self._printed_one_second_motion_diagnostic
+            and np.any(self._motion_diagnostic_steps >= one_second_steps)
+        )
+        report_failure = (
+            not self._printed_motion_failure_diagnostic and unsuccessful_np.any()
+        )
+        if not report_one_second and not report_failure:
+            return
+
+        if report_failure:
+            env_ids = np.flatnonzero(unsuccessful_np).tolist()
+            title = "first unsuccessful termination"
+            self._printed_motion_failure_diagnostic = True
+        else:
+            env_ids = [int(np.argmax(self._motion_diagnostic_steps))]
+            title = "one-second snapshot"
+            self._printed_one_second_motion_diagnostic = True
+
+        pelvis = robot_state.body_state[:, self._pelvis_index, :].detach().cpu().numpy()
+        observation = self.motion_policy.last_observation
+        rows = [
+            f"G1 motion diagnostics ({title}); torque utilization >= 1.0 means saturation:"
+        ]
+        for env_id in env_ids:
+            body_omega = (
+                observation[env_id, 0:3]
+                / G1MotionPolicy.ANGULAR_VELOCITY_SCALE
+            )
+            rows.append(
+                f"env {env_id}: simulated time={self._motion_diagnostic_steps[env_id] * self._env_control_dt:.3f}s, "
+                f"pelvis z={pelvis[env_id, 2]:.4f}, quaternion WXYZ={pelvis[env_id, 3:7].tolist()}, "
+                f"world omega={pelvis[env_id, 10:13].tolist()}, body omega={body_omega.tolist()}, "
+                f"projected gravity={observation[env_id, 3:6].tolist()}"
+            )
+            rows.append(
+                "joint | q | target | abs error | dq | torque [Nm] | limit [Nm] | max utilization"
+            )
+            for joint_index, name in enumerate(self.leg_joint_names):
+                rows.append(
+                    f"{name} | {q[env_id, joint_index]:.4f} | "
+                    f"{self._cached_leg_targets[env_id, joint_index]:.4f} | "
+                    f"{tracking_error[env_id, joint_index]:.4f} | "
+                    f"{dq[env_id, joint_index]:.3f} | {torque[env_id, joint_index]:.2f} | "
+                    f"{self._leg_torque_limits[joint_index]:.1f} | "
+                    f"{self._max_leg_torque_utilization[env_id, joint_index]:.3f}"
+                )
+        log.warning("{}", "\n".join(rows))
+
     def _reset_motion_state(self, env_ids=None) -> None:
         """Reset recurrent walking-policy state together with simulator environments."""
         if env_ids is None:
@@ -539,6 +674,9 @@ class StableBaseline3VecEnv(VecEnv):
             self.last_requested_locomotion_command.fill(0.0)
             self.last_locomotion_command.fill(0.0)
             self._motion_step = 0
+            self._motion_diagnostic_steps.fill(0)
+            self._max_leg_tracking_error.fill(0.0)
+            self._max_leg_torque_utilization.fill(0.0)
             return
 
         env_ids = np.asarray(env_ids, dtype=np.int64).reshape(-1)
@@ -548,6 +686,9 @@ class StableBaseline3VecEnv(VecEnv):
         self._cached_leg_targets[env_ids] = G1MotionPolicy.DEFAULT_ANGLES
         self.last_requested_locomotion_command[env_ids] = 0.0
         self.last_locomotion_command[env_ids] = 0.0
+        self._motion_diagnostic_steps[env_ids] = 0
+        self._max_leg_tracking_error[env_ids] = 0.0
+        self._max_leg_torque_utilization[env_ids] = 0.0
 
     def step_wait(self):
         """Wait for the step to complete."""
@@ -580,6 +721,9 @@ class StableBaseline3VecEnv(VecEnv):
 
         # --- Done flag ---
         dones = timeout.to(unsuccess.device) | unsuccess
+
+        # Read controller forces before a failed environment is reset.
+        self._update_motion_diagnostics(unsuccess)
 
         # --- Update time counters ---
         self.timesteps += (~unsuccess).float()

@@ -65,6 +65,15 @@ class GenesisHandler(BaseSimHandler):
                 dt=self.scenario.sim_params.dt if self.scenario.sim_params.dt is not None else 1 / 100,
                 substeps=1,
             ),  # TODO: substeps > 1 doesn't work
+            # MetaSim robot configurations already carry this option, but it
+            # was previously ignored by the Genesis backend.  Genesis enables
+            # per-entity self collision by default, whereas Unitree's G1
+            # locomotion setup has it disabled.  This is especially important
+            # for the full 43-DoF model: unintended arm/hand/leg contacts can
+            # inject forces that the 12-DoF walking policy never observed.
+            rigid_options=gs.options.RigidOptions(
+                enable_self_collision=bool(self.robot.enabled_self_collisions),
+            ),
             vis_options=gs.options.VisOptions(n_rendered_envs=self.scenario.num_envs),
             viewer_options=gs.options.ViewerOptions(
                 camera_pos=(3.5, 0.0, 2.5),
@@ -207,6 +216,10 @@ class GenesisHandler(BaseSimHandler):
             n_envs=self.scenario.num_envs, env_spacing=(self.scenario.env_spacing, self.scenario.env_spacing)
         )
         self._apply_robot_actuator_properties()
+        log.info(
+            "Genesis rigid-body configuration: self collisions={} (from robot config)",
+            bool(self.robot.enabled_self_collisions),
+        )
         if any(isinstance(camera, NyxGaussianSplatCameraCfg) and camera.render_sim_geometry for camera in self.cameras):
             patch_nyx_rigid_solver_compat(self.scene_inst)
         self._previous_dof_pos_target: dict[str, torch.Tensor] = {}

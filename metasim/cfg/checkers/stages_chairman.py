@@ -20,13 +20,17 @@ except:
     pass
 
 STAGE_TIMEOUTS = {
-    0: 400,  # Dojít k židli
+    # Reference step counts at the original 50 Hz task-control rate.  The
+    # checker converts them to the active dt below, so changing simulation
+    # decimation no longer halves/doubles the physical time available.
+    0: 400,  # Dojít k židli (8 s)
     1: 150,  # Reach (150 kroků by mělo stačit na natažení)
     2: 200,  # Zavření prstů
     3: 200,  # Zatažení za židli
     4: 100,  # Zastavení židle
     5: 100   # Svěšení rukou
 }
+STAGE_TIMEOUT_REFERENCE_DT = 0.02
 VELOCITY_THRESHOLD = 0.2
 HEIGHT_THRESHOLD = 0.4
 DISTANCE_TO_CHAIR_X_THRESHOLD = 0.8
@@ -162,7 +166,13 @@ def common_chairman_checker(states: list[EnvState], handler: BaseSimHandler, idx
     is_fallen = neck_height_tensor(states, handler.robot.name)[idx] < HEIGHT_THRESHOLD
 
     # --- 2. PODMÍNKA TIMEOUTU ---
-    limit = STAGE_TIMEOUTS.get(stage_id, 9999)
+    reference_steps = STAGE_TIMEOUTS.get(stage_id, 9999)
+    physics_dt = getattr(handler.scenario.sim_params, "dt", None) or 0.002
+    task_dt = float(physics_dt) * int(handler.scenario.decimation)
+    limit = max(
+        1,
+        int(round(reference_steps * STAGE_TIMEOUT_REFERENCE_DT / task_dt)),
+    )
     is_timeout = handler.task.stage_steps[idx] > limit
 
     # Výsledek: Epizoda skončí, pokud robot spadne NEBO pokud mu vyprší čas
