@@ -18,9 +18,9 @@ force: false
 
 # PPO training settings
 #-------------------------------------------
-total_timesteps: 10_000_000
+total_timesteps: 1_000_000_000
 model_save_path: ./config_run/output/ppo_models
-model_save_freq: 5_000_000
+model_save_freq: 10_000_000
 tensorboard_log: ./config_run/output/ppo_models/tensorboard
 
 

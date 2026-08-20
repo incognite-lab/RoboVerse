@@ -26,4 +26,4 @@ eval_total_step_cap: 1000
 eval_count_timeouts_as_failures: true
 
 # Managed by run_chairman_training_pipeline.py
-load_model_path: "./config_run/output/training_pipeline/run_2026-08-05_18-25-23/ppo"
+load_model_path: "./config_run/output/training_pipeline/run_2026-08-17_22-11-48/ppo"

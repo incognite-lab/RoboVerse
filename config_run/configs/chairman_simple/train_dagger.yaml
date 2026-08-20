@@ -87,4 +87,4 @@ beta_decay: 0.99999
 visualization: false
 
 # Managed by run_chairman_training_pipeline.py
-load_model_path: "./config_run/output/ppo_model/run_2026-08-17_22_chairmansimple/model_980784000"
+load_model_path: ./config_run/output/ppo_models/run_2026-08-17_22_chairmansimple/model_990792000

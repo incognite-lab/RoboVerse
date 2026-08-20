@@ -7,7 +7,7 @@ robots: [g1_slider]
 fix_base_link: true
 task: chairman #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
 decimation: 5
-num_envs: 5000
+num_envs: 15000
 headless: true
 add_table: true
 env_spacing: 4.0
@@ -31,9 +31,11 @@ net_arch_pi: [128, 128, 128]
 net_arch_vf: [128, 128, 128]
 
 learning_rate: 0.0003
-n_steps: 32
+
+n_steps: 12
 batch_size: 8192
 n_epochs: 5
+
 gamma: 0.99
 gae_lambda: 0.95
 clip_range: 0.2
