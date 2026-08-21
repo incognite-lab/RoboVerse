@@ -54,11 +54,34 @@ def make_fake_metasim_env(num_envs=2):
         joint_names=np.asarray(joint_names),
         joint_pos=joint_pos,
         joint_vel=joint_vel,
+        joint_pos_target=joint_pos.clone(),
         body_names=body_names,
         body_state=body_state,
+        contact=None,
     )
-    states = SimpleNamespace(robots={robot_cfg.name: robot_state})
-    handler = SimpleNamespace(device=torch.device("cpu"), get_states=lambda: states)
+    chair_body_names = ["base_link", "target_hand_left", "target_hand_right"]
+    chair_body_state = torch.zeros(
+        (num_envs, len(chair_body_names), 13), dtype=torch.float32
+    )
+    chair_body_state[:, :, 3] = 1.0
+    chair_body_state[:, 0, 0] = 0.75
+    chair_body_state[:, 1, :3] = torch.tensor([0.75, 0.15, 0.96])
+    chair_body_state[:, 2, :3] = torch.tensor([0.75, -0.15, 0.96])
+    chair_state = SimpleNamespace(
+        body_names=chair_body_names,
+        body_state=chair_body_state,
+    )
+    states = SimpleNamespace(
+        robots={robot_cfg.name: robot_state},
+        objects={"chair": chair_state},
+        extras={},
+    )
+    task = SimpleNamespace(
+        reward_functions=[SimpleNamespace(actual_stage=torch.zeros(num_envs, dtype=torch.long))]
+    )
+    handler = SimpleNamespace(
+        device=torch.device("cpu"), get_states=lambda: states, task=task
+    )
     scenario = SimpleNamespace(
         robots=[robot_cfg],
         sim="genesis",
@@ -78,11 +101,17 @@ def test_chairman_action_is_upper_body_plus_walking_command(monkeypatch):
 
     assert len(wrapped.upper_body_joint_names) == 31
     assert wrapped.action_space.shape == (34,)
-    assert wrapped.observation_space.shape == (292,)
+    assert wrapped.observation_space.shape == (322,)
     assert wrapped.action_names[-3:] == ("walk_vx", "walk_vy", "walk_yaw_rate")
     np.testing.assert_allclose(wrapped.action_space.low[-3:], -RealG1MotionPolicy.MAX_COMMAND)
     np.testing.assert_allclose(wrapped.action_space.high[-3:], RealG1MotionPolicy.MAX_COMMAND)
     assert wrapped._motion_decimation == 2
+
+    observation = wrapped.add_extra_to_obs(
+        np.zeros((wrapped.num_envs, len(wrapped.robot_joint_names)), dtype=np.float32)
+    )
+    assert observation.shape == (wrapped.num_envs, 322)
+    assert np.all(np.isfinite(observation))
 
 
 def test_chairman_composes_upper_and_motion_policy_targets(monkeypatch):
@@ -106,7 +135,7 @@ def test_chairman_composes_upper_and_motion_policy_targets(monkeypatch):
     np.testing.assert_allclose(full_targets[:, wrapped._upper_state_indices], upper_targets)
     np.testing.assert_allclose(
         wrapped.motion_policy.calls[0]["command"],
-        [[0.5, 0.0, 0.0], [0.1, 0.0, 0.0]],
+        commands,
     )
     assert wrapped.motion_policy.calls[0]["angular_velocity_frame"] == "world"
 

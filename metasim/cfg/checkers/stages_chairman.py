@@ -14,6 +14,12 @@ from metasim.utils.humanoid_robot_util import (
     door_angle_tensor,
 )
 from metasim.types import EnvState
+from metasim.utils.chair_navigation import (
+    CHAIR_FINAL_DISTANCE,
+    CHAIR_FINAL_TOLERANCE,
+    chair_back_direction_xy,
+    forward_direction_xy,
+)
 try:
     from metasim.sim import BaseSimHandler
 except:
@@ -24,8 +30,8 @@ STAGE_TIMEOUTS = {
     # checker converts them to the active dt below, so changing simulation
     # decimation no longer halves/doubles the physical time available.
     0: 400,  # Dojít k židli (8 s)
-    1: 150,  # Reach (150 kroků by mělo stačit na natažení)
-    2: 200,  # Zavření prstů
+    1: 500,  # Reach + orientace + ustálení obou rukou (10 s)
+    2: 400,  # Postupné zavření všech prstů a vytvoření kontaktů (8 s)
     3: 200,  # Zatažení za židli
     4: 100,  # Zastavení židle
     5: 100   # Svěšení rukou
@@ -33,12 +39,14 @@ STAGE_TIMEOUTS = {
 STAGE_TIMEOUT_REFERENCE_DT = 0.02
 VELOCITY_THRESHOLD = 0.2
 HEIGHT_THRESHOLD = 0.4
-DISTANCE_TO_CHAIR_X_THRESHOLD = 0.8
-DISTANCE_TO_CHAIR_Y_THRESHOLD = 0.4
+FACING_CHAIR_THRESHOLD = 0.90
 
 HAND_VELOCITY_THRESHOLD = 0.15
 
-DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.05
+# The target links are reference points near the palms, not tiny physical
+# sockets.  Seven centimetres keeps both hands inside the 10 cm Stage-2 drift
+# envelope while allowing residual whole-body sway from the walking policy.
+DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.07
 ORIENTATION_DISTANCE_HANDLE_THRESHOLD = 0.03
 GRASP_DRIFT_THRESHOLD = 0.1
 GRASP_FORCE_THRESHOLD = 2.0
@@ -327,29 +335,38 @@ def stege0_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
         return terminated, success
 
     term_common = common_chairman_checker(states, handler, idx, stage_id=0) | check_movement_chair(states, handler, idx)
-    # Výpočet pozic jen pro aktivní indexy
-    robot_pos = robot_position_tensor(states, handler.robot.name)[idx]
+    # Stejný finální bod jako ve WalkToChairProgressReward: 0.75 m za
+    # opěradlem, nezávisle na natočení židle ve světě.
+    robot_state = states.robots[handler.robot.name]
+    base_link_idx = robot_state.body_names.index("pelvis")
+    robot_base_state = robot_state.body_state[idx, base_link_idx]
+    robot_pos = robot_base_state[:, :3]
+    robot_quat = robot_base_state[:, 3:7]
     chair_base_idx = states.objects["chair"].body_names.index("base_link")
-    chair_pos = states.objects["chair"].body_state[idx, chair_base_idx, :3]
+    chair_state = states.objects["chair"].body_state[idx, chair_base_idx]
+    chair_pos = chair_state[:, :3]
+    chair_back_dir = chair_back_direction_xy(chair_state[:, 3:7])
+    final_target = chair_pos[:, :2] + CHAIR_FINAL_DISTANCE * chair_back_dir
+    final_position_error = torch.norm(robot_pos[:, :2] - final_target, dim=-1)
 
-    distance_x = torch.abs(robot_pos[:, 0] - chair_pos[:, 0])
-    distance_y = torch.abs(robot_pos[:, 1] - chair_pos[:, 1])
+    to_chair = chair_pos[:, :2] - robot_pos[:, :2]
+    to_chair = to_chair / torch.clamp(torch.norm(to_chair, dim=-1, keepdim=True), min=1.0e-6)
+    robot_forward = forward_direction_xy(robot_quat)
+    facing_chair = torch.sum(robot_forward * to_chair, dim=-1)
 
     # --- NOVÉ: Výpočet rychlosti robota ---
     # root_state obsahuje: pos(0:3), quat(3:7), lin_vel(7:10), ang_vel(10:13)
-    base_link_idx = states.robots[handler.robot.name].body_names.index("pelvis")
-    robot_lin_vel = states.robots[handler.robot.name].body_state[idx, base_link_idx, 7:10]  # Extrahuje lineární rychlost
-    vel_norm = torch.norm(robot_lin_vel, dim=-1) # Vypočítá celkovou rychlost pohybu v m/s
+    robot_lin_vel_xy = robot_base_state[:, 7:9]
+    # Úspěch chůze posuzujeme v rovině podlahy. Vertikální kmit pánve při
+    # balancování není pohyb směrem od cíle a nemá blokovat přechod do stage 1.
+    vel_norm = torch.norm(robot_lin_vel_xy, dim=-1)
 
-    # Podmínka úspěchu: Vzdálenost je OK a ZÁROVEŇ robot téměř stojí
+    # Úspěch: robot je u finálního bodu, stojí a je čelem k židli.
     success_cond = (
-        (distance_x <= DISTANCE_TO_CHAIR_X_THRESHOLD) &
-        (distance_x >= DISTANCE_TO_CHAIR_X_THRESHOLD - 0.15) &
-        (distance_y < DISTANCE_TO_CHAIR_Y_THRESHOLD) &
-        (vel_norm < VELOCITY_THRESHOLD)
+        (final_position_error <= CHAIR_FINAL_TOLERANCE)
+        & (vel_norm < VELOCITY_THRESHOLD)
+        & (facing_chair >= FACING_CHAIR_THRESHOLD)
     )
-
-    #distance_x musí být tedy mezi hodnotami (0.78 a 0.68)
     # Zápis výsledků zpět na správné indexy do velkého tenzoru
     terminated[idx] = term_common | success_cond
     success[idx] = success_cond & (~term_common)

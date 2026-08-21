@@ -12,6 +12,12 @@ import cv2
 
 
 from metasim.wrapper.gym_vec_env import MetaSimVecEnv
+from metasim.utils.chair_navigation import (
+    CHAIR_FINAL_DISTANCE,
+    CHAIR_STAGING_DISTANCE,
+    chair_back_direction_xy,
+    world_vector_to_body_xy,
+)
 from stable_baselines3.common.vec_env import VecEnv
 from gymnasium import spaces
 
@@ -26,6 +32,26 @@ except ImportError:
 
 VIZUALIZATION = False
 #from roboverse_learn.rl.rsl_rl.rsl_rl import env
+
+
+def _quaternion_error_vector(
+    current_wxyz: torch.Tensor,
+    target_wxyz: torch.Tensor,
+) -> torch.Tensor:
+    """Shortest target orientation error expressed in the current frame."""
+    current = torch.nn.functional.normalize(current_wxyz, dim=-1)
+    target = torch.nn.functional.normalize(target_wxyz, dim=-1)
+    cw, cx, cy, cz = current.unbind(dim=-1)
+    tw, tx, ty, tz = target.unbind(dim=-1)
+
+    # inverse(current) * target
+    error_w = cw * tw + cx * tx + cy * ty + cz * tz
+    error_x = cw * tx - cx * tw - cy * tz + cz * ty
+    error_y = cw * ty + cx * tz - cy * tw - cz * tx
+    error_z = cw * tz - cx * ty + cy * tx - cz * tw
+    error_xyz = torch.stack((error_x, error_y, error_z), dim=-1)
+    canonical_sign = torch.where(error_w < 0.0, -1.0, 1.0).unsqueeze(-1)
+    return error_xyz * canonical_sign
 
 class StableBaseline3VecEnv(VecEnv):
     """Vectorized environment for Stable Baselines 3 that supports parallel RL training."""
@@ -204,7 +230,14 @@ class StableBaseline3VecEnv(VecEnv):
         # robot->chair world vec   = 3
         # robot->chair body vec    = 2
         # dist to chair            = 1
-        # dist error to stop       = 1
+        # dist to final target     = 1
+        # staging target body vec  = 2
+        # final target body vec    = 2
+        # chair back dir in body   = 2
+        # hand target body vectors = 6
+        # hand orientation errors  = 6
+        # hand body velocities     = 6
+        # fingertip chair forces   = 6
         # stage one hot            = self.num_stages
         # arm errors (L,R)         = 2
         extra_obs_dim = (
@@ -216,6 +249,13 @@ class StableBaseline3VecEnv(VecEnv):
             2 +
             1 +
             1 +
+            2 +
+            2 +
+            2 +
+            6 +
+            6 +
+            6 +
+            6 +
             self.num_stages +
             2
         )
@@ -238,6 +278,9 @@ class StableBaseline3VecEnv(VecEnv):
         )
         self.action = None #TODO debug holder
         self.finger_current_positions = {} #TODO debug holder
+        self._contact_base_to_tip = None
+        self._contact_chair_ids = None
+        self._contact_num_bodies = None
         super().__init__(env.num_envs, self.observation_space, self.action_space)
         self._log_motion_configuration_once(robot_cfg)
         if VIZUALIZATION:
@@ -289,6 +332,78 @@ class StableBaseline3VecEnv(VecEnv):
             )
         log.info("G1 leg controller configuration (printed once):\n{}", "\n".join(rows))
 
+    def _fingertip_chair_forces(self, states, robot) -> torch.Tensor:
+        """Return normalized chair-contact force for three fingertips per hand."""
+        device = robot.joint_pos.device
+        result = torch.zeros((self.num_envs, 6), dtype=torch.float32, device=device)
+        contact = getattr(robot, "contact", None)
+        if contact is None or contact["link_a"].shape[1] == 0:
+            return result
+
+        if self._contact_base_to_tip is None:
+            extras = getattr(states, "extras", {})
+            global_map = extras.get("global_link_map", {})
+            num_bodies = int(extras.get("num_bodies_per_env", 1000))
+            tip_names = {
+                "left_hand_thumb_2": 0,
+                "left_hand_index_1": 1,
+                "left_hand_middle_1": 2,
+                "right_hand_thumb_2": 3,
+                "right_hand_index_1": 4,
+                "right_hand_middle_1": 5,
+            }
+            base_to_tip = torch.full(
+                (num_bodies,), -1, dtype=torch.long, device=device
+            )
+            chair_ids = []
+            for base_index, (object_name, link_name) in global_map.items():
+                if object_name == self.robot_name:
+                    for tip_name, tip_id in tip_names.items():
+                        if tip_name in link_name:
+                            base_to_tip[int(base_index)] = tip_id
+                elif object_name == "chair":
+                    chair_ids.append(int(base_index))
+
+            if not chair_ids:
+                return result
+            self._contact_base_to_tip = base_to_tip
+            self._contact_chair_ids = torch.tensor(
+                chair_ids, dtype=torch.long, device=device
+            )
+            self._contact_num_bodies = num_bodies
+
+        link_a = contact["link_a"]
+        link_b = contact["link_b"]
+        valid = contact["valid_mask"]
+        forces = contact.get("force_b", contact.get("force", None))
+        if forces is None:
+            return result
+
+        base_a = link_a % self._contact_num_bodies
+        base_b = link_b % self._contact_num_bodies
+        a_is_chair = torch.isin(base_a, self._contact_chair_ids)
+        b_is_chair = torch.isin(base_b, self._contact_chair_ids)
+        tip_a = self._contact_base_to_tip[base_a]
+        tip_b = self._contact_base_to_tip[base_b]
+        contact_tip = torch.where(
+            b_is_chair,
+            tip_a,
+            torch.where(a_is_chair, tip_b, torch.full_like(tip_a, -1)),
+        )
+        force_magnitude = torch.norm(forces, dim=-1)
+        valid_tip_contact = valid & (contact_tip >= 0)
+        for tip_id in range(6):
+            tip_force = torch.where(
+                valid_tip_contact & (contact_tip == tip_id),
+                force_magnitude,
+                torch.zeros_like(force_magnitude),
+            )
+            result[:, tip_id] = torch.max(tip_force, dim=1).values
+
+        # The stage checker requires 2 N.  Normalizing at the same value makes
+        # one mean full-scale observation correspond to checker success.
+        return torch.clamp(result / 2.0, min=0.0, max=1.0)
+
     def add_extra_to_obs(self, obs: np.ndarray) -> np.ndarray:
         """
         Extend obs with extra task-relevant data.
@@ -300,7 +415,11 @@ class StableBaseline3VecEnv(VecEnv):
         - vektor robot -> židle ve world frame
         - vektor robot -> židle v body frame robota
         - vzdálenost k židli
-        - chyba vůči cílové stop distance
+        - vzdálenost k finálnímu cíli
+        - vektory k mezibodu a finálnímu cíli v body frame
+        - směr za opěradlo židle v body frame
+        - 3D chyby pozice a orientace obou rukou
+        - rychlosti obou rukou a síly kontaktů šesti konečků prstů
         - one-hot aktuální stage
         - chyba ramen vůči cílové póze podle stage
         """
@@ -334,6 +453,7 @@ class StableBaseline3VecEnv(VecEnv):
         # --------------------------------------------------
         chair_idx = chair.body_names.index("base_link")
         chair_pos = chair.body_state[:, chair_idx, :3]
+        chair_quat = chair.body_state[:, chair_idx, 3:7]  # w,x,y,z
         chair_vel = chair.body_state[:, chair_idx, 7:10]
 
         chair_pos_np = chair_pos.cpu().numpy()
@@ -348,34 +468,26 @@ class StableBaseline3VecEnv(VecEnv):
         dist_to_chair = torch.norm(vec_world[:, :2], dim=-1, keepdim=True)
         dist_to_chair_np = dist_to_chair.cpu().numpy()
 
-        # target stop distance pro stage 0
-        stop_distance = 0.75
-        dist_error = torch.abs(dist_to_chair - stop_distance)
-        dist_error_np = dist_error.cpu().numpy()
+        chair_back_world = chair_back_direction_xy(chair_quat)
+        staging_pos_xy = chair_pos[:, :2] + CHAIR_STAGING_DISTANCE * chair_back_world
+        final_pos_xy = chair_pos[:, :2] + CHAIR_FINAL_DISTANCE * chair_back_world
+        staging_vec_world = staging_pos_xy - pelvis_pos[:, :2]
+        final_vec_world = final_pos_xy - pelvis_pos[:, :2]
+        dist_to_final = torch.norm(final_vec_world, dim=-1, keepdim=True)
+        dist_to_final_np = dist_to_final.cpu().numpy()
 
         # --------------------------------------------------
         # 5) robot -> chair vector v body frame robota
-        #    používáme yaw z pelvis quaternionu
+        #    používáme yaw-aligned body frame pelvisu
         # --------------------------------------------------
-        w = pelvis_quat[:, 0]
-        x = pelvis_quat[:, 1]
-        y = pelvis_quat[:, 2]
-        z = pelvis_quat[:, 3]
-
-        yaw = torch.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
-
-        dx = vec_world[:, 0]
-        dy = vec_world[:, 1]
-
-        cos_yaw = torch.cos(yaw)
-        sin_yaw = torch.sin(yaw)
-
-        # transformace world -> body
-        chair_rel_body_x = cos_yaw * dx + sin_yaw * dy
-        chair_rel_body_y = -sin_yaw * dx + cos_yaw * dy
-
-        chair_rel_body = torch.stack([chair_rel_body_x, chair_rel_body_y], dim=-1)
+        chair_rel_body = world_vector_to_body_xy(vec_world[:, :2], pelvis_quat)
+        staging_rel_body = world_vector_to_body_xy(staging_vec_world, pelvis_quat)
+        final_rel_body = world_vector_to_body_xy(final_vec_world, pelvis_quat)
+        chair_back_body = world_vector_to_body_xy(chair_back_world, pelvis_quat)
         chair_rel_body_np = chair_rel_body.cpu().numpy()
+        staging_rel_body_np = staging_rel_body.cpu().numpy()
+        final_rel_body_np = final_rel_body.cpu().numpy()
+        chair_back_body_np = chair_back_body.cpu().numpy()
 
         # --------------------------------------------------
         # 6) stage one-hot
@@ -399,16 +511,69 @@ class StableBaseline3VecEnv(VecEnv):
 
         pos_left = robot.body_state[:, self.left_endffector, :3]
         pos_right = robot.body_state[:, self.right_endffector, :3]
+        quat_left = robot.body_state[:, self.left_endffector, 3:7]
+        quat_right = robot.body_state[:, self.right_endffector, 3:7]
+        vel_left = robot.body_state[:, self.left_endffector, 7:10]
+        vel_right = robot.body_state[:, self.right_endffector, 7:10]
 
         target_left_idx = chair.body_names.index("target_hand_left")
         target_right_idx = chair.body_names.index("target_hand_right")
 
         target_left_pos = chair.body_state[:, target_left_idx, :3]
         target_right_pos = chair.body_state[:, target_right_idx, :3]
+        target_left_quat = chair.body_state[:, target_left_idx, 3:7]
+        target_right_quat = chair.body_state[:, target_right_idx, 3:7]
 
         arm_err_left = torch.norm(pos_left - target_left_pos, dim=-1, keepdim=True)
         arm_err_right = torch.norm(pos_right - target_right_pos, dim=-1, keepdim=True)
         arm_err_np = torch.cat([arm_err_left, arm_err_right], dim=-1).cpu().numpy()
+
+        left_target_delta = target_left_pos - pos_left
+        right_target_delta = target_right_pos - pos_right
+        left_target_body = torch.cat(
+            (
+                world_vector_to_body_xy(left_target_delta[:, :2], pelvis_quat),
+                left_target_delta[:, 2:3],
+            ),
+            dim=-1,
+        )
+        right_target_body = torch.cat(
+            (
+                world_vector_to_body_xy(right_target_delta[:, :2], pelvis_quat),
+                right_target_delta[:, 2:3],
+            ),
+            dim=-1,
+        )
+        hand_target_body_np = torch.cat(
+            (left_target_body, right_target_body), dim=-1
+        ).cpu().numpy()
+
+        hand_orientation_error_np = torch.cat(
+            (
+                _quaternion_error_vector(quat_left, target_left_quat),
+                _quaternion_error_vector(quat_right, target_right_quat),
+            ),
+            dim=-1,
+        ).cpu().numpy()
+
+        left_vel_body = torch.cat(
+            (
+                world_vector_to_body_xy(vel_left[:, :2], pelvis_quat),
+                vel_left[:, 2:3],
+            ),
+            dim=-1,
+        )
+        right_vel_body = torch.cat(
+            (
+                world_vector_to_body_xy(vel_right[:, :2], pelvis_quat),
+                vel_right[:, 2:3],
+            ),
+            dim=-1,
+        )
+        hand_velocity_body_np = torch.cat(
+            (left_vel_body, right_vel_body), dim=-1
+        ).cpu().numpy()
+        fingertip_force_np = self._fingertip_chair_forces(states, robot).cpu().numpy()
 
         # --------------------------------------------------
         # 8) složení extra observace
@@ -421,7 +586,14 @@ class StableBaseline3VecEnv(VecEnv):
             vec_world_np,          # 3
             chair_rel_body_np,     # 2
             dist_to_chair_np,      # 1
-            dist_error_np,         # 1
+            dist_to_final_np,      # 1
+            staging_rel_body_np,   # 2
+            final_rel_body_np,     # 2
+            chair_back_body_np,    # 2
+            hand_target_body_np,   # 6
+            hand_orientation_error_np,  # 6
+            hand_velocity_body_np, # 6
+            fingertip_force_np,    # 6
             stage_one_hot,         # 4
             arm_err_np,            # 2
         ], axis=1)
@@ -450,9 +622,11 @@ class StableBaseline3VecEnv(VecEnv):
 
     def step_async(self, actions: np.ndarray) -> None:
         """Asynchronously step the environment."""
-        #DEBUG set all uper body joint to default position
-        actions = np.zeros_like(actions)
-        actions[:, :len(self.upper_body_joint_names)] = self._upper_default_targets
+        # Keep the complete Chairman action.  In particular, the last three
+        # values are the physical [vx, vy, yaw_rate] command consumed by
+        # motion.pt.  Replacing the action with zeros here made locomotion
+        # independent of the PPO policy, so a walking reward could not teach
+        # the agent to approach or stop.
         robot_targets = self._compose_robot_targets(actions)
 
         # --- RYCHLÁ CESTA PRO GENESIS ---
@@ -484,9 +658,7 @@ class StableBaseline3VecEnv(VecEnv):
 
         actions = np.clip(actions, self.action_space.low, self.action_space.high)
         upper_targets = actions[:, :len(self.upper_body_joint_names)]
-        requested_command = np.zeros((self.num_envs, 3), dtype=np.float32)
-        requested_command[:, 0] = 0.1
-        requested_command[0, 0] = 0.5
+        requested_command = actions[:, -len(self.LOCOMOTION_COMMAND_NAMES):].copy()
         command = np.clip(
             requested_command,
             -G1MotionPolicy.MAX_COMMAND,

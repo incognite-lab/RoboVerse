@@ -7,8 +7,8 @@ robots: [g1_with_hands]
 fix_base_link: false
 task: chairman #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
 decimation: 5
-num_envs: 2
-headless: false
+num_envs: 15000
+headless: true
 add_table: true
 env_spacing: 4.0
 train_or_eval: train  #load_and_train #train_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
@@ -27,13 +27,18 @@ tensorboard_log: ./config_run/output/ppo_models/tensorboard
 # PPO parameters
 #-------------------------------------------
 net_arch_pivf: true
-net_arch_pi: [128, 128, 128]
-net_arch_vf: [128, 128, 128]
+# Oddělený actor/critic. Síť má přibližně 367k parametrů pro
+# observation_dim=322 a action_dim=34.
+net_arch_pi: [256, 256, 128]
+net_arch_vf: [256, 256, 128]
 
 learning_rate: 0.0003
 
-n_steps: 12
-batch_size: 8192
+# 15000 envů × 32 kroků = 480000 vzorků na jeden rollout.
+# Batch 60000 jej dělí přesně na 8 minibatchů; při 5 epochs je to
+# 40 optimizer kroků na jednu PPO aktualizaci.
+n_steps: 32
+batch_size: 60000
 n_epochs: 5
 
 gamma: 0.99
