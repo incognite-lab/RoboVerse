@@ -7,6 +7,8 @@ import torch
 from metasim.cfg.robots.g1_cfg_with_hands import G1WithHandsCfg
 from metasim.cfg.tasks.humanoidbench.ChairMan import (
     CloseGraspReward,
+    DeltaActionRateCfg,
+    DoFVelocityAccelerationCfg,
     GraspForceReward,
     HandOrientationProgressReward,
     HandTargetStillnessReward,
@@ -96,6 +98,49 @@ def _states(
 def _evaluate(reward, states, stage):
     reward.actual_stage = torch.tensor([stage], dtype=torch.long)
     return reward(states, "g1_with_hands").item()
+
+
+def test_delta_action_rate_reinitializes_when_genesis_dof_layout_changes():
+    reward = DeltaActionRateCfg()
+    reset_states = SimpleNamespace(
+        robots={
+            "g1_with_hands": SimpleNamespace(
+                joint_pos_target=torch.zeros((2, 49), dtype=torch.float32)
+            )
+        }
+    )
+    reward.reset(torch.tensor([0, 1]), reset_states)
+
+    step_robot = SimpleNamespace(
+        joint_pos_target=torch.zeros((2, 43), dtype=torch.float32)
+    )
+    step_states = SimpleNamespace(robots={"g1_with_hands": step_robot})
+    first_penalty = reward(step_states, "g1_with_hands")
+    torch.testing.assert_close(first_penalty, torch.zeros(2))
+    assert reward.prev_actions.shape == (2, 43)
+
+    step_robot.joint_pos_target = torch.full((2, 43), 0.35)
+    second_penalty = reward(step_states, "g1_with_hands")
+    torch.testing.assert_close(second_penalty, torch.ones(2))
+
+
+def test_dof_velocity_reward_reinitializes_when_genesis_dof_layout_changes():
+    reward = DoFVelocityAccelerationCfg()
+    reset_robot = SimpleNamespace(joint_vel=torch.zeros((2, 49), dtype=torch.float32))
+    reward.reset(
+        torch.tensor([0, 1]),
+        SimpleNamespace(robots={"g1_with_hands": reset_robot}),
+    )
+
+    joint_names = np.asarray(list(G1WithHandsCfg().joint_limits))
+    step_robot = SimpleNamespace(
+        joint_names=joint_names,
+        joint_vel=torch.zeros((2, 43), dtype=torch.float32),
+    )
+    states = SimpleNamespace(robots={"g1_with_hands": step_robot})
+    penalty = reward(states, "g1_with_hands")
+    torch.testing.assert_close(penalty, torch.zeros(2))
+    assert reward.prev_joint_vel.shape == (2, 43)
 
 
 def test_stage1_reach_requires_both_hands():

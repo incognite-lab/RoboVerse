@@ -56,7 +56,14 @@ class DeltaActionRateCfg(HumanoidBaseReward):
     def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
         robot = states.robots[self.robot_name]
         actions = robot.joint_pos_target
-        if self.prev_actions is None:
+        if (
+            self.prev_actions is None
+            or self.prev_actions.shape != actions.shape
+            or self.prev_actions.device != actions.device
+        ):
+            # Genesis may expose six floating-base DOFs in the reset state
+            # (49 values) and only the 43 actuated joints after the first
+            # simulation step.  Such layouts must never be subtracted.
             self.prev_actions = actions.detach().clone()
         else:
             self.prev_actions[env_ids] = actions[env_ids].detach().clone()
@@ -67,9 +74,15 @@ class DeltaActionRateCfg(HumanoidBaseReward):
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         actions = states.robots[robot_name].joint_pos_target
 
-        if self.prev_actions is None:
+        if (
+            self.prev_actions is None
+            or self.prev_actions.shape != actions.shape
+            or self.prev_actions.device != actions.device
+        ):
             self.prev_actions = actions.detach().clone()
-            return torch.zeros(actions.shape[0], device=actions.device)
+            return torch.zeros(
+                actions.shape[0], device=actions.device, dtype=actions.dtype
+            )
 
         delta_actions = actions - self.prev_actions
         self.prev_actions = actions.detach().clone()
@@ -97,7 +110,11 @@ class DoFVelocityAccelerationCfg(HumanoidBaseReward):
     def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
         robot = states.robots[self.robot_name]
         joint_vel = robot.joint_vel
-        if self.prev_joint_vel is None:
+        if (
+            self.prev_joint_vel is None
+            or self.prev_joint_vel.shape != joint_vel.shape
+            or self.prev_joint_vel.device != joint_vel.device
+        ):
             self.prev_joint_vel = joint_vel.detach().clone()
         else:
             self.prev_joint_vel[env_ids] = joint_vel[env_ids].detach().clone()
@@ -127,7 +144,11 @@ class DoFVelocityAccelerationCfg(HumanoidBaseReward):
 
         mean_abs_vel = torch.mean(torch.abs(target_vel), dim=-1)
 
-        if self.prev_joint_vel is None:
+        if (
+            self.prev_joint_vel is None
+            or self.prev_joint_vel.shape != joint_vel.shape
+            or self.prev_joint_vel.device != joint_vel.device
+        ):
             mean_abs_acc = torch.zeros_like(mean_abs_vel)
             self.prev_joint_vel = joint_vel.detach().clone()
         else:
@@ -1859,34 +1880,38 @@ class ContinuousStageReward(HumanoidBaseReward):
 # - penalty in <0,1> -> use negative weight
 # =============================================================================
 
-TERMINATION_WEIGHT = -1000.0
+# A fall must be clearly worse than any single successful task step, without
+# creating the critic spikes caused by the previous -1000 value.
+TERMINATION_WEIGHT = -100.0
 
 # General optional penalties / rewards
-DELTA_ACTION_RATE_WEIGHT = -0.05
-DOF_VELOCITY_ACCELERATION_WEIGHT = -0.05
-DOF_POSITION_LIMITS_WEIGHT = -0.20
-HUMANLY_DOF_LIMIT_WEIGHT = -0.10
-UPRIGHT_PENALTY_WEIGHT = -0.20
-FACE_CHAIR_REWARD_WEIGHT = 0.20
-ARM_RESTING_POSE_PENALTY_WEIGHT = -0.02
-STAGE_PROGRESS_WEIGHT = 500.0
-CONTINUOUS_STAGE_REWARD_WEIGHT = 4.0
+DELTA_ACTION_RATE_WEIGHT = -0.02
+DOF_VELOCITY_ACCELERATION_WEIGHT = -0.02
+DOF_POSITION_LIMITS_WEIGHT = -0.25
+HUMANLY_DOF_LIMIT_WEIGHT = -0.25
+UPRIGHT_PENALTY_WEIGHT = -1.00
+FACE_CHAIR_REWARD_WEIGHT = 0.25
+ARM_RESTING_POSE_PENALTY_WEIGHT = -0.05
+# Sparse transition bonus: stage 0->1 gives 20, 1->2 gives 40 and 2->3 gives 60.
+STAGE_PROGRESS_WEIGHT = 20.0
+# Small stage baseline; it must not dominate the action-dependent rewards.
+CONTINUOUS_STAGE_REWARD_WEIGHT = 0.25
 
 # Stage 0
-STAGE0_ARM_POS_REWARD_WEIGHT = 1.0
-WALK_TO_CHAIR_REWARD_WEIGHT = 4.0
-OPEN_GRASP_REWARD_WEIGHT = 0.8
+STAGE0_ARM_POS_REWARD_WEIGHT = 0.75
+WALK_TO_CHAIR_REWARD_WEIGHT = 6.0
+OPEN_GRASP_REWARD_WEIGHT = 0.50
 KEEP_CHAIR_STILL_PENALTY_WEIGHT = -1.0
 
 # Stage 1
-REACH_CHAIR_REWARD_WEIGHT = 5.0
-REACH_ORIENTATION_REWARD_WEIGHT = 2.5
-HAND_TARGET_STILLNESS_REWARD_WEIGHT = 4.0
-STAY_NEAR_ANCHOR_REWARD_WEIGHT = 1.5
+REACH_CHAIR_REWARD_WEIGHT = 6.0
+REACH_ORIENTATION_REWARD_WEIGHT = 3.0
+HAND_TARGET_STILLNESS_REWARD_WEIGHT = 3.0
+STAY_NEAR_ANCHOR_REWARD_WEIGHT = 1.0
 
 # Stage 2
-CLOSE_GRASP_REWARD_WEIGHT = 5.5
-FORCE_GRASP_REWARD_WEIGHT = 4.0
+CLOSE_GRASP_REWARD_WEIGHT = 7.0
+FORCE_GRASP_REWARD_WEIGHT = 8.0
 
 # Stage 3
 MAINTAIN_ANY_GRASP_REWARD_WEIGHT = 3.0
