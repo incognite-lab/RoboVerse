@@ -608,10 +608,10 @@ class WalkToChairProgressReward(HumanoidBaseReward):
         turn_reward = turn_context * heading_reward
 
         base_reward = (
-            0.45 * velocity_reward
-            + 0.15 * direction_reward
+            0.15 * velocity_reward
+            + 0.35 * direction_reward
             + 0.25 * turn_reward
-            + 0.15 * arrival_stop_reward
+            + 0.25 * arrival_stop_reward
         )
         total_reward = base_reward * backward_factor * overshoot_factor
         total_reward = torch.clamp(total_reward, min=0.0, max=1.0)
@@ -1885,29 +1885,29 @@ class ContinuousStageReward(HumanoidBaseReward):
 TERMINATION_WEIGHT = -100.0
 
 # General optional penalties / rewards
-DELTA_ACTION_RATE_WEIGHT = -0.02
-DOF_VELOCITY_ACCELERATION_WEIGHT = -0.02
-DOF_POSITION_LIMITS_WEIGHT = -0.25
+DELTA_ACTION_RATE_WEIGHT = -1.0
+DOF_VELOCITY_ACCELERATION_WEIGHT = -1.0
+DOF_POSITION_LIMITS_WEIGHT = -1.0
 HUMANLY_DOF_LIMIT_WEIGHT = -0.25
-UPRIGHT_PENALTY_WEIGHT = -1.00
+UPRIGHT_PENALTY_WEIGHT = -5.00
 FACE_CHAIR_REWARD_WEIGHT = 0.25
 ARM_RESTING_POSE_PENALTY_WEIGHT = -0.05
 # Sparse transition bonus: stage 0->1 gives 20, 1->2 gives 40 and 2->3 gives 60.
-STAGE_PROGRESS_WEIGHT = 20.0
+STAGE_PROGRESS_WEIGHT = 10.0
 # Small stage baseline; it must not dominate the action-dependent rewards.
-CONTINUOUS_STAGE_REWARD_WEIGHT = 0.25
+CONTINUOUS_STAGE_REWARD_WEIGHT = 3.0
 
 # Stage 0
-STAGE0_ARM_POS_REWARD_WEIGHT = 0.75
-WALK_TO_CHAIR_REWARD_WEIGHT = 6.0
+STAGE0_ARM_POS_REWARD_WEIGHT = 3.0
+WALK_TO_CHAIR_REWARD_WEIGHT = 3.0
 OPEN_GRASP_REWARD_WEIGHT = 0.50
-KEEP_CHAIR_STILL_PENALTY_WEIGHT = -1.0
+KEEP_CHAIR_STILL_PENALTY_WEIGHT = -2.0
 
 # Stage 1
-REACH_CHAIR_REWARD_WEIGHT = 6.0
-REACH_ORIENTATION_REWARD_WEIGHT = 3.0
+REACH_CHAIR_REWARD_WEIGHT = 4.0
+REACH_ORIENTATION_REWARD_WEIGHT = 2.0
 HAND_TARGET_STILLNESS_REWARD_WEIGHT = 3.0
-STAY_NEAR_ANCHOR_REWARD_WEIGHT = 1.0
+STAY_NEAR_ANCHOR_REWARD_WEIGHT = 6.0
 
 # Stage 2
 CLOSE_GRASP_REWARD_WEIGHT = 7.0
@@ -1951,7 +1951,7 @@ class ChairmanCfg(HumanoidTaskCfg):
     checker = _ChairManChecker()
 
     reward_weights = [
-        TERMINATION_WEIGHT,
+        #TERMINATION_WEIGHT,
         DELTA_ACTION_RATE_WEIGHT,
         DOF_VELOCITY_ACCELERATION_WEIGHT,
         # DOF_POSITION_LIMITS_WEIGHT,
@@ -1985,7 +1985,7 @@ class ChairmanCfg(HumanoidTaskCfg):
     ]
 
     reward_functions = [
-        TerminationCfg(),
+        #TerminationCfg(),
         DeltaActionRateCfg(),
         DoFVelocityAccelerationCfg(),
         # DofPositionLimitsCfg(),

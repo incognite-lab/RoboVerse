@@ -873,7 +873,7 @@ class _ChairManChecker(BaseChecker):
             self.announced_stages = set()
             self.announced_stages.add(0) # Stage 0 nás nezajímá, tu už umí od začátku
 
-        SAVE_PROBABILITY = 0.1
+        SAVE_PROBABILITY = 0.5
 
         states = handler.get_states()
         # Získáme tenzor se všemi aktuálními stages [num_envs]
