@@ -30,7 +30,7 @@ except ImportError:
     # ``main.py`` is commonly executed directly from the config_run directory.
     from policy import G1MotionPolicy
 
-VIZUALIZATION = True
+VIZUALIZATION = False
 #from roboverse_learn.rl.rsl_rl.rsl_rl import env
 
 

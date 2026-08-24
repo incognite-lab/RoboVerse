@@ -54,7 +54,16 @@ class ObsSaver:
             iio.mimsave(self.video_path, self.images, fps=30)
 
 
-import open3d as o3d
+def _require_open3d():
+    """Import Open3D only when a point-cloud utility is used."""
+    try:
+        import open3d
+    except ImportError as exc:
+        raise ImportError(
+            "Point-cloud utilities require Open3D; install it with "
+            "`pip install -e '.[pointcloud]'`."
+        ) from exc
+    return open3d
 
 
 def get_depth_from_normalized(depth_normalized, depth_min, depth_max):
@@ -67,6 +76,7 @@ def get_depth_from_normalized(depth_normalized, depth_min, depth_max):
 
 def get_pcd_from_rgbd(depth, rgb_img, cam_intr_mat, cam_extr_mat):
     """Get the point cloud from the RGBD image."""
+    o3d = _require_open3d()
     if type(cam_intr_mat) is not np.ndarray:
         cam_intr_mat = np.array(cam_intr_mat)
     if type(cam_extr_mat) is not np.ndarray:
@@ -144,6 +154,8 @@ def convert_to_ply(points, filename):
                 where N is the number of points.
     :param filename: Name of the output PLY file.
     """
+    o3d = _require_open3d()
+
     # Convert PyTorch tensor to NumPy array if necessary
     if isinstance(points, torch.Tensor):
         points = points.cpu().numpy()

@@ -1,75 +1,57 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "roboverse-py"
 version = "0.1.17"
-requires-python = ">=3.8"
+# gs-nyx 0.1.3, used by the Gaussian-splat student/GRPO configs, ships
+# a CPython 3.10 binary wheel.  Keep the cluster environment reproducible.
+requires-python = ">=3.10,<3.11"
 dependencies = [
-    "gymnasium",
-    "huggingface-hub",
-    "imageio[ffmpeg]",
-    "loguru",
-    "opencv-python",
-    "pytest",
-    "rich",
-    "rootutils",
-    "torch",
-    "torchvision",
-    "tqdm",
-    "tyro",
+    # Known-good simulator and Gaussian-splat renderer stack from
+    # the metasim_backup environment.
+    "genesis-world==1.2.3",
+    "gs-nyx==0.1.3",
+    "gs-nyx-plugin==0.1.4",
+    "libigl==2.5.1",
+
+    # PPO teacher plus DAgger/GRPO students.
+    "gymnasium==1.2.0",
+    "numpy==1.26.4",
+    "stable-baselines3==2.7.0",
+    "tensorboard==2.20.0",
+    # Match the CUDA 12.6 wheels in metasim_backup. The Nyx wheel already
+    # makes this training stack specific to CPython 3.10/Linux x86_64.
+    "torch @ https://download.pytorch.org/whl/cu126/torch-2.8.0%2Bcu126-cp310-cp310-manylinux_2_28_x86_64.whl",
+    "torchvision @ https://download.pytorch.org/whl/cu126/torchvision-0.23.0%2Bcu126-cp310-cp310-manylinux_2_28_x86_64.whl",
+
+    # Dependencies imported directly by config_run and the selected MetaSim
+    # Genesis/task modules. Transitive Genesis/SB3 dependencies are omitted.
+    "huggingface-hub==0.34.4",
+    "ikpy==3.4.2",
+    "imageio[ffmpeg]==2.37.0",
+    "loguru==0.7.3",
+    "matplotlib==3.10.5",
+    "opencv-python==4.11.0.86",
+    "PyYAML==6.0.2",
+    "rich==14.1.0",
+    "scipy==1.15.3",
+    "tqdm==4.67.1",
 ]
 
 [project.optional-dependencies]
-isaaclab = [
-    "pillow==10.2.0",  # ImportError: The _imaging extension was built for another version of Pillow or PIL
-    "protobuf<5",
-    "pyglet<2",
-    "warp-lang<1.8",  # warp==1.8.0 has bug with IsaacLab v1.4.1
-    "torch==2.4.0+cu118",
-    "torchvision==0.19.0+cu118",
-    "isaacsim==4.2.0.2",
-    "isaacsim-extscache-physics==4.2.0.2",
-    "isaacsim-extscache-kit==4.2.0.2",
-    "isaacsim-extscache-kit-sdk==4.2.0.2",
-]
-isaaclab211 = [
-    "torch==2.7.0+cu128",
-    "torchvision==0.22.0+cu128",
-    "isaacsim[all,extscache]==4.5.0",
-]
-isaaclab221 = [
-    "torch==2.7.0+cu128",
-    "torchvision==0.22.0+cu128",
-    "isaacsim[all,extscache]==5.0.0",
-]
-isaacgym = [
-    "numpy<2",
-    "fsspec<=2025.3.0",  # fsspec==2025.3.1 has bug with python 3.8
-]
-mujoco = ["mujoco", "dm-control"]
-mjx = ["mujoco-mjx>=3.2.7", "dm-control", "jax[cuda]"]
-sapien2 = ["mani-skill2 @ git+https://github.com/haosulab/ManiSkill.git@v0.5.3"]
-sapien3 = ["sapien>=3.0.0.b1"]
-pybullet = ["numpy<2", "pybullet"]
-genesis = [
-    "genesis-world",
-    "libigl==2.5.1",  # for genesis 0.2.1, see https://github.com/Genesis-Embodied-AI/Genesis/issues/1156#issuecomment-3069006079
-]
-
-[tool.uv]
-index-strategy = "unsafe-best-match"
-
-[tool.uv.pip]
-extra-index-url = [
-    "https://pypi.org/simple",
-    "https://download.pytorch.org/whl/cu118",
-    "https://download.pytorch.org/whl/cu128",
-    "https://pypi.nvidia.com",
-]
+dev = ["pytest>=8,<9"]
+# Backward-compatible alias for the repository's existing `.[genesis]` docs.
+# Genesis is now part of the default training installation.
+genesis = []
+pointcloud = ["open3d==0.19.0"]
 
 [tool.ruff]
 line-length = 120
 format.preview = true
 lint.preview = false
-target-version = "py38"
+target-version = "py310"
 lint.select = [
     "B",    # flake8: bugbear
     "E",    # pycodestyle
