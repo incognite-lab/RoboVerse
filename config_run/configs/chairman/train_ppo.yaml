@@ -27,23 +27,25 @@ tensorboard_log: ./config_run/output/ppo_models/tensorboard
 # PPO parameters
 #-------------------------------------------
 net_arch_pivf: true
-# Oddělený actor/critic. Síť má přibližně 367k parametrů pro
-# observation_dim=322 a action_dim=34.
+# Oddělený actor/critic; observation_dim=328 a action_dim=34.
 net_arch_pi: [256, 256, 128]
 net_arch_vf: [256, 256, 128]
 
 learning_rate: 0.0003
 
-# 15000 envů × 32 kroků = 480000 vzorků na jeden rollout.
-# Batch 60000 jej dělí přesně na 8 minibatchů; při 5 epochs je to
-# 40 optimizer kroků na jednu PPO aktualizaci.
+# 9000 envů × 32 kroků = 288000 vzorků na jeden rollout.
+# Batch 48000 jej dělí přesně na 6 minibatchů; při 5 epochs je to
+# 30 optimizer kroků na jednu PPO aktualizaci.
 n_steps: 32
-batch_size: 60000
+batch_size: 48000
 n_epochs: 5
 
 gamma: 0.99
 gae_lambda: 0.95
 clip_range: 0.2
 ent_coef: 0.002
+# Initial standard deviation exp(-1) ~= 0.37.  The SB3 default (1.0)
+# saturates the small walking-command bounds and makes early rollouts fall.
+log_std_init: -1.0
 vf_coef: 1.0
 max_grad_norm: 1.0

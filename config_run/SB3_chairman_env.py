@@ -218,7 +218,9 @@ class StableBaseline3VecEnv(VecEnv):
             self._motion_decimation,
         )
 
-        self.num_stages = 4  # simple task: stage 0,1,2,3
+        # Full Chairman checker uses stages 0..6.  Clipping them into four bins
+        # made stages 3..6 observationally indistinguishable.
+        self.num_stages = 7
 
         num_robot_bodies = len(self.main_robot_link_names)
 
@@ -238,6 +240,7 @@ class StableBaseline3VecEnv(VecEnv):
         # hand orientation errors  = 6
         # hand body velocities     = 6
         # fingertip chair forces   = 6
+        # previous walk command    = 3
         # stage one hot            = self.num_stages
         # arm errors (L,R)         = 2
         extra_obs_dim = (
@@ -256,6 +259,7 @@ class StableBaseline3VecEnv(VecEnv):
             6 +
             6 +
             6 +
+            3 +
             self.num_stages +
             2
         )
@@ -574,6 +578,9 @@ class StableBaseline3VecEnv(VecEnv):
             (left_vel_body, right_vel_body), dim=-1
         ).cpu().numpy()
         fingertip_force_np = self._fingertip_chair_forces(states, robot).cpu().numpy()
+        locomotion_command_np = self.last_locomotion_command.astype(
+            np.float32, copy=False
+        )
 
         # --------------------------------------------------
         # 8) složení extra observace
@@ -594,7 +601,8 @@ class StableBaseline3VecEnv(VecEnv):
             hand_orientation_error_np,  # 6
             hand_velocity_body_np, # 6
             fingertip_force_np,    # 6
-            stage_one_hot,         # 4
+            locomotion_command_np, # 3: previous/current command for Markov state
+            stage_one_hot,         # 7
             arm_err_np,            # 2
         ], axis=1)
 
@@ -664,8 +672,20 @@ class StableBaseline3VecEnv(VecEnv):
             -G1MotionPolicy.MAX_COMMAND,
             G1MotionPolicy.MAX_COMMAND,
         )
+        previous_command = self.last_locomotion_command.copy()
         self.last_requested_locomotion_command = requested_command.copy()
         self.last_locomotion_command = command.copy()
+
+        # Command-rate rewards live with the task rewards, but walking commands
+        # are high-level actions and are not otherwise present in EnvState.
+        for reward_fn in self.env.scenario.task.reward_functions:
+            set_context = getattr(reward_fn, "set_control_context", None)
+            if set_context is not None:
+                set_context(
+                    command,
+                    previous_command,
+                    device=self.env.env.handler.device,
+                )
 
         states = self.env.env.handler.get_states()
         robot_state = states.robots[self.robot_name]

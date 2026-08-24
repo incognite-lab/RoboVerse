@@ -51,6 +51,7 @@ class DeltaActionRateCfg(HumanoidBaseReward):
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.prev_actions = None
+        self.controlled_indices = None
         self.scale = 0.35
 
     def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
@@ -84,7 +85,22 @@ class DeltaActionRateCfg(HumanoidBaseReward):
                 actions.shape[0], device=actions.device, dtype=actions.dtype
             )
 
-        delta_actions = actions - self.prev_actions
+        # motion.pt intentionally produces a periodic leg trajectory. Penalizing
+        # it as an action discontinuity teaches the high-level policy not to walk.
+        if self.controlled_indices is None:
+            leg_names = {
+                "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
+                "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+                "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint",
+                "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+            }
+            indices = [i for i, name in enumerate(states.robots[robot_name].joint_names)
+                       if name not in leg_names]
+            self.controlled_indices = torch.tensor(indices, dtype=torch.long, device=actions.device)
+        elif self.controlled_indices.device != actions.device:
+            self.controlled_indices = self.controlled_indices.to(actions.device)
+
+        delta_actions = (actions - self.prev_actions).index_select(1, self.controlled_indices)
         self.prev_actions = actions.detach().clone()
 
         mean_abs_delta = torch.mean(torch.abs(delta_actions), dim=1)
@@ -102,7 +118,7 @@ class DoFVelocityAccelerationCfg(HumanoidBaseReward):
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.prev_joint_vel = None
-        self.fingers = None
+        self.controlled_indices = None
 
         self.vel_scale = 6.0
         self.acc_scale = 8.0
@@ -127,20 +143,18 @@ class DoFVelocityAccelerationCfg(HumanoidBaseReward):
         joint_vel = robot.joint_vel
         device = joint_vel.device
 
-        if self.fingers is None:
-            self.fingers = []
-            for idx, joint in enumerate(robot.joint_names):
-                if "hand" in joint:
-                    self.fingers.append(idx)
+        if self.controlled_indices is None:
+            # Regularize only waist and arms. Leg motion comes from the frozen
+            # gait controller and fingers must remain free to close in stage 2.
+            indices = [
+                idx for idx, joint in enumerate(robot.joint_names)
+                if not any(token in joint for token in ("hip", "knee", "ankle", "hand"))
+            ]
+            self.controlled_indices = torch.tensor(indices, dtype=torch.long, device=device)
+        elif self.controlled_indices.device != device:
+            self.controlled_indices = self.controlled_indices.to(device)
 
-        if self.fingers:
-            num_dof = joint_vel.shape[1]
-            all_indices = torch.arange(num_dof, device=device)
-            finger_tensor = torch.tensor(self.fingers, device=device)
-            non_finger_mask = ~torch.isin(all_indices, finger_tensor)
-            target_vel = joint_vel[:, non_finger_mask]
-        else:
-            target_vel = joint_vel
+        target_vel = joint_vel.index_select(1, self.controlled_indices)
 
         mean_abs_vel = torch.mean(torch.abs(target_vel), dim=-1)
 
@@ -152,10 +166,7 @@ class DoFVelocityAccelerationCfg(HumanoidBaseReward):
             mean_abs_acc = torch.zeros_like(mean_abs_vel)
             self.prev_joint_vel = joint_vel.detach().clone()
         else:
-            if self.fingers:
-                prev_target_vel = self.prev_joint_vel[:, non_finger_mask]
-            else:
-                prev_target_vel = self.prev_joint_vel
+            prev_target_vel = self.prev_joint_vel.index_select(1, self.controlled_indices)
 
             delta_vel = target_vel - prev_target_vel
             mean_abs_acc = torch.mean(torch.abs(delta_vel), dim=-1)
@@ -165,6 +176,71 @@ class DoFVelocityAccelerationCfg(HumanoidBaseReward):
         acc_penalty = torch.clamp(mean_abs_acc / self.acc_scale, min=0.0, max=1.0)
 
         return 0.7 * vel_penalty + 0.3 * acc_penalty
+
+
+class LocomotionCommandPenalty(HumanoidBaseReward):
+    """Penalize command jumps and nonzero walking commands during manipulation."""
+
+    def __init__(self, robot_name="g1_with_hands"):
+        super().__init__(robot_name)
+        self.command = None
+        self.previous_command = None
+        self.delta_scale = torch.tensor([0.08, 0.06, 0.15])
+        self.command_scale = torch.tensor([0.50, 0.30, 0.80])
+        self.stop_radius = 0.45
+
+    def set_control_context(self, command, previous_command, device=None):
+        """Receive physical [vx, vy, yaw_rate] commands from the SB3 wrapper."""
+        self.command = torch.as_tensor(command, dtype=torch.float32, device=device)
+        self.previous_command = torch.as_tensor(
+            previous_command, dtype=torch.float32, device=device
+        )
+
+    def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
+        if self.command is not None:
+            self.command[env_ids] = 0.0
+            self.previous_command[env_ids] = 0.0
+        if hasattr(super(), "reset"):
+            super().reset(env_ids, states)
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        robot = states.robots[robot_name]
+        device = robot.joint_pos.device
+        num_envs = robot.joint_pos.shape[0]
+        if self.actual_stage is None or self.command is None:
+            return torch.zeros(num_envs, device=device)
+
+        command = self.command.to(device)
+        previous = self.previous_command.to(device)
+        smoothness = torch.mean(
+            torch.clamp(
+                torch.abs(command - previous) / self.delta_scale.to(device), 0.0, 1.0
+            ),
+            dim=-1,
+        )
+        stop_command = torch.mean(
+            torch.clamp(torch.abs(command) / self.command_scale.to(device), 0.0, 1.0),
+            dim=-1,
+        )
+
+        manipulation = (self.actual_stage == 1) | (self.actual_stage == 2)
+        chair = states.objects["chair"]
+        pelvis_idx = robot.body_names.index("pelvis")
+        chair_idx = chair.body_names.index("base_link")
+        pelvis_xy = robot.body_state[:, pelvis_idx, :2]
+        chair_state = chair.body_state[:, chair_idx]
+        final_xy = (
+            chair_state[:, :2]
+            + CHAIR_FINAL_DISTANCE * chair_back_direction_xy(chair_state[:, 3:7])
+        )
+        near_final = torch.norm(pelvis_xy - final_xy, dim=-1) < self.stop_radius
+        stop_gate = manipulation | ((self.actual_stage == 0) & near_final)
+
+        penalty = torch.where(
+            stop_gate, 0.25 * smoothness + 0.75 * stop_command, smoothness
+        )
+        active = (self.actual_stage >= 0) & (self.actual_stage <= 2)
+        return torch.clamp(penalty, 0.0, 1.0) * active.float()
 
 
 class DofPositionLimitsCfg(HumanoidBaseReward):
@@ -350,7 +426,9 @@ class Stage0ArmPos(HumanoidBaseReward):
         self.dof_indices = None
         self.required_pos_tensor = None
         self.required_pos_list = None
-        self.constraint_buffer = 0.20
+        self.arm_sigma = 0.18
+        self.waist_sigma = 0.08
+        self.finger_sigma = 0.25
 
         self.required_pos: dict[str, float] = {
             "waist_yaw_joint": 0.0,
@@ -360,7 +438,7 @@ class Stage0ArmPos(HumanoidBaseReward):
             "left_shoulder_pitch_joint": 0.28,
             "right_shoulder_pitch_joint": 0.28,
 
-            "left_shoulder_roll_joint": -0.35,
+            "left_shoulder_roll_joint": 0.35,
             "right_shoulder_roll_joint": -0.35,
 
             "left_shoulder_yaw_joint": 0.0,
@@ -434,9 +512,28 @@ class Stage0ArmPos(HumanoidBaseReward):
 
         q_active = joint_pos[:, self.dof_indices]
         error = torch.abs(q_active - self.required_pos_tensor)
-        excess_error = torch.clamp(error - self.constraint_buffer, min=0.0)
-        joint_reward = torch.clamp(1.0 - excess_error / self.constraint_buffer, min=0.0, max=1.0)
-        return joint_reward.mean(dim=-1) * stage_mask.float()
+        selected_names = [robot.joint_names[int(i)] for i in self.dof_indices.tolist()]
+        waist_mask = torch.tensor(
+            [name.startswith("waist_") for name in selected_names], device=device
+        )
+        finger_mask = torch.tensor(
+            ["_hand_" in name for name in selected_names], device=device
+        )
+        arm_mask = ~(waist_mask | finger_mask)
+
+        def group_reward(mask, sigma):
+            if not mask.any():
+                return torch.ones(num_envs, device=device)
+            return torch.exp(-torch.mean(torch.square(error[:, mask] / sigma), dim=-1))
+
+        # Do not dilute three waist joints by averaging them with 28 arm/finger
+        # joints. This makes torso motion during walking visibly expensive.
+        reward = (
+            0.45 * group_reward(waist_mask, self.waist_sigma)
+            + 0.45 * group_reward(arm_mask, self.arm_sigma)
+            + 0.10 * group_reward(finger_mask, self.finger_sigma)
+        )
+        return reward * stage_mask.float()
 
 
 
@@ -1306,7 +1403,7 @@ class CloseGraspReward(HumanoidBaseReward):
 class GraspForceReward(HumanoidBaseReward):
     """
     Stage 2:
-    Exact fingertip grasp reward aligned with checker logic.
+    Dense fingertip contact reward aligned with the checker force threshold.
 
     Output: <0, 1>
     """
@@ -1314,7 +1411,7 @@ class GraspForceReward(HumanoidBaseReward):
         super().__init__(robot_name)
 
         self.active_stages = [2]
-        self.force_threshold = 2.0
+        self.force_threshold = 0.5
 
         self.tip_map = {
             "left_hand_thumb_2": 0,
@@ -1882,11 +1979,12 @@ class ContinuousStageReward(HumanoidBaseReward):
 
 # A fall must be clearly worse than any single successful task step, without
 # creating the critic spikes caused by the previous -1000 value.
-TERMINATION_WEIGHT = -100.0
+TERMINATION_WEIGHT = -50.0
 
 # General optional penalties / rewards
-DELTA_ACTION_RATE_WEIGHT = -1.0
-DOF_VELOCITY_ACCELERATION_WEIGHT = -1.0
+DELTA_ACTION_RATE_WEIGHT = -1.5
+DOF_VELOCITY_ACCELERATION_WEIGHT = -0.75
+LOCOMOTION_COMMAND_PENALTY_WEIGHT = -2.5
 DOF_POSITION_LIMITS_WEIGHT = -1.0
 HUMANLY_DOF_LIMIT_WEIGHT = -0.25
 UPRIGHT_PENALTY_WEIGHT = -5.00
@@ -1898,20 +1996,20 @@ STAGE_PROGRESS_WEIGHT = 10.0
 CONTINUOUS_STAGE_REWARD_WEIGHT = 3.0
 
 # Stage 0
-STAGE0_ARM_POS_REWARD_WEIGHT = 3.0
-WALK_TO_CHAIR_REWARD_WEIGHT = 3.0
+STAGE0_ARM_POS_REWARD_WEIGHT = 4.0
+WALK_TO_CHAIR_REWARD_WEIGHT = 5.0
 OPEN_GRASP_REWARD_WEIGHT = 0.50
 KEEP_CHAIR_STILL_PENALTY_WEIGHT = -2.0
 
 # Stage 1
-REACH_CHAIR_REWARD_WEIGHT = 4.0
-REACH_ORIENTATION_REWARD_WEIGHT = 2.0
-HAND_TARGET_STILLNESS_REWARD_WEIGHT = 3.0
-STAY_NEAR_ANCHOR_REWARD_WEIGHT = 6.0
+REACH_CHAIR_REWARD_WEIGHT = 6.0
+REACH_ORIENTATION_REWARD_WEIGHT = 3.0
+HAND_TARGET_STILLNESS_REWARD_WEIGHT = 4.0
+STAY_NEAR_ANCHOR_REWARD_WEIGHT = 3.0
 
 # Stage 2
-CLOSE_GRASP_REWARD_WEIGHT = 7.0
-FORCE_GRASP_REWARD_WEIGHT = 8.0
+CLOSE_GRASP_REWARD_WEIGHT = 10.0
+FORCE_GRASP_REWARD_WEIGHT = 5.0
 
 # Stage 3
 MAINTAIN_ANY_GRASP_REWARD_WEIGHT = 3.0
@@ -1951,9 +2049,10 @@ class ChairmanCfg(HumanoidTaskCfg):
     checker = _ChairManChecker()
 
     reward_weights = [
-        #TERMINATION_WEIGHT,
+        TERMINATION_WEIGHT,
         DELTA_ACTION_RATE_WEIGHT,
         DOF_VELOCITY_ACCELERATION_WEIGHT,
+        LOCOMOTION_COMMAND_PENALTY_WEIGHT,
         # DOF_POSITION_LIMITS_WEIGHT,
         # HUMANLY_DOF_LIMIT_WEIGHT,
         UPRIGHT_PENALTY_WEIGHT,
@@ -1985,9 +2084,10 @@ class ChairmanCfg(HumanoidTaskCfg):
     ]
 
     reward_functions = [
-        #TerminationCfg(),
+        TerminationCfg(),
         DeltaActionRateCfg(),
         DoFVelocityAccelerationCfg(),
+        LocomotionCommandPenalty(),
         # DofPositionLimitsCfg(),
         # HumanlyDofLimitCfg(),
         UprightPenaltyCfg(),

@@ -119,7 +119,7 @@ def main():
         #config_name = "g1_door_IK"
         #config_name = "g1_door_open_stand_train"
         #config_name = "g1_door_stand_IK"
-        config_name = "chairman/eval_ppo_video"
+        config_name = "chairman_simple/eval_ppo_video"
         #config_name = "g1_ChairMan"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
@@ -199,9 +199,11 @@ def main():
     #-----------------------------------------------
     if config.get("net_arch_pivf", False):
         policy_kwargs = dict({"net_arch":{"pi": config.get("net_arch_pi", [128, 128, 128]),
-                                         "vf": config.get("net_arch_vf", [128, 128, 128])}})
+                                         "vf": config.get("net_arch_vf", [128, 128, 128])},
+                              "log_std_init": config.get("log_std_init", 0.0)})
     else:
-        policy_kwargs = dict({"net_arch": config.get("net_arch", [128, 128, 128])})
+        policy_kwargs = dict({"net_arch": config.get("net_arch", [128, 128, 128]),
+                              "log_std_init": config.get("log_std_init", 0.0)})
     #-----------------------------------------------
     def lr_schedule(initial_value: float, final_value: float):
         """set linear or constant learning rate schedule"""

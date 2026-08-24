@@ -49,13 +49,46 @@ HAND_VELOCITY_THRESHOLD = 0.15
 DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.07
 ORIENTATION_DISTANCE_HANDLE_THRESHOLD = 0.03
 GRASP_DRIFT_THRESHOLD = 0.1
-GRASP_FORCE_THRESHOLD = 2.0
+GRASP_FORCE_THRESHOLD = 0.5
+GRASP_MIN_TIPS_PER_HAND = 2
+GRASP_MIN_CLOSURE = 0.55
+STAGE0_HOLD_STEPS = 10
+STAGE1_HOLD_STEPS = 5
+STAGE2_HOLD_STEPS = 10
 
 POS_THRESHOLD = 0.4
 ORI_DOT_PRODUCT_THRESHOLD = 0.9
 CHAIR_PULL_DISTANCE_THRESHOLD = 1.0
 
 ARM_RESTING_THRESHOLD = 0.35
+
+GRASP_FINGER_TARGETS = {
+    "left_hand_thumb_0_joint": 0.396,
+    "left_hand_thumb_1_joint": 0.700,
+    "left_hand_thumb_2_joint": 1.000,
+    "left_hand_middle_0_joint": -1.500,
+    "left_hand_middle_1_joint": -1.700,
+    "left_hand_index_0_joint": -1.500,
+    "left_hand_index_1_joint": -1.700,
+    "right_hand_thumb_0_joint": -0.396,
+    "right_hand_thumb_1_joint": -0.700,
+    "right_hand_thumb_2_joint": -1.000,
+    "right_hand_middle_0_joint": 1.500,
+    "right_hand_middle_1_joint": 1.700,
+    "right_hand_index_0_joint": 1.500,
+    "right_hand_index_1_joint": 1.700,
+}
+
+
+def _held_condition(handler, name, idx, condition, required_steps):
+    """Require a checker condition for consecutive control steps."""
+    num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
+    counters = getattr(handler.task, name, None)
+    if counters is None or counters.shape[0] != num_envs:
+        counters = torch.zeros(num_envs, dtype=torch.long, device=idx.device)
+        setattr(handler.task, name, counters)
+    counters[idx] = torch.where(condition, counters[idx] + 1, torch.zeros_like(counters[idx]))
+    return counters[idx] >= required_steps
 
 
 # =========================================================
@@ -249,8 +282,11 @@ def get_batch_grasp_status(states: list[EnvState], handler: BaseSimHandler, forc
         is_right_tip = (idx_to_tip_right[contact_base] == t_id)
         right_status[:, t_id] = torch.any(valid_strong & is_right_tip, dim=1)
 
-    success_left = torch.all(left_status, dim=1)
-    success_right = torch.all(right_status, dim=1)
+    # Requiring all six tips at exactly the same instant made the transition
+    # dominated by contact jitter. Two contacts per hand still constitutes a
+    # real bilateral grasp and is robust to one unloaded fingertip.
+    success_left = torch.sum(left_status, dim=1) >= GRASP_MIN_TIPS_PER_HAND
+    success_right = torch.sum(right_status, dim=1) >= GRASP_MIN_TIPS_PER_HAND
     return success_left & success_right
 
 def get_batch_any_grasp_status(states: list[EnvState], handler: BaseSimHandler, force_threshold: float, idx: torch.Tensor) -> torch.Tensor:
@@ -362,10 +398,13 @@ def stege0_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     vel_norm = torch.norm(robot_lin_vel_xy, dim=-1)
 
     # Úspěch: robot je u finálního bodu, stojí a je čelem k židli.
-    success_cond = (
+    success_now = (
         (final_position_error <= CHAIR_FINAL_TOLERANCE)
         & (vel_norm < VELOCITY_THRESHOLD)
         & (facing_chair >= FACING_CHAIR_THRESHOLD)
+    )
+    success_cond = _held_condition(
+        handler, "stage0_success_steps", idx, success_now, STAGE0_HOLD_STEPS
     )
     # Zápis výsledků zpět na správné indexy do velkého tenzoru
     terminated[idx] = term_common | success_cond
@@ -425,12 +464,15 @@ def stege1_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
 
 
     # --- PŘIDÁNA PODMÍNKA RYCHLOSTI ---
-    success_cond = (left_dist < DISTANCE_TO_CHAIR_HANDLE_THRESHOLD) & \
+    success_now = (left_dist < DISTANCE_TO_CHAIR_HANDLE_THRESHOLD) & \
                    (right_dist < DISTANCE_TO_CHAIR_HANDLE_THRESHOLD) & \
                    (l_ori_dist < ORIENTATION_DISTANCE_HANDLE_THRESHOLD) & \
                    (r_ori_dist < ORIENTATION_DISTANCE_HANDLE_THRESHOLD) & \
                    (left_vel_norm < HAND_VELOCITY_THRESHOLD) & \
                    (right_vel_norm < HAND_VELOCITY_THRESHOLD)
+    success_cond = _held_condition(
+        handler, "stage1_success_steps", idx, success_now, STAGE1_HOLD_STEPS
+    )
 
     terminated[idx] = term_common | success_cond
     success[idx] = success_cond & (~term_common)
@@ -456,12 +498,39 @@ def stege2_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     dist_right = torch.norm(right_ee_pos - r_handle_pos, dim=-1)
     dist_left = torch.norm(left_ee_pos - l_handle_pos, dim=-1)
 
-    drift_fail = (dist_right > GRASP_DRIFT_THRESHOLD) | (dist_left > GRASP_DRIFT_THRESHOLD)
+    hands_near = (dist_right <= GRASP_DRIFT_THRESHOLD) & (dist_left <= GRASP_DRIFT_THRESHOLD)
 
-    success_cond = get_batch_grasp_status(states, handler, GRASP_FORCE_THRESHOLD, idx)
+    # A contact-only checker can be passed by a brief collision without ever
+    # learning to close the hand. Explicit closure keeps the checker aligned
+    # with CloseGraspReward.
+    joint_names = list(states.robots[handler.robot.name].joint_names)
+    finger_indices = [joint_names.index(name) for name in GRASP_FINGER_TARGETS]
+    finger_targets = torch.tensor(
+        list(GRASP_FINGER_TARGETS.values()),
+        dtype=states.robots[handler.robot.name].joint_pos.dtype,
+        device=mask.device,
+    )
+    q_finger = states.robots[handler.robot.name].joint_pos[idx][:, finger_indices]
+    closure_per_joint = torch.clamp(
+        1.0 - torch.abs(q_finger - finger_targets) / torch.clamp(torch.abs(finger_targets), min=0.1),
+        min=0.0,
+        max=1.0,
+    )
+    both_hands_closed = (
+        torch.mean(closure_per_joint[:, :7], dim=-1) >= GRASP_MIN_CLOSURE
+    ) & (
+        torch.mean(closure_per_joint[:, 7:], dim=-1) >= GRASP_MIN_CLOSURE
+    )
+    contacts_ok = get_batch_grasp_status(states, handler, GRASP_FORCE_THRESHOLD, idx)
+    success_now = hands_near & both_hands_closed & contacts_ok
+    success_cond = _held_condition(
+        handler, "stage2_success_steps", idx, success_now, STAGE2_HOLD_STEPS
+    )
 
-    terminated[idx] = term_common | drift_fail | success_cond
-    success[idx] = success_cond & (~term_common) & (~drift_fail)
+    # Losing the exact 10 cm reach pose is recoverable and therefore must not
+    # reset the episode immediately. The reach/stillness rewards guide it back.
+    terminated[idx] = term_common | success_cond
+    success[idx] = success_cond & (~term_common)
     return terminated, success
 
 def stege3_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.BoolTensor) -> tuple[torch.BoolTensor, torch.BoolTensor]:
@@ -665,6 +734,13 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
     states = [stage0_init(handler.robot.name)] * handler.num_envs
     if env_ids is None:
         env_ids = list(range(handler.num_envs))
+
+    for counter_name in (
+        "stage0_success_steps", "stage1_success_steps", "stage2_success_steps"
+    ):
+        counter = getattr(handler.task, counter_name, None)
+        if counter is not None:
+            counter[env_ids] = 0
 
     current_stages_tensor = handler.task.reward_functions[0].actual_stage
     if current_stages_tensor is None:

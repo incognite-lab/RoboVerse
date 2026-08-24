@@ -17,6 +17,16 @@ train_or_eval: eval_video  #load_and_train #train_dagger #eval_video #eval_dagge
 #-------------------------------------------
 force: false
 
+cameras:
+   camera1:
+     type: PinholeCameraCfg
+     params:
+       name: camera0
+       pos: [-4.0, -4.0, 4.0]
+       look_at: [0.0, 0.0, 0.0]
+       width: 1024 #128
+       height: 640 #128
+
 #Eveluation settings
 #------------------------------------------
 #load_model_path:
@@ -26,5 +36,6 @@ eval_total_step_cap: 1000
 eval_count_timeouts_as_failures: true
 
 # Managed by run_chairman_training_pipeline.py
-load_model_path: "./config_run/output/ppo_models/run_2026-08-17_22_chairmansimple/model_990792000"
+#load_model_path: ./config_run/output/ppo_model/run_2026-05-06_18_chairmansimple/model_560344000
+load_model_path: "./config_run/output/ppo_models/run_2026-08-17_22_chairmansimple/model_500400000"
 video_save_path: "./config_run/output/eval_videos/chair_man_ppo.mp4"

@@ -63,7 +63,7 @@ cameras:
 force: false
 
 #Eveluation settings
-load_model_path: "./config_run/output/dagger/dagger_0/student_model_final.pth"
+load_model_path: "./config_run/output/training_pipeline/run_2026-08-24_15-51-41/dagger"
 eval_episodes: 100
 eval_max_steps: 1000
 eval_total_step_cap: 1000
