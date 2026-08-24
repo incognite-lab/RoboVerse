@@ -3,8 +3,8 @@
 # Environment settings
 #-------------------------------------------
 sim: genesis
-robots: [g1_slider]
-fix_base_link: true
+robots: [g1_with_hands]
+fix_base_link: false
 task: chairman #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
 decimation: 5
 num_envs: 1
@@ -75,8 +75,8 @@ force: false
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-04-02_20_chairman/model_970776000
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-03-13_14_chairman_top/model_200070000
 #load_model_path: ./config_run/output/grpo_model/student_grpo_step_145.pth
-load_model_path: ./config_run/output/ppo_models/run_2026-08-19_16_chairman/model_990495000
-video_save_path: ./config_run/output/eval_videos/chair_man_18.mp4
+load_model_path: ./config_run/output/ppo_models/run_2026-08-21_10_chairman/model_790395000
+video_save_path: ./config_run/output/eval_videos/chair_man_21.mp4
 eval_episodes: 1000
 eval_max_steps: 1000
 eval_total_step_cap: 100

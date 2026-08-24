@@ -234,10 +234,20 @@ class GenesisHandler(BaseSimHandler):
             return getattr(self, cache_key)
 
         obj_inst = self.object_inst_dict[obj_name]
+        try:
+            base_joint_name = obj_inst.base_joint.name
+        except (AttributeError, IndexError):
+            # A fixed-base Genesis entity may not expose a base joint at all.
+            base_joint_name = None
         dof_idx_local = []
         for joint in obj_inst.joints:
             indices = joint.dofs_idx_local
-            if len(indices) > 0 and indices[0] is not None and joint.name != obj_inst.base_joint.name:
+            if (
+                len(indices) > 0
+                and indices[0] is not None
+                and joint.name != base_joint_name
+                and joint.name != "root_joint"
+            ):
                 dof_idx_local.append(indices[0])
         setattr(self, cache_key, dof_idx_local)
         return dof_idx_local
@@ -921,17 +931,22 @@ class GenesisHandler(BaseSimHandler):
             return self._cached_joint_names[cache_key]
         if isinstance(self.object_dict[obj_name], ArticulationObjCfg):
             joints: list[RigidJoint] = self.object_inst_dict[obj_name].joints
+            try:
+                base_joint_name = self.object_inst_dict[obj_name].base_joint.name
+            except (AttributeError, IndexError):
+                base_joint_name = None
 
             joint_names = []
 
             for j in joints:
-                try:
-                    if j.dofs_idx_local[0] is not None and j.name != self.object_inst_dict[obj_name].base_joint.name:
-                    #if (j.dof_idx_local is not None and j.name != self.object_inst_dict[obj_name].base_joint.name)
-                        joint_names.append(j.name)
-                except IndexError:
-                    if j.dofs_idx_local[0] is not None and j.name != "root_joint":
-                        joint_names.append(j.name)
+                indices = j.dofs_idx_local
+                if (
+                    len(indices) > 0
+                    and indices[0] is not None
+                    and j.name != base_joint_name
+                    and j.name != "root_joint"
+                ):
+                    joint_names.append(j.name)
 
             if sort:
                 joint_names.sort()

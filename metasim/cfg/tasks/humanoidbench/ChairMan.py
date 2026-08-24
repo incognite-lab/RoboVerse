@@ -452,7 +452,7 @@ class WalkToChairProgressReward(HumanoidBaseReward):
 
     Output: <0, 1>
     """
-    def __init__(self, robot_name="g1_with_hands", target_speed=0.8):
+    def __init__(self, robot_name="g1_with_hands", target_speed=0.5):
         super().__init__(robot_name)
         self.active_stages = [0]
         self.staging_distance = CHAIR_STAGING_DISTANCE
