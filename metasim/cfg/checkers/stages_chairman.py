@@ -32,7 +32,7 @@ STAGE_TIMEOUTS = {
     0: 400,  # Dojít k židli (8 s)
     1: 500,  # Reach + orientace + ustálení obou rukou (10 s)
     2: 400,  # Postupné zavření všech prstů a vytvoření kontaktů (8 s)
-    3: 200,  # Zatažení za židli
+    3: 500,  # Zatažení za židli
     4: 100,  # Zastavení židle
     5: 100   # Svěšení rukou
 }

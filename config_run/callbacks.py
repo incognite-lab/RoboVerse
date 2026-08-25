@@ -3,6 +3,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 import os
 from loguru import logger as log
 from torch.utils.tensorboard import SummaryWriter
+import torch
 import numpy as np
 from datetime import datetime
 
@@ -113,8 +114,9 @@ class TensorboardMetricsCallback(BaseCallback):
     """
     Callback pro logování metrik epizod + statistik stages do TensorBoardu a terminálu.
 
-    Stage completion se NEODVOZUJE ze změny actual_stage,
-    ale z explicitního signálu completed_stages z checkeru.
+    Stage completion se NEODVOZUJE ze změny actual_stage, ale z jednorázového
+    completed_stage_events signálu checkeru. Ten na rozdíl od rewardového
+    completed_stages přežije výpočet rewardu i případný reset prostředí.
     """
 
     def __init__(self, log_dir: str, log_interval: int = 10000, max_stage: int = 4, verbose: int = 1):
@@ -136,14 +138,12 @@ class TensorboardMetricsCallback(BaseCallback):
         self.completed_lengths = []
         self.completed_success = []
 
-        self.prev_stages = None
-        self.prev_completed_flags = None
-
         self.stage_presence_counts = np.zeros(self.max_stage + 1, dtype=np.int64)
         self.stage_completed_window_counts = np.zeros(self.max_stage + 1, dtype=np.int64)
         self.stage_completed_total_counts = np.zeros(self.max_stage + 1, dtype=np.int64)
 
         self.max_stage_seen = 0
+        self.last_log_timestep = self.num_timesteps
 
         log.info(
             f"TensorboardMetricsCallback started | "
@@ -154,22 +154,48 @@ class TensorboardMetricsCallback(BaseCallback):
         """
         Vrátí:
         - current_stages: numpy array aktuálních stages
-        - completed_flags: numpy array completed_stages
+        - completed_stage_events: dokončená stage, nebo -1 pokud v envu
+          v tomto kroku žádná stage dokončena nebyla
         """
         try:
             handler = self.training_env.env.env.handler
             current_stages = handler.task.reward_functions[0].actual_stage
-            completed_flags = handler.task.reward_functions[0].completed_stages
 
-            if current_stages is None or completed_flags is None:
+            if current_stages is None:
                 return None, None
+
+            completed_stage_events = getattr(handler.task, "completed_stage_events", None)
+            if completed_stage_events is None:
+                # Backwards-compatible fallback for tasks whose checker has no
+                # explicit event yet.  The reward flag denotes completion of
+                # the stage immediately preceding ``actual_stage``.
+                completed_flags = handler.task.reward_functions[0].completed_stages
+                if completed_flags is None:
+                    return None, None
+                completed_stage_events = torch.where(
+                    completed_flags.bool(),
+                    current_stages.long() - 1,
+                    torch.full_like(current_stages.long(), -1),
+                )
 
             return (
                 current_stages.detach().cpu().numpy().astype(int),
-                completed_flags.detach().cpu().numpy().astype(int),
+                completed_stage_events.detach().cpu().numpy().astype(int),
             )
-        except Exception:
+        except (AttributeError, IndexError, TypeError):
             return None, None
+
+    def _record_stage_completions(self, completed_stage_events: np.ndarray) -> None:
+        """Accumulate the explicit completion events from one environment step."""
+        valid_events = completed_stage_events[
+            (completed_stage_events >= 0) & (completed_stage_events <= self.max_stage)
+        ]
+        if valid_events.size == 0:
+            return
+
+        counts = np.bincount(valid_events, minlength=self.max_stage + 1)
+        self.stage_completed_window_counts += counts[: self.max_stage + 1]
+        self.stage_completed_total_counts += counts[: self.max_stage + 1]
 
     def _on_step(self) -> bool:
         rewards = np.array(self.locals["rewards"])
@@ -195,40 +221,25 @@ class TensorboardMetricsCallback(BaseCallback):
         # =========================
         # STAGE TRACKING
         # =========================
-        current_stages, completed_flags = self._get_stage_data()
-        if current_stages is not None and completed_flags is not None:
+        current_stages, completed_stage_events = self._get_stage_data()
+        if current_stages is not None and completed_stage_events is not None:
             current_stages = np.clip(current_stages, 0, self.max_stage)
-            completed_flags = np.clip(completed_flags, 0, 1)
-
-            if self.prev_stages is None:
-                self.prev_stages = current_stages.copy()
-
-            if self.prev_completed_flags is None:
-                self.prev_completed_flags = completed_flags.copy()
 
             # aktuální obsazenost stages
             for s in range(self.max_stage + 1):
                 self.stage_presence_counts[s] += int(np.sum(current_stages == s))
 
-            # NOVÉ completion eventy: completed_stages přešlo 0 -> 1
-            newly_completed_mask = (self.prev_completed_flags == 0) & (completed_flags == 1)
-            newly_completed_indices = np.where(newly_completed_mask)[0]
-
-            for idx in newly_completed_indices:
-                completed_stage = int(current_stages[idx]) - 1
-                if 0 <= completed_stage <= self.max_stage:
-                    self.stage_completed_window_counts[completed_stage] += 1
-                    self.stage_completed_total_counts[completed_stage] += 1
+            self._record_stage_completions(completed_stage_events)
 
             self.max_stage_seen = max(self.max_stage_seen, int(np.max(current_stages)))
-
-            self.prev_stages = current_stages.copy()
-            self.prev_completed_flags = completed_flags.copy()
 
         # =========================
         # LOGGING
         # =========================
-        if self.num_timesteps % self.log_interval == 0 and self.num_timesteps != 0:
+        # ``num_timesteps`` grows by num_envs on every vectorized step, so a
+        # modulo check can skip the requested interval indefinitely.
+        if self.num_timesteps - self.last_log_timestep >= self.log_interval:
+            self.last_log_timestep = self.num_timesteps
             if len(self.completed_rewards) > 0:
                 mean_r = float(np.mean(self.completed_rewards))
                 mean_l = float(np.mean(self.completed_lengths))

@@ -886,9 +886,17 @@ class _ChairManChecker(BaseChecker):
             handler.task.just_finished = torch.zeros(num_envs, dtype=torch.bool, device=device)
         if not hasattr(handler.task, "stage_success"):
             handler.task.stage_success = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        if not hasattr(handler.task, "completed_stage_events"):
+            handler.task.completed_stage_events = torch.full(
+                (num_envs,), -1, dtype=torch.long, device=device
+            )
 
         handler.task.just_finished[:] = False
         handler.task.stage_success[:] = False
+        # One-step event consumed by training callbacks.  ``completed_stages``
+        # is also used by StageProgressCfg and can be cleared while rewards are
+        # evaluated, before an SB3 callback gets a chance to inspect it.
+        handler.task.completed_stage_events.fill_(-1)
 
         # --- 1. VYTVOŘENÍ MASEK ---
         mask_0 = (stages == 0)
@@ -914,6 +922,7 @@ class _ChairManChecker(BaseChecker):
         # --- 4. ZPRACOVÁNÍ ÚSPĚCHŮ ---
         if all_success.any():
             print(f"complete success stage {handler.task.reward_functions[0].actual_stage[all_success]}")
+        handler.task.completed_stage_events[all_success] = stages[all_success]
         handler.task.reward_functions[0].actual_stage[all_success] += 1
 
         handler.task.reward_functions[0].completed_stages[all_success] = 1
@@ -1011,9 +1020,16 @@ class _ChairManCheckerSimple(BaseChecker):
             handler.task.just_finished = torch.zeros(num_envs, dtype=torch.bool, device=device)
         if not hasattr(handler.task, "stage_success"):
             handler.task.stage_success = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        if not hasattr(handler.task, "completed_stage_events"):
+            handler.task.completed_stage_events = torch.full(
+                (num_envs,), -1, dtype=torch.long, device=device
+            )
 
         handler.task.just_finished[:] = False
         handler.task.stage_success[:] = False
+        # Keep completion logging independent of the reward function, which
+        # consumes/reset its own ``completed_stages`` flag in the same step.
+        handler.task.completed_stage_events.fill_(-1)
 
         # --- 1. VYTVOŘENÍ MASEK ---
         mask_0 = (stages == 0)
@@ -1034,6 +1050,7 @@ class _ChairManCheckerSimple(BaseChecker):
         # --- 4. ZPRACOVÁNÍ ÚSPĚCHŮ ---
         if all_success.any():
             print(f"complete success stage {handler.task.reward_functions[0].actual_stage[all_success]}")
+        handler.task.completed_stage_events[all_success] = stages[all_success]
         handler.task.reward_functions[0].actual_stage[all_success] += 1
 
         handler.task.reward_functions[0].completed_stages[all_success] = 1

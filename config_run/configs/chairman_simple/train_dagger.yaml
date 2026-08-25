@@ -7,7 +7,7 @@ robots: [g1_slider_simple]
 fix_base_link: true
 task: chairmansimplegaussian #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
 decimation: 5
-num_envs: 100
+num_envs: 200
 headless: true
 add_table: true
 env_spacing: 4.0
@@ -66,7 +66,7 @@ force: false
 
 # PPO training settings
 #-------------------------------------------
-total_timesteps: 1_000
+total_timesteps: 5_000
 model_save_path: ./config_run/output/dagger/dagger_1
 model_save_freq: 500
 tensorboard_log: ./config_run/output/dagger/tensorboard_dagger
@@ -74,16 +74,20 @@ tensorboard_log: ./config_run/output/dagger/tensorboard_dagger
 
 # DAgger settings
 #-------------------------------------------
-#potřeba nastavit podle toho jak to zabírá vram
-dagger_store_per_step: 50 #<--
+# 200 envů, z každého kroku náhodně uložíme 100 snímků.
+# 100 * 5000 = 500 000 vzorků; při RGB uint8 3x128x128 zabere
+# buffer přibližně 22.9 GiB VRAM. Zbytek 48GB GPU zůstá pro Nyx,
+# Genesis a tréninkové tensory.
+dagger_store_per_step: 100
 dagger_train_every: 20
 dagger_updates_per_train: 10
-dagger_batch_size: 512
-dagger_buffer_steps: 3000 #<--
+dagger_batch_size: 1024
+dagger_buffer_steps: 5000
 dagger_buffer_device: cuda
-dagger_buffer_pin_memory: true
+dagger_buffer_pin_memory: false
 beta_start: 1.0
-beta_decay: 0.99999
+# Po 5000 krocích klesne beta přibližně na 0.05.
+beta_decay: 0.9994
 visualization: false
 
 # Managed by run_chairman_training_pipeline.py

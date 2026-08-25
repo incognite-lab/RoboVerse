@@ -7,7 +7,7 @@ robots: [g1_slider_simple]
 fix_base_link: true
 task: chairmansimple #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
 decimation: 5
-num_envs: 9000
+num_envs: 20000
 headless: true
 add_table: true
 env_spacing: 4.0
@@ -18,9 +18,9 @@ force: false
 
 # PPO training settings
 #-------------------------------------------
-total_timesteps: 10_000_000
+total_timesteps: 1_000_000_000
 model_save_path: ./config_run/output/ppo_models
-model_save_freq: 5_000_000
+model_save_freq: 10_000_000
 tensorboard_log: ./config_run/output/ppo_models/tensorboard
 
 
@@ -32,7 +32,7 @@ net_arch_vf: [128, 128, 128]
 
 learning_rate: 0.0003
 n_steps: 32
-batch_size: 8192
+batch_size: 64_000
 n_epochs: 5
 gamma: 0.99
 gae_lambda: 0.95

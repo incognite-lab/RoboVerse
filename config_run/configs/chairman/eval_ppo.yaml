@@ -3,11 +3,11 @@
 # Environment settings
 #-------------------------------------------
 sim: genesis
-robots: [g1_slider_simple]
+robots: [g1_with_hands]
 fix_base_link: false
-task: chairmansimple #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
+task: chairman #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
 decimation: 5
-num_envs: 100
+num_envs: 1
 headless: true
 add_table: true
 env_spacing: 4.0
@@ -20,10 +20,10 @@ force: false
 #Eveluation settings
 #------------------------------------------
 #load_model_path:
-eval_episodes: 100
+eval_episodes: 1
 eval_max_steps: 1000
 eval_total_step_cap: 1000
 eval_count_timeouts_as_failures: true
 
 # Managed by run_chairman_training_pipeline.py
-load_model_path: "./config_run/output/training_pipeline/run_2026-08-05_18-25-23/ppo"
+load_model_path: "./config_run/output/ppo_models/run_2026-08-24_17_chairman/"

@@ -31,11 +31,11 @@ cameras:
 #------------------------------------------
 #load_model_path:
 eval_episodes: 100
-eval_max_steps: 1000
-eval_total_step_cap: 1000
+eval_max_steps: 2000
+eval_total_step_cap: 2000
 eval_count_timeouts_as_failures: true
 
 # Managed by run_chairman_training_pipeline.py
-#load_model_path: ./config_run/output/ppo_model/run_2026-05-06_18_chairmansimple/model_560344000
-load_model_path: "./config_run/output/ppo_models/run_2026-08-17_22_chairmansimple/model_500400000"
+load_model_path: ./config_run/output/ppo_model/run_2026-05-06_18_chairmansimple/model_560344000
+#load_model_path: "./config_run/output/ppo_models/run_2026-08-17_22_chairmansimple/model_500400000"
 video_save_path: "./config_run/output/eval_videos/chair_man_ppo.mp4"

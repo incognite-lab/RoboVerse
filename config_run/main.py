@@ -119,7 +119,7 @@ def main():
         #config_name = "g1_door_IK"
         #config_name = "g1_door_open_stand_train"
         #config_name = "g1_door_stand_IK"
-        config_name = "chairman_simple/eval_ppo_video"
+        config_name = "chairman/eval_ppo_video"
         #config_name = "g1_ChairMan"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
@@ -278,8 +278,13 @@ def main():
                     SaveModelCallback(save_path=config.get("model_save_path"), save_freq=config.get("model_save_freq", 1_000_000),task_name=config.get("task")),
                     TensorboardMetricsCallback(
                         log_dir=config.get("tensorboard_log", "./ppo_tensorboard/"),
-                        log_interval=1000000,
-                        max_stage=3,
+                        log_interval=config.get("tensorboard_log_interval", 1_000_000),
+                        max_stage=config.get(
+                            "max_stage",
+                            4
+                            if "simple" in config.get("task", "")
+                            else (6 if "chairman" in config.get("task", "") else 3),
+                        ),
                         verbose=1,
                     ),
                     # EvalCallback(
@@ -324,7 +329,7 @@ def main():
             log.error(f"Provided load_model_path is not a directory: {model_dir}")
             env.close()
             exit(1)
-
+        scenario.dagger = 2
         # ---------------------------------------------------------
         # Pomocná funkce: pozice base_linku židle v XY rovině
         # ---------------------------------------------------------
@@ -1835,8 +1840,13 @@ def main():
                     SaveModelCallback(save_path=config.get("model_save_path"), save_freq=config.get("model_save_freq", 1_000_000),task_name=config.get("task")),
                     TensorboardMetricsCallback(
                         log_dir=config.get("tensorboard_log", "./ppo_tensorboard/"),
-                        log_interval=100000,
-                        max_stage=3,
+                        log_interval=config.get("tensorboard_log_interval", 100_000),
+                        max_stage=config.get(
+                            "max_stage",
+                            4
+                            if "simple" in config.get("task", "")
+                            else (6 if "chairman" in config.get("task", "") else 3),
+                        ),
                         verbose=1,
                     ),
                     # EvalCallback(
