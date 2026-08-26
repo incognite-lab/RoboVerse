@@ -3,7 +3,11 @@ from types import SimpleNamespace
 
 import torch
 
-from metasim.cfg.tasks.humanoidbench.ChairMan import WalkToChairProgressReward
+from metasim.cfg.tasks.humanoidbench.ChairMan import (
+    STAY_NEAR_ANCHOR_REWARD_WEIGHT,
+    StayNearAnchorReward,
+    WalkToChairProgressReward,
+)
 from metasim.utils.chair_navigation import chair_back_direction_xy
 
 
@@ -83,3 +87,43 @@ def test_navigation_reward_is_zero_outside_stage_zero():
         stage=1,
     )
     assert reward == 0.0
+
+
+def test_stay_near_anchor_is_a_penalty_for_xy_movement():
+    robot_body = torch.zeros((1, 1, 13), dtype=torch.float32)
+    robot = SimpleNamespace(
+        body_names=["pelvis"],
+        body_state=robot_body,
+        joint_pos=torch.zeros((1, 1)),
+    )
+    states = SimpleNamespace(robots={"g1_with_hands": robot})
+
+    penalty = StayNearAnchorReward()
+    penalty.actual_stage = torch.tensor([1])
+
+    assert penalty(states, "g1_with_hands").item() == 0.0
+
+    robot_body[0, 0, 0] = penalty.max_xy_drift / 2.0
+    assert math.isclose(
+        penalty(states, "g1_with_hands").item(), 0.5, rel_tol=0.0, abs_tol=1.0e-6
+    )
+
+    robot_body[0, 0, 0] = penalty.max_xy_drift
+    assert penalty(states, "g1_with_hands").item() == 1.0
+    assert STAY_NEAR_ANCHOR_REWARD_WEIGHT < 0.0
+
+
+def test_stay_near_anchor_penalty_is_inactive_outside_manipulation_stages():
+    robot_body = torch.zeros((1, 1, 13), dtype=torch.float32)
+    robot = SimpleNamespace(
+        body_names=["pelvis"],
+        body_state=robot_body,
+        joint_pos=torch.zeros((1, 1)),
+    )
+    states = SimpleNamespace(robots={"g1_with_hands": robot})
+
+    penalty = StayNearAnchorReward()
+    penalty.actual_stage = torch.tensor([0])
+    robot_body[0, 0, 0] = 1.0
+
+    assert penalty(states, "g1_with_hands").item() == 0.0

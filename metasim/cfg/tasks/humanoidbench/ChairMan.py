@@ -1312,9 +1312,10 @@ class PreciseHandTargetReward(HumanoidBaseReward):
 class StayNearAnchorReward(HumanoidBaseReward):
     """
     Stage 1 and 2:
-    Reward for keeping pelvis near anchor position.
+    Penalty for moving the pelvis away from its anchor position.
 
-    Output: <0, 1>
+    Output: <0, 1>, where 0 means no drift and 1 means the robot has
+    drifted by ``max_xy_drift`` or more. Use with a negative weight.
     """
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
@@ -1372,9 +1373,9 @@ class StayNearAnchorReward(HumanoidBaseReward):
         self.prev_stages = self.actual_stage.clone()
 
         drift = torch.norm(current_xy - self.saved_positions_xy, dim=-1)
-        reward = torch.clamp(1.0 - drift / self.max_xy_drift, min=0.0, max=1.0)
+        penalty = torch.clamp(drift / self.max_xy_drift, min=0.0, max=1.0)
 
-        return reward * stage_mask.float()
+        return penalty * stage_mask.float()
 
 
 # =============================================================================
@@ -2153,7 +2154,7 @@ REACH_CHAIR_REWARD_WEIGHT = 6.0
 REACH_ORIENTATION_REWARD_WEIGHT = 3.0
 HAND_TARGET_STILLNESS_REWARD_WEIGHT = 4.0
 PRECISE_HAND_TARGET_REWARD_WEIGHT = 5.0
-STAY_NEAR_ANCHOR_REWARD_WEIGHT = 3.0
+STAY_NEAR_ANCHOR_REWARD_WEIGHT = -4.0
 
 # Stage 2
 CLOSE_GRASP_REWARD_WEIGHT = 20.0
@@ -2228,7 +2229,7 @@ class ChairmanCfg(HumanoidTaskCfg):
 
         FACE_CHAIR_REWARD_WEIGHT,
         # ARM_RESTING_POSE_PENALTY_WEIGHT,
-        STAGE_PROGRESS_WEIGHT,
+        # STAGE_PROGRESS_WEIGHT,
         CONTINUOUS_STAGE_REWARD_WEIGHT,
     ]
 
@@ -2264,7 +2265,7 @@ class ChairmanCfg(HumanoidTaskCfg):
 
         FaceChairReward(),
         # ArmRestingPosePenaltyCfg(),
-        StageProgressCfg(),
+        #StageProgressCfg(),
         ContinuousStageReward(),
     ]
 
