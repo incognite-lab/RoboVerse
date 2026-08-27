@@ -873,7 +873,14 @@ class _ChairManChecker(BaseChecker):
             self.announced_stages = set()
             self.announced_stages.add(0) # Stage 0 nás nezajímá, tu už umí od začátku
 
-        SAVE_PROBABILITY = 0.5
+        save_probability = float(
+            getattr(handler.task, "snapshot_save_probability", 0.5)
+        )
+        if not 0.0 <= save_probability <= 1.0:
+            raise ValueError(
+                "snapshot_save_probability must be in [0, 1], got "
+                f"{save_probability}"
+            )
 
         states = handler.get_states()
         # Získáme tenzor se všemi aktuálními stages [num_envs]
@@ -944,11 +951,19 @@ class _ChairManChecker(BaseChecker):
                 self.announced_stages.add(6)
 
         # B) Náhodný výběr pro uložení snapshotu
+        use_snapshot_curriculum = bool(
+            getattr(handler.task, "use_snapshot_curriculum", True)
+        )
         success_to_save = all_success & (stages <= 5)
+        if not use_snapshot_curriculum:
+            success_to_save = torch.zeros_like(success_to_save)
 
         if success_to_save.any():
             num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
-            rand_mask = torch.rand(num_envs, device=handler.device) < SAVE_PROBABILITY
+            if save_probability >= 1.0:
+                rand_mask = torch.ones(num_envs, dtype=torch.bool, device=handler.device)
+            else:
+                rand_mask = torch.rand(num_envs, device=handler.device) < save_probability
 
             envs_to_save = (success_to_save & rand_mask).nonzero(as_tuple=False).squeeze(-1)
 

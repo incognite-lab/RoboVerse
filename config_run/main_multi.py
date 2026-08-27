@@ -1,3 +1,10 @@
+"""Main training/evaluation entry point with concurrent ChairMan Multi-PPO.
+
+For ``task: chairmanmulti`` the train and load-and-train modes use six
+independent PPO policies routed per environment row by its current stage. All
+other task/mode branches retain the behavior of ``main.py``.
+"""
+
 import sys
 import os
 import yaml
@@ -152,6 +159,18 @@ def main():
     scenario.env_spacing = config.get("env_spacing", 2.0)
     scenario.robots[0].fix_base_link = config.get("fix_base_link", False)
     scenario.task.decimation = config.get("decimation", 1)
+    if config.get("task") == "chairmanmulti":
+        # A successful stage transition does not reset the simulator. Physical
+        # resets after failure/timeout may, however, reuse snapshots of stages
+        # that have already been reached.
+        scenario.task.reset_to_stage0 = False
+        scenario.task.use_snapshot_curriculum = True
+        scenario.task.snapshot_save_probability = float(
+            config.get("snapshot_save_probability", 1.0)
+        )
+        scenario.task.verbose_motion_diagnostics = bool(
+            config.get("verbose_motion_diagnostics", False)
+        )
 
 
     #TODO import correct StableBaseline3VecEnv
@@ -184,6 +203,14 @@ def main():
             if scenario.robots[0].name != "g1_with_hands":
                 scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
             scenario.robots[0].fix_base_link = False
+    elif config.get("task") == "chairmanmulti":
+        from SB3_chairman_multi_env import StableBaseline3VecEnv
+        if scenario.robots[0].name != "g1_with_hands":
+            raise ValueError(
+                "chairmanmulti requires robots: [g1_with_hands] for walking"
+            )
+        if scenario.robots[0].fix_base_link:
+            raise ValueError("chairmanmulti requires fix_base_link: false")
     elif config.get("task") in [
         "chairmansimple",
         "chairmansimplegrpo",
@@ -256,6 +283,17 @@ def main():
         #_Eval env
         metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
         env = StableBaseline3VecEnv(metasim_env)
+
+        if config.get("task") == "chairmanmulti":
+            from multi_ppo_trainer import MultiPPOTrainer
+
+            trainer = MultiPPOTrainer(env, config)
+            try:
+                run_dir = trainer.learn()
+                log.info(f"Concurrent ChairMan Multi-PPO saved to {run_dir}")
+            finally:
+                env.close()
+            return
 
         model = PPO(
             "MlpPolicy",
@@ -1824,6 +1862,22 @@ def main():
     elif config.get("train_or_eval") == "load_and_train":
         metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
         env = StableBaseline3VecEnv(metasim_env)
+
+        if config.get("task") == "chairmanmulti":
+            from multi_ppo_trainer import MultiPPOTrainer
+
+            trainer = MultiPPOTrainer(
+                env,
+                config,
+                resume_path=config.get("load_model_path"),
+            )
+            try:
+                run_dir = trainer.learn()
+                log.info(f"Resumed ChairMan Multi-PPO saved to {run_dir}")
+            finally:
+                env.close()
+            return
+
         eval_env = StableBaseline3VecEnv(metasim_env)
         # load the model
         #TODO fix numpy module issue when loading model only for cluster training
@@ -2226,7 +2280,6 @@ def main():
     elif config.get("train_or_eval") == "eval_dagger_video":
         from dagger_vp.student_net import VisionStudent
         import cv2
-        import torch.nn.functional as F
 
         scenario.dagger = 2
 
@@ -2268,32 +2321,16 @@ def main():
             for step in range(max_steps):
                 states = metasim_env.env.handler.get_states()
 
-                # --- kamera a preprocessing vstupu neuronové sítě ---
+                # --- video frame ---
                 rgb_tensor_raw = states.cameras["camera0"].rgb
-                rgb_tensor = rgb_tensor_raw.to(device)
-                rgb_permuted = rgb_tensor.permute(0, 3, 1, 2).contiguous().float()
-                student_obs_net_input = F.interpolate(
-                    rgb_permuted,
-                    size=(128, 128),
-                    mode="bilinear",
-                    align_corners=False,
-                    antialias=True,
-                ) / 255.0
-
-                # Video zobrazuje stejný 128x128 obraz, který dostává neuronka.
-                frame_np = (
-                    student_obs_net_input[0]
-                    .permute(1, 2, 0)
-                    .mul(255.0)
-                    .round()
-                    .clamp(0, 255)
-                    .to(torch.uint8)
-                    .detach()
-                    .cpu()
-                    .numpy()
-                )
+                frame_np = rgb_tensor_raw[0].detach().cpu().numpy().astype(np.uint8)
                 frame_bgr = cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
                 video_writer.write(frame_bgr)
+
+                # --- přesně stejný preprocessing jako v train_dagger ---
+                rgb_tensor = rgb_tensor_raw.to(device)
+                rgb_permuted = rgb_tensor.permute(0, 3, 1, 2).contiguous().float()
+                student_obs_net_input = rgb_permuted / 255.0
 
                 joint_obs_tensor = torch.as_tensor(
                     obs[:, 3:num_joints + 3],

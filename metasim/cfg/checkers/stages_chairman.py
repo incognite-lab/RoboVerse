@@ -55,6 +55,7 @@ GRASP_MIN_CLOSURE = 0.55
 STAGE0_HOLD_STEPS = 10
 STAGE1_HOLD_STEPS = 5
 STAGE2_HOLD_STEPS = 10
+STAGE3_HOLD_STEPS = 5
 
 POS_THRESHOLD = 0.4
 ORI_DOT_PRODUCT_THRESHOLD = 0.9
@@ -99,7 +100,7 @@ def _held_condition(handler, name, idx, condition, required_steps):
 ENABLE_DISK_SNAPSHOT_LOAD = False
 
 # Pokud True, nové snapshoty se budou průběžně zapisovat i na disk.
-ENABLE_DISK_SNAPSHOT_SAVE = False
+ENABLE_DISK_SNAPSHOT_SAVE = True
 
 SNAPSHOT_DIR = Path("config_run/snapshots_chair/")
 MAX_SNAPSHOTS = 100
@@ -574,18 +575,30 @@ def stege3_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     chair_pos_diff = torch.norm(chair_pos - target_chair_pos, dim=-1)
     chair_moved_enough = (pulled_x >= CHAIR_PULL_DISTANCE_THRESHOLD) & (chair_pos_diff <= POS_THRESHOLD)
 
-    # --- 5. Kontrola zastavení robota ---
+    # --- 5. Kontrola zastavení robota i židle ---
     base_link_idx = states.robots[handler.robot.name].body_names.index("pelvis")
     robot_lin_vel = states.robots[handler.robot.name].body_state[idx, base_link_idx, 7:10]
     vel_norm = torch.norm(robot_lin_vel, dim=-1)
     standing_still = vel_norm < VELOCITY_THRESHOLD
+    chair_lin_vel = chair.body_state[idx, chair_base_idx, 7:10]
+    chair_standing_still = torch.norm(chair_lin_vel, dim=-1) < VELOCITY_THRESHOLD
 
     # --- VYHODNOCENÍ ---
     # Fail: pokud spadne, ujede mu ruka, nebo zcela ztratí kontakt prstů s židlí
     fail_cond = term_common | drift_fail | grasp_fail
 
-    # Success: neselhal (ani nepustil židli), odtáhl židli dostatečně daleko a zastavil se
-    success_cond = (~fail_cond) & chair_moved_enough & standing_still
+    # Success requires a short stable hold. Without checking the chair speed,
+    # stage 4 could start while the chair was still rolling and fail before its
+    # policy had a chance to act.
+    success_now = (
+        (~fail_cond)
+        & chair_moved_enough
+        & standing_still
+        & chair_standing_still
+    )
+    success_cond = _held_condition(
+        handler, "stage3_success_steps", idx, success_now, STAGE3_HOLD_STEPS
+    )
 
     # Pokud selže, tak skončil epizodu. Pokud uspěje, taky ukončí checker, ale se sukcessem.
     terminated[idx] = fail_cond | success_cond
@@ -736,7 +749,8 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
         env_ids = list(range(handler.num_envs))
 
     for counter_name in (
-        "stage0_success_steps", "stage1_success_steps", "stage2_success_steps"
+        "stage0_success_steps", "stage1_success_steps", "stage2_success_steps",
+        "stage3_success_steps",
     ):
         counter = getattr(handler.task, counter_name, None)
         if counter is not None:
@@ -753,16 +767,22 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
     # =====================================================
     # Režim: vždy start od stage 0
     # =====================================================
-    if FORCE_START_FROM_STAGE0:
-        print(f"[reset_chairman] FORCE_START_FROM_STAGE0=True -> reset envs {env_ids} vždy do stage 0")
+    use_snapshot_curriculum = bool(
+        getattr(handler.task, "use_snapshot_curriculum", True)
+    )
+    reset_to_stage0 = (
+        FORCE_START_FROM_STAGE0
+        or bool(getattr(handler.task, "reset_to_stage0", False))
+        or not use_snapshot_curriculum
+    )
+    if reset_to_stage0:
+        for reward_fn in handler.task.reward_functions:
+            reward_fn.actual_stage[env_ids] = 0
+            reward_fn.completed_stages[env_ids] = 0
 
+        stage0_state = stage0_init(handler.robot.name)
         for env in env_ids:
-            for i in range(len(handler.task.reward_functions)):
-                handler.task.reward_functions[i].actual_stage[env] = 0
-                handler.task.reward_functions[i].completed_stages[env] = 0
-
-            states[env] = stage0_init(handler.robot.name)
-            print(f"[reset_chairman] env {env} -> stage 0")
+            states[env] = stage0_state
 
         if hasattr(handler.task, "recorded_stage") and env_ids is not None:
             handler.task.recorded_stage[env_ids] = -1
@@ -831,7 +851,9 @@ def save_snapshot_chairman(handler: BaseSimHandler, env_id: int, stage: int) -> 
     global UNSAVED_COUNT
 
     # Když chceme trénovat vždy od nuly, snapshoty vůbec neřešíme
-    if FORCE_START_FROM_STAGE0:
+    if FORCE_START_FROM_STAGE0 or not bool(
+        getattr(handler.task, "use_snapshot_curriculum", True)
+    ):
         return
 
     full_states = handler.get_states()

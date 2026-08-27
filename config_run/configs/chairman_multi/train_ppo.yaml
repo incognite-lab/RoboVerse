@@ -1,0 +1,82 @@
+#genesis config stand
+
+# Environment settings
+#-------------------------------------------
+sim: genesis
+robots: [g1_with_hands]
+fix_base_link: false
+task: chairmanmulti #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
+decimation: 5
+num_envs: 7000
+headless: true
+add_table: true
+env_spacing: 4.0
+train_or_eval: train   #load_and_train #train_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
+
+force: false
+
+
+# Multi-policy PPO training settings
+#-------------------------------------------
+# Global number of vector-environment transitions. All six policies learn
+# concurrently from whichever env rows currently occupy their stage.
+total_timesteps: 2_000_000_000
+model_save_path: ./config_run/output/ppo_models_multi
+model_save_freq: 20_000_000
+tensorboard_log: ./config_run/output/ppo_models_multi/tensorboard
+
+# Each policy updates after collecting this many transitions of its own. This
+# may also be a six-value list or a {stage: samples} mapping.
+stage_rollout_samples: 96_000
+
+# An individual env switches policy immediately after completing a stage,
+# without a physical reset. Reliable policies can then be frozen while still
+# controlling their stage during downstream training.
+freeze_learned_policies: true
+frozen_policy_deterministic: true
+stage_advance_success_rate: 0.90
+stage_success_window: 1000
+stage_min_episodes: 1000
+
+# Every successfully reached stage is stored in the in-memory curriculum.
+# Later physical resets sample stage 0..the deepest continuously available
+# snapshot, so downstream policies do not have to wait for the full prefix.
+snapshot_save_probability: 1.0
+
+# Set true only when debugging the pretrained walking controller. False keeps
+# the terminal focused on the per-policy PPO training tables.
+verbose_motion_diagnostics: false
+
+# Print the active-policy tables after every global rollout. Increase this to
+# 5 or 10 if terminal output is still too frequent.
+terminal_tables: true
+terminal_log_interval: 1
+stage_episode_metrics_window: 1000
+
+# Used only with train_or_eval: load_and_train; must point to a complete
+# concurrent multi-policy run directory containing stage_0 ... stage_5.
+load_model_path:
+# PPO parameters
+#-------------------------------------------
+net_arch_pivf: true
+# Oddělený actor/critic; observation_dim=328 a action_dim=34.
+net_arch_pi: [256, 256, 128]
+net_arch_vf: [256, 256, 128]
+
+learning_rate: 0.0003
+
+# Global rollout length. Every policy receives only the rows whose current
+# stage matches that policy, so downstream buffers fill more slowly.
+n_steps: 32
+batch_size: 48000
+n_epochs: 5
+
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+ent_coef: 0.002
+# Initial standard deviation exp(-1) ~= 0.37.  The SB3 default (1.0)
+# saturates the small walking-command bounds and makes early rollouts fall.
+log_std_init: -1.0
+vf_coef: 1.0
+max_grad_norm: 1.0

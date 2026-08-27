@@ -1,0 +1,30 @@
+#genesis config stand
+
+# Environment settings
+#-------------------------------------------
+sim: genesis
+robots: [g1_with_hands]
+fix_base_link: false
+task: chairmanmulti
+decimation: 5
+num_envs: 1
+headless: true
+add_table: true
+env_spacing: 4.0
+train_or_eval: eval  #load_and_train #train_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
+
+# Train or Eval settings
+#-------------------------------------------
+force: false
+
+#Eveluation settings
+#------------------------------------------
+#load_model_path:
+eval_episodes: 1
+eval_max_steps: 1000
+eval_total_step_cap: 1000
+eval_count_timeouts_as_failures: true
+num_eval_stages: 6
+
+# Managed by run_chairman_training_pipeline.py
+load_model_path: "./config_run/output/ppo_models_multi/"

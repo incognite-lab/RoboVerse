@@ -5,7 +5,7 @@
 sim: genesis
 robots: [g1_with_hands]
 fix_base_link: false
-task: chairman #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
+task: chairmanmulti
 decimation: 5
 num_envs: 1
 headless: false
@@ -75,9 +75,9 @@ force: false
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-04-02_20_chairman/model_970776000
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-03-13_14_chairman_top/model_200070000
 #load_model_path: ./config_run/output/grpo_model/student_grpo_step_145.pth
-load_model_path: ./config_run/output/ppo_models/run_2026-08-25_16_chairman/model_1980990000
-video_save_path: ./config_run/output/eval_videos/chair_man_21.mp4
-eval_episodes: 3000
-eval_max_steps: 3000
+load_model_path: ./config_run/output/ppo_models_multi/
+video_save_path: ./config_run/output/eval_videos/chairman_ppo_multi.mp4
+eval_episodes: 2000
+eval_max_steps: 2000
 eval_total_step_cap: 100
 eval_count_timeouts_as_failures: true

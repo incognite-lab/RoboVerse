@@ -3,16 +3,20 @@
 # Environment settings
 #-------------------------------------------
 sim: genesis
-robots: [g1_slider_simple]
-fix_base_link: true
-task: chairmansimplegaussian #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
+robots: [g1_with_hands]
+fix_base_link: false
+task: chairmanmulti
 decimation: 5
-num_envs: 1
-headless: false
+num_envs: 100
+headless: true
 add_table: true
 env_spacing: 4.0
-train_or_eval: eval_dagger_video  #load_and_train #train_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
+train_or_eval: train_grpo  #load_and_train #train_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
 
+
+# Gaussian-splat camera with a small standalone Genesis floor for alignment.
+# Keep render_sim_geometry=false for now: Nyx renders the splat plus this
+# controlled standalone geometry, not the full MetaSim robot/ground scene yet.
 cameras:
    camera1:
      type: NyxGaussianSplatCameraCfg
@@ -24,7 +28,7 @@ cameras:
        clipping_range: [0.1, 100.0]
        pos: [0.0, 0.0, 0.8]
        look_at: [1.0, 0.0, 0.35]
-       mount_to: g1_slider_simple
+       mount_to: g1_with_hands
        mount_link: head_link
        mount_pos: [0.0, 0.0, 0.5]
        mount_quat: [0.5, 0.5, -0.5, -0.5]
@@ -59,10 +63,26 @@ cameras:
 #-------------------------------------------
 force: false
 
-load_model_path: ./config_run/output/dagger/dagger_1/student_model_step_392000.pth
-video_save_path: ./config_run/output/eval_videos/chair_man_19.mp4
-eval_episodes: 1000
-eval_max_steps: 1000
-eval_total_step_cap: 100
-eval_count_timeouts_as_failures: true
-visualization: true
+load_model_path: ./config_run/output/dagger_multi/student_model_final.pth
+
+# PPO training settings
+#-------------------------------------------
+total_timesteps: 8
+model_save_path: ./config_run/output/GRPO_multi/
+model_save_freq: 4
+tensorboard_log: ./config_run/output/GRPO_multi/tensorboard
+
+
+#GRPO parameters
+#--------------------------
+grpo_learning_rate: 1.0e-5
+grpo_total_updates: 200
+grpo_group_size: 5
+grpo_rollouts_per_batch: 200
+grpo_success_bonus: 20.0
+
+grpo_clip_eps: 0.2
+grpo_ent_coef: 0.001
+grpo_update_epochs: 4
+grpo_minibatch_size: 2048
+grpo_max_grad_norm: 1.0

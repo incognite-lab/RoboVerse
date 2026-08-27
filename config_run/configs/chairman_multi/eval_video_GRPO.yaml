@@ -1,0 +1,60 @@
+# Full-task GRPO student video evaluation for the stage-wise ChairMan setup.
+sim: genesis
+robots: [g1_with_hands]
+fix_base_link: false
+task: chairmanmulti
+decimation: 5
+num_envs: 1
+headless: false
+add_table: true
+env_spacing: 4.0
+train_or_eval: eval_grpo_video
+
+cameras:
+  camera1:
+    type: NyxGaussianSplatCameraCfg
+    params:
+      name: camera0
+      width: 128
+      height: 128
+      fov: 70.0
+      clipping_range: [0.1, 100.0]
+      pos: [0.0, 0.0, 0.8]
+      look_at: [1.0, 0.0, 0.35]
+      mount_to: g1_with_hands
+      mount_link: head_link
+      mount_pos: [0.0, 0.0, 0.5]
+      mount_quat: [0.5, 0.5, -0.5, -0.5]
+      gaussian_splat_path: ./config_run/splat/splat_2.ply
+      gaussian_position: [0.0, 0.0, 1.5]
+      gaussian_rotation_xyzw: [0.0, 0.0, -0.70710678, 0.70710678]
+      gaussian_scale: [3.0, 3.0, 3.0]
+      spp: 8
+      render_mode: FastPathTracer
+      tone_mapper: "Off"
+      render_sim_geometry: true
+      standalone_floor: false
+      standalone_floor_pos: [0.0, 0.0, -0.03]
+      standalone_floor_size: [20.0, 20.0, 0.04]
+      standalone_floor_color: [0.55, 0.55, 0.55, 1.0]
+      standalone_light_dir: [-0.4, -0.5, -1.0]
+      standalone_light_intensity: 5.0
+      standalone_metasim_objects: false
+      standalone_metasim_robot: false
+      gaussian_z_up: true
+      open_nyx_window: false
+      debug_image_stats: false
+      debug_show: false
+      debug_show_all_envs: false
+      debug_calibrate: false
+      debug_detach_from_mount: false
+      debug_control_target: camera
+      debug_translation_step: 0.05
+      debug_rotation_step_deg: 5.0
+
+force: false
+load_model_path: ./config_run/output/GRPO_multi/student_grpo_final.pth
+video_save_path: ./config_run/output/eval_videos/chairman_grpo_multi.mp4
+eval_max_steps: 1000
+video_stop_on_done: true
+eval_deterministic: true

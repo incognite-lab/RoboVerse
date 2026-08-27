@@ -2425,6 +2425,33 @@ class ContinuousStageReward(HumanoidBaseReward):
         # Váš framework (Metasim/Gym wrapper) tuto hodnotu následně
         # automaticky vynásobí váhou, kterou máte definovanou v configu.
         return self.actual_stage.float()
+
+
+class MultiPolicyStageCompletionReward(HumanoidBaseReward):
+    """One-shot completion reward without leaking reward across policies.
+
+    ``ContinuousStageReward`` is useful when one policy owns the complete task,
+    but it is a poor fit for stage-local policies: policy ``k`` would receive a
+    positive constant reward ``k`` for delaying completion.  The multi-policy
+    task instead rewards only the transition out of the currently trained
+    stage.  The checker-owned ``completed_stage_events`` tensor remains intact
+    for callbacks; only the reward-specific flag is consumed here.
+    """
+
+    def __init__(self, robot_name="g1_with_hands"):
+        super().__init__(robot_name)
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        if self.completed_stages is None:
+            robot = states.robots[robot_name]
+            return torch.zeros(
+                robot.joint_pos.shape[0],
+                device=robot.joint_pos.device,
+            )
+
+        reward = self.completed_stages.float().clone()
+        self.completed_stages.zero_()
+        return reward
 # =============================================================================
 # WEIGHTS
 # reward functions output either:
@@ -2445,9 +2472,8 @@ HUMANLY_DOF_LIMIT_WEIGHT = -0.25
 UPRIGHT_PENALTY_WEIGHT = -5.00
 FACE_CHAIR_REWARD_WEIGHT = 0.25
 ARM_RESTING_POSE_PENALTY_WEIGHT = -0.05
-# One-shot transition bonus. Unlike a continuous stage baseline, this rewards
-# finishing quickly instead of accumulating reward by waiting in a late stage.
-STAGE_PROGRESS_WEIGHT = 12.0
+# Every stage-local policy gets the same one-shot completion bonus.
+MULTI_POLICY_STAGE_COMPLETION_WEIGHT = 25.0
 
 # Stage 0
 STAGE0_ARM_POS_REWARD_WEIGHT = 4.0
@@ -2484,12 +2510,22 @@ KEEP_FINGERS_OPEN_PENALTY_WEIGHT = -3.0
 # TASK CONFIG
 # =============================================================================
 
+
 @configclass
-class ChairmanCfg(HumanoidTaskCfg):
+class ChairmanmultiCfg(HumanoidTaskCfg):
     """Chair task for humanoid robots - full staged reward shaping."""
 
     success_bar = 0.9
     episode_length = 2500
+    # A successful transition continues in the same physical episode under
+    # the next PPO policy.  Separately, the reached state is saved so later
+    # failures/timeouts can reset directly into an already unlocked stage.
+    # With an empty RAM buffer the initial reset still necessarily uses stage 0.
+    reset_to_stage0: bool = False
+    use_snapshot_curriculum: bool = True
+    snapshot_save_probability: float = 1.0
+    verbose_motion_diagnostics: bool = False
+    num_policy_stages: int = 6
 
     objects = [
         ArticulationObjCfg(
@@ -2539,7 +2575,8 @@ class ChairmanCfg(HumanoidTaskCfg):
 
         FACE_CHAIR_REWARD_WEIGHT,
         # ARM_RESTING_POSE_PENALTY_WEIGHT,
-        STAGE_PROGRESS_WEIGHT,
+        # STAGE_PROGRESS_WEIGHT,
+        MULTI_POLICY_STAGE_COMPLETION_WEIGHT,
     ]
 
     reward_functions = [
@@ -2576,7 +2613,8 @@ class ChairmanCfg(HumanoidTaskCfg):
 
         FaceChairReward(),
         # ArmRestingPosePenaltyCfg(),
-        StageProgressCfg(),
+        #StageProgressCfg(),
+        MultiPolicyStageCompletionReward(),
     ]
 
     def extra_spec(self):
