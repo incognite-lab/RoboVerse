@@ -20,6 +20,7 @@ class FakeStageVecEnv(VecEnv):
     """Small deterministic six-stage env for trainer integration tests."""
 
     def __init__(self, num_envs: int = 4):
+        self.torch_device = torch.device("cpu")
         self.stages = np.zeros(num_envs, dtype=np.int64)
         self.stage_steps = np.zeros(num_envs, dtype=np.int64)
         self.actions = None
@@ -32,10 +33,16 @@ class FakeStageVecEnv(VecEnv):
     def get_current_stages(self):
         return self.stages.copy()
 
+    def get_current_stages_torch(self):
+        return torch.as_tensor(self.stages, dtype=torch.long)
+
     def reset(self):
         self.stages.fill(0)
         self.stage_steps.fill(0)
         return self._obs()
+
+    def torch_reset(self):
+        return torch.from_numpy(self.reset())
 
     def _obs(self):
         obs = np.zeros((self.num_envs, 4), dtype=np.float32)
@@ -68,6 +75,22 @@ class FakeStageVecEnv(VecEnv):
         self.stages[dones] = 0
         rewards = completed.astype(np.float32)
         return self._obs(), rewards, dones, infos
+
+    def torch_step(self, actions):
+        obs, rewards, dones, infos = self.step(actions.detach().cpu().numpy())
+        return (
+            torch.from_numpy(obs),
+            torch.from_numpy(rewards),
+            torch.from_numpy(dones),
+            {
+                "completed_stage": torch.tensor(
+                    [info["completed_stage"] for info in infos], dtype=torch.long
+                ),
+                "stage_after_event": torch.tensor(
+                    [info["stage_after"] for info in infos], dtype=torch.long
+                ),
+            },
+        )
 
     def close(self):
         pass

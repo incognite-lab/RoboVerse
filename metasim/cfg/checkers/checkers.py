@@ -862,7 +862,7 @@ class _ChairManChecker(BaseChecker):
         from metasim.cfg.checkers.stages_chairman import (
             stege0_chacker, stege1_chacker, stege2_chacker,
             stege3_chacker, stege4_chacker, stege5_chacker,
-            save_snapshot_chairman
+            RAM_SNAPSHOT_BUFFER, save_snapshots_chairman
         )
         import random
         import time
@@ -927,8 +927,6 @@ class _ChairManChecker(BaseChecker):
         all_success = succ_0 | succ_1 | succ_2 | succ_3 | succ_4 | succ_5
 
         # --- 4. ZPRACOVÁNÍ ÚSPĚCHŮ ---
-        if all_success.any():
-            print(f"complete success stage {handler.task.reward_functions[0].actual_stage[all_success]}")
         handler.task.completed_stage_events[all_success] = stages[all_success]
         handler.task.reward_functions[0].actual_stage[all_success] += 1
 
@@ -943,7 +941,10 @@ class _ChairManChecker(BaseChecker):
         handler.task.stage_success[:] = just_finished
         handler.task.just_finished[:] = just_finished
 
-        if just_finished.any():
+        verbose_stage_events = bool(
+            getattr(handler.task, "verbose_stage_events", False)
+        )
+        if verbose_stage_events and just_finished.any():
             if 6 not in self.announced_stages:
                 print("\n" + "="*50)
                 print(f"🏆 ABSOLUTNÍ PRŮLOM! Robot poprvé dokončil celou úlohu (Stage 6)!")
@@ -958,32 +959,35 @@ class _ChairManChecker(BaseChecker):
         if not use_snapshot_curriculum:
             success_to_save = torch.zeros_like(success_to_save)
 
-        if success_to_save.any():
+        if use_snapshot_curriculum and save_probability > 0.0:
             num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
             if save_probability >= 1.0:
                 rand_mask = torch.ones(num_envs, dtype=torch.bool, device=handler.device)
             else:
                 rand_mask = torch.rand(num_envs, device=handler.device) < save_probability
 
-            envs_to_save = (success_to_save & rand_mask).nonzero(as_tuple=False).squeeze(-1)
+            # A newly reached stage must always get at least one restart
+            # snapshot. Afterwards probabilistic reservoir replacement keeps
+            # snapshot work bounded even when thousands of envs succeed in
+            # the same simulator step.
+            mandatory = torch.zeros_like(success_to_save)
+            for stage in range(1, 6):
+                if len(RAM_SNAPSHOT_BUFFER.get(stage, ())) == 0:
+                    candidates = success_to_save & (stages == stage)
+                    mandatory |= candidates & (candidates.cumsum(dim=0) == 1)
+            envs_to_save = (
+                mandatory | (success_to_save & rand_mask)
+            ).nonzero(as_tuple=False).squeeze(-1)
 
-            if len(envs_to_save) > 0:
-                envs_to_save_cpu = envs_to_save.cpu().numpy()
-                stages_cpu = stages[envs_to_save].cpu().numpy()
-
-                for i in range(len(envs_to_save_cpu)):
-                    env_idx = int(envs_to_save_cpu[i])
-                    new_stage = int(stages_cpu[i])
-
-                    # 1. Nejprve fyzicky uložíme snapshot
-                    save_snapshot_chairman(handler, env_idx, new_stage)
-
-                    # 2. Pokud se uložení provedlo a stage ještě nebyla oznámena -> Vypiš to!
+            saved = save_snapshots_chairman(
+                handler, envs_to_save, stages.index_select(0, envs_to_save)
+            )
+            if verbose_stage_events:
+                for env_idx, new_stage in saved:
                     if new_stage not in self.announced_stages:
                         print("\n" + "*"*50)
                         print(f"🚀 PRŮLOM: Robot se poprvé posunul a ULOŽIL stav pro STAGE {new_stage}! (Env: {env_idx})")
                         print("*"*50 + "\n")
-                        # Zapíšeme do paměti, ať už to nikdy nevypíše
                         self.announced_stages.add(new_stage)
 
         return all_terminated

@@ -847,56 +847,9 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
 
 
 
-def save_snapshot_chairman(handler: BaseSimHandler, env_id: int, stage: int) -> None:
+def _store_snapshot(stage: int, snapshot_data: dict) -> None:
+    """Insert one already CPU-resident snapshot into the curriculum buffer."""
     global UNSAVED_COUNT
-
-    # Když chceme trénovat vždy od nuly, snapshoty vůbec neřešíme
-    if FORCE_START_FROM_STAGE0 or not bool(
-        getattr(handler.task, "use_snapshot_curriculum", True)
-    ):
-        return
-
-    full_states = handler.get_states()
-    snapshot_data = {"robots": {}, "objects": {}}
-
-    robot_name = handler.robot.name
-    robot_states = full_states.robots[robot_name]
-    joint_names = robot_states.joint_names.tolist()
-    joint_pos = robot_states.joint_pos[env_id].detach().cpu().numpy()
-    joint_vel = robot_states.joint_vel[env_id].detach().cpu().numpy()
-
-    dof_pos = {name: pos for name, pos in zip(joint_names, joint_pos)}
-    dof_vel = {name: vel for name, vel in zip(joint_names, joint_vel)}
-
-    snapshot_data["robots"][robot_name] = {
-        "pos": robot_states.root_state[env_id, :3].detach().cpu().clone(),
-        "rot": robot_states.root_state[env_id, 3:7].detach().cpu().clone(),
-        "dof_pos": dof_pos,
-        "dof_vel": dof_vel,
-    }
-
-    for obj_name, obj_state in full_states.objects.items():
-        if obj_name == "room":
-            snapshot_data["objects"][obj_name] = {
-                "pos": obj_state.root_state[env_id, :3].detach().cpu().clone(),
-                "rot": obj_state.root_state[env_id, 3:7].detach().cpu().clone(),
-            }
-
-        obj_joint_names = obj_state.joint_names.tolist()
-        obj_joint_pos = obj_state.joint_pos[env_id].detach().cpu().numpy()
-        obj_joint_vel = obj_state.joint_vel[env_id].detach().cpu().numpy()
-
-        o_dof_pos = {name: pos for name, pos in zip(obj_joint_names, obj_joint_pos)}
-        o_dof_vel = {name: vel for name, vel in zip(obj_joint_names, obj_joint_vel)}
-
-        snapshot_data["objects"][obj_name] = {
-            "pos": obj_state.root_state[env_id, :3].detach().cpu().clone(),
-            "rot": obj_state.root_state[env_id, 3:7].detach().cpu().clone(),
-            "dof_pos": o_dof_pos,
-            "dof_vel": o_dof_vel,
-        }
-
-    # Uložení do RAM
     with LOCK:
         if len(RAM_SNAPSHOT_BUFFER[stage]) < MAX_SNAPSHOTS:
             RAM_SNAPSHOT_BUFFER[stage].append(snapshot_data)
@@ -915,6 +868,79 @@ def save_snapshot_chairman(handler: BaseSimHandler, env_id: int, stage: int) -> 
     if trigger_sync:
         thread = threading.Thread(target=_sync_to_disk_worker, args=(stage, snapshot_data, idx))
         thread.start()
+
+
+def save_snapshots_chairman(
+    handler: BaseSimHandler,
+    env_ids: torch.Tensor,
+    stages: torch.Tensor,
+) -> list[tuple[int, int]]:
+    """Capture selected environments with one batched transfer per state field.
+
+    Snapshot dictionaries intentionally live on CPU because resets and optional
+    pickle persistence consume them there.  Batching avoids dozens of CUDA
+    synchronizations for every successful environment.
+    """
+    if FORCE_START_FROM_STAGE0 or not bool(
+        getattr(handler.task, "use_snapshot_curriculum", True)
+    ):
+        return []
+    env_ids = env_ids.to(device=handler.device, dtype=torch.long).flatten()
+    stages = stages.to(device=handler.device, dtype=torch.long).flatten()
+    if env_ids.numel() == 0:
+        return []
+    env_ids_cpu = env_ids.detach().cpu().tolist()
+    stages_cpu = stages.detach().cpu().tolist()
+    full_states = handler.get_states()
+
+    robot_name = handler.robot.name
+    robot_state = full_states.robots[robot_name]
+    robot_joint_names = robot_state.joint_names.tolist()
+    robot_root = robot_state.root_state.index_select(0, env_ids).detach().cpu()
+    robot_q = robot_state.joint_pos.index_select(0, env_ids).detach().cpu().numpy()
+    robot_dq = robot_state.joint_vel.index_select(0, env_ids).detach().cpu().numpy()
+
+    object_batches = {}
+    for obj_name, obj_state in full_states.objects.items():
+        object_batches[obj_name] = (
+            obj_state.joint_names.tolist(),
+            obj_state.root_state.index_select(0, env_ids).detach().cpu(),
+            obj_state.joint_pos.index_select(0, env_ids).detach().cpu().numpy(),
+            obj_state.joint_vel.index_select(0, env_ids).detach().cpu().numpy(),
+        )
+
+    saved = []
+    for row, (env_id, stage) in enumerate(zip(env_ids_cpu, stages_cpu)):
+        stage = int(stage)
+        if stage not in RAM_SNAPSHOT_BUFFER:
+            continue
+        snapshot_data = {"robots": {}, "objects": {}}
+        snapshot_data["robots"][robot_name] = {
+            "pos": robot_root[row, :3].clone(),
+            "rot": robot_root[row, 3:7].clone(),
+            "dof_pos": dict(zip(robot_joint_names, robot_q[row])),
+            "dof_vel": dict(zip(robot_joint_names, robot_dq[row])),
+        }
+        for obj_name, (joint_names, root, joint_pos, joint_vel) in object_batches.items():
+            obj_data = {
+                "pos": root[row, :3].clone(),
+                "rot": root[row, 3:7].clone(),
+                "dof_pos": dict(zip(joint_names, joint_pos[row])),
+                "dof_vel": dict(zip(joint_names, joint_vel[row])),
+            }
+            snapshot_data["objects"][obj_name] = obj_data
+        _store_snapshot(stage, snapshot_data)
+        saved.append((int(env_id), stage))
+    return saved
+
+
+def save_snapshot_chairman(handler: BaseSimHandler, env_id: int, stage: int) -> None:
+    """Backward-compatible single-environment snapshot API."""
+    save_snapshots_chairman(
+        handler,
+        torch.tensor([env_id], dtype=torch.long, device=handler.device),
+        torch.tensor([stage], dtype=torch.long, device=handler.device),
+    )
 
 def load_snapshot_chairman(stage: int) -> dict | None:
     # Když chceme jet vždy od nuly, snapshoty se vůbec nepoužijí

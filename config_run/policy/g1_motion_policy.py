@@ -108,6 +108,7 @@ class G1MotionPolicy:
         control_dt: float = CONTROL_DT,
         clip_commands: bool = True,
         clip_joint_targets: bool = True,
+        validate_tensors: bool = False,
     ) -> None:
         """Load the policy and initialize its recurrent controller state."""
         if control_dt <= 0.0:
@@ -125,6 +126,9 @@ class G1MotionPolicy:
         self.control_dt = float(control_dt)
         self.clip_commands = clip_commands
         self.clip_joint_targets = clip_joint_targets
+        # Full finite-value reductions synchronize CUDA. Keep them available
+        # for controller debugging, but disabled on the training hot path.
+        self.validate_tensors = validate_tensors
 
         self._policy = torch.jit.load(str(self.policy_path), map_location=self.device)
         self._policy.eval()
@@ -133,6 +137,16 @@ class G1MotionPolicy:
         self._elapsed_time = np.zeros(1, dtype=np.float32)
         self.last_observation = np.zeros((1, self.NUM_OBSERVATIONS), dtype=np.float32)
         self.last_action = np.zeros((1, self.NUM_ACTIONS), dtype=np.float32)
+        self._previous_action_torch = torch.zeros(
+            (1, self.NUM_ACTIONS), dtype=torch.float32, device=self.device
+        )
+        self._elapsed_time_torch = torch.zeros(1, dtype=torch.float32, device=self.device)
+        self.last_observation_torch = torch.zeros(
+            (1, self.NUM_OBSERVATIONS), dtype=torch.float32, device=self.device
+        )
+        self.last_action_torch = torch.zeros(
+            (1, self.NUM_ACTIONS), dtype=torch.float32, device=self.device
+        )
         self._resize_policy_memory(1)
         self._validate_loaded_policy()
 
@@ -153,6 +167,10 @@ class G1MotionPolicy:
             self._elapsed_time.fill(0.0)
             self.last_observation.fill(0.0)
             self.last_action.fill(0.0)
+            self._previous_action_torch.zero_()
+            self._elapsed_time_torch.zero_()
+            self.last_observation_torch.zero_()
+            self.last_action_torch.zero_()
             return
 
         indices = np.asarray(env_ids, dtype=np.int64).reshape(-1)
@@ -169,6 +187,10 @@ class G1MotionPolicy:
         self._elapsed_time[indices] = 0.0
         self.last_observation[indices] = 0.0
         self.last_action[indices] = 0.0
+        self._previous_action_torch.index_fill_(0, torch_indices, 0.0)
+        self._elapsed_time_torch.index_fill_(0, torch_indices, 0.0)
+        self.last_observation_torch.index_fill_(0, torch_indices, 0.0)
+        self.last_action_torch.index_fill_(0, torch_indices, 0.0)
 
     def predict_joint_positions(
         self,
@@ -238,6 +260,185 @@ class G1MotionPolicy:
         return targets[0] if squeeze_output else targets
 
     __call__ = predict_joint_positions
+
+    def predict_joint_positions_torch(
+        self,
+        *,
+        joint_positions: ArrayLike,
+        joint_velocities: ArrayLike,
+        angular_velocity: ArrayLike,
+        command: ArrayLike,
+        base_quaternion_wxyz: Optional[ArrayLike] = None,
+        projected_gravity: Optional[ArrayLike] = None,
+        angular_velocity_frame: str = "body",
+        command_is_normalized: bool = False,
+        time_seconds: Optional[ArrayLike] = None,
+        previous_action: Optional[ArrayLike] = None,
+    ) -> torch.Tensor:
+        """Torch-native batched inference without a CPU/NumPy round trip."""
+        q, squeeze_output = self._torch_matrix(
+            joint_positions, self.NUM_ACTIONS, "joint_positions"
+        )
+        self._ensure_batch_size(q.shape[0])
+        dq, _ = self._torch_matrix(
+            joint_velocities, self.NUM_ACTIONS, "joint_velocities"
+        )
+        if dq.shape[0] != self._batch_size:
+            raise ValueError("joint_velocities batch size does not match joint_positions")
+
+        observation = self.build_observation_torch(
+            joint_positions=q,
+            joint_velocities=dq,
+            angular_velocity=angular_velocity,
+            command=command,
+            base_quaternion_wxyz=base_quaternion_wxyz,
+            projected_gravity=projected_gravity,
+            angular_velocity_frame=angular_velocity_frame,
+            command_is_normalized=command_is_normalized,
+            time_seconds=time_seconds,
+            previous_action=previous_action,
+        )
+        with torch.inference_mode():
+            action = self._policy(observation)
+        if tuple(action.shape) != (self._batch_size, self.NUM_ACTIONS):
+            raise RuntimeError(
+                "Unexpected motion policy output shape: "
+                f"expected {(self._batch_size, self.NUM_ACTIONS)}, got {tuple(action.shape)}"
+            )
+        if self.validate_tensors and not bool(torch.isfinite(action).all()):
+            raise RuntimeError("Motion policy produced NaN or infinite actions")
+
+        defaults = torch.as_tensor(
+            self.DEFAULT_ANGLES, dtype=torch.float32, device=self.device
+        )
+        targets = defaults.unsqueeze(0) + self.ACTION_SCALE * action
+        if self.clip_joint_targets:
+            lower = torch.as_tensor(
+                self.JOINT_LOWER_LIMITS, dtype=torch.float32, device=self.device
+            )
+            upper = torch.as_tensor(
+                self.JOINT_UPPER_LIMITS, dtype=torch.float32, device=self.device
+            )
+            targets = torch.maximum(torch.minimum(targets, upper), lower)
+
+        self._previous_action_torch.copy_(action)
+        self.last_action_torch.copy_(action)
+        self.last_observation_torch.copy_(observation)
+        return targets[0] if squeeze_output else targets
+
+    def build_observation_torch(
+        self,
+        *,
+        joint_positions: ArrayLike,
+        joint_velocities: ArrayLike,
+        angular_velocity: ArrayLike,
+        command: ArrayLike,
+        base_quaternion_wxyz: Optional[ArrayLike] = None,
+        projected_gravity: Optional[ArrayLike] = None,
+        angular_velocity_frame: str = "body",
+        command_is_normalized: bool = False,
+        time_seconds: Optional[ArrayLike] = None,
+        previous_action: Optional[ArrayLike] = None,
+    ) -> torch.Tensor:
+        """Build the 47-element walking observation directly on ``device``."""
+        q, _ = self._torch_matrix(
+            joint_positions, self.NUM_ACTIONS, "joint_positions"
+        )
+        self._ensure_batch_size(q.shape[0])
+        dq, _ = self._torch_matrix(
+            joint_velocities, self.NUM_ACTIONS, "joint_velocities"
+        )
+        omega = self._torch_vector(angular_velocity, 3, "angular_velocity")
+        cmd = self._torch_vector(command, 3, "command")
+        max_command = torch.as_tensor(
+            self.MAX_COMMAND, dtype=torch.float32, device=self.device
+        )
+        if command_is_normalized:
+            if self.clip_commands:
+                cmd = cmd.clamp(-1.0, 1.0)
+            cmd = cmd * max_command
+        elif self.clip_commands:
+            cmd = torch.maximum(torch.minimum(cmd, max_command), -max_command)
+
+        if (base_quaternion_wxyz is None) == (projected_gravity is None):
+            raise ValueError(
+                "Supply exactly one of base_quaternion_wxyz or projected_gravity"
+            )
+        quaternion = None
+        if base_quaternion_wxyz is not None:
+            quaternion = self._torch_vector(
+                base_quaternion_wxyz, 4, "base_quaternion_wxyz"
+            )
+            norms = torch.linalg.vector_norm(quaternion, dim=1, keepdim=True)
+            if self.validate_tensors and not bool((norms >= 1e-8).all()):
+                raise ValueError("base_quaternion_wxyz must not contain a zero quaternion")
+            quaternion = quaternion / norms
+            w, x, y, z = quaternion.unbind(dim=1)
+            gravity = torch.stack(
+                (
+                    2.0 * (-z * x + w * y),
+                    -2.0 * (z * y + w * x),
+                    1.0 - 2.0 * (w * w + z * z),
+                ),
+                dim=1,
+            )
+        else:
+            gravity = self._torch_vector(projected_gravity, 3, "projected_gravity")
+
+        if angular_velocity_frame == "world":
+            if quaternion is None:
+                raise ValueError(
+                    "base_quaternion_wxyz is required when angular_velocity_frame='world'"
+                )
+            w = quaternion[:, :1]
+            inverse_xyz = -quaternion[:, 1:]
+            cross_1 = 2.0 * torch.linalg.cross(inverse_xyz, omega, dim=1)
+            omega = omega + w * cross_1 + torch.linalg.cross(
+                inverse_xyz, cross_1, dim=1
+            )
+        elif angular_velocity_frame != "body":
+            raise ValueError("angular_velocity_frame must be 'body' or 'world'")
+
+        previous = (
+            self._previous_action_torch
+            if previous_action is None
+            else self._torch_vector(previous_action, self.NUM_ACTIONS, "previous_action")
+        )
+        if time_seconds is None:
+            self._elapsed_time_torch.add_(self.control_dt)
+            phase_time = self._elapsed_time_torch
+        else:
+            phase_time = self._torch_scalar(time_seconds, "time_seconds")
+            if self.validate_tensors and not bool((phase_time >= 0.0).all()):
+                raise ValueError("time_seconds must be non-negative")
+            self._elapsed_time_torch.copy_(phase_time)
+        phase = torch.remainder(phase_time, self.GAIT_PERIOD) / self.GAIT_PERIOD
+        defaults = torch.as_tensor(
+            self.DEFAULT_ANGLES, dtype=torch.float32, device=self.device
+        )
+        command_scale = torch.as_tensor(
+            self.COMMAND_SCALE, dtype=torch.float32, device=self.device
+        )
+        observation = torch.cat(
+            (
+                omega * self.ANGULAR_VELOCITY_SCALE,
+                gravity,
+                cmd * command_scale,
+                (q - defaults) * self.JOINT_POSITION_SCALE,
+                dq * self.JOINT_VELOCITY_SCALE,
+                previous,
+                torch.sin(2.0 * torch.pi * phase).unsqueeze(1),
+                torch.cos(2.0 * torch.pi * phase).unsqueeze(1),
+            ),
+            dim=1,
+        )
+        if tuple(observation.shape) != (self._batch_size, self.NUM_OBSERVATIONS):
+            raise RuntimeError(
+                f"Internal error: built observation has shape {tuple(observation.shape)}"
+            )
+        if self.validate_tensors and not bool(torch.isfinite(observation).all()):
+            raise ValueError("Policy inputs contain NaN or infinite values")
+        return observation
 
     def predict_joint_dict(self, **kwargs: object) -> dict[str, float]:
         """Run one single-robot step and return ``joint_name: target_rad``."""
@@ -432,6 +633,36 @@ class G1MotionPolicy:
             return value.detach().cpu().numpy()
         return np.asarray(value)
 
+    def _torch_matrix(
+        self, value: ArrayLike, width: int, name: str
+    ) -> tuple[torch.Tensor, bool]:
+        tensor = torch.as_tensor(value, dtype=torch.float32, device=self.device)
+        squeeze = tensor.ndim == 1
+        if squeeze:
+            tensor = tensor.unsqueeze(0)
+        if tensor.ndim != 2 or tensor.shape[1] != width:
+            raise ValueError(
+                f"{name} must have shape ({width},) or (N, {width}); "
+                f"got {tuple(tensor.shape)}"
+            )
+        return tensor, squeeze
+
+    def _torch_vector(self, value: ArrayLike, width: int, name: str) -> torch.Tensor:
+        tensor, _ = self._torch_matrix(value, width, name)
+        if tensor.shape[0] == 1 and self._batch_size > 1:
+            tensor = tensor.expand(self._batch_size, -1)
+        if tensor.shape[0] != self._batch_size:
+            raise ValueError(f"{name} batch size does not match joint_positions")
+        return tensor
+
+    def _torch_scalar(self, value: ArrayLike, name: str) -> torch.Tensor:
+        tensor = torch.as_tensor(value, dtype=torch.float32, device=self.device).reshape(-1)
+        if tensor.numel() == 1 and self._batch_size > 1:
+            tensor = tensor.expand(self._batch_size)
+        if tensor.numel() != self._batch_size:
+            raise ValueError(f"{name} must be a scalar or contain one value per environment")
+        return tensor
+
     def _ensure_batch_size(self, batch_size: int) -> None:
         if batch_size <= 0:
             raise ValueError("Policy batch must contain at least one environment")
@@ -451,6 +682,18 @@ class G1MotionPolicy:
         self._elapsed_time = np.zeros(batch_size, dtype=np.float32)
         self.last_observation = np.zeros((batch_size, self.NUM_OBSERVATIONS), dtype=np.float32)
         self.last_action = np.zeros((batch_size, self.NUM_ACTIONS), dtype=np.float32)
+        self._previous_action_torch = torch.zeros(
+            (batch_size, self.NUM_ACTIONS), dtype=torch.float32, device=self.device
+        )
+        self._elapsed_time_torch = torch.zeros(
+            batch_size, dtype=torch.float32, device=self.device
+        )
+        self.last_observation_torch = torch.zeros(
+            (batch_size, self.NUM_OBSERVATIONS), dtype=torch.float32, device=self.device
+        )
+        self.last_action_torch = torch.zeros(
+            (batch_size, self.NUM_ACTIONS), dtype=torch.float32, device=self.device
+        )
 
     def _validate_loaded_policy(self) -> None:
         with torch.inference_mode():

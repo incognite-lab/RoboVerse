@@ -162,11 +162,12 @@ class RaggedStageRollout:
         if not self.steps:
             return None
 
+        device = self.steps[0].observations.device
         last_gae = torch.zeros(
-            self.num_envs, dtype=torch.float32, device="cpu"
+            self.num_envs, dtype=torch.float32, device=device
         )
         last_seen_step = torch.full(
-            (self.num_envs,), -2, dtype=torch.long, device="cpu"
+            (self.num_envs,), -2, dtype=torch.long, device=device
         )
         advantages_by_record: list[torch.Tensor | None] = [None] * len(self.steps)
 
@@ -251,7 +252,16 @@ class MultiPPOTrainer:
         self.env = env
         self.config = config
         self.num_envs = int(env.num_envs)
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        env_device = getattr(env, "torch_device", None)
+        self.device = str(
+            env_device
+            if env_device is not None
+            else ("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        self.torch_device = torch.device(self.device)
+        self.torch_rollouts = bool(
+            hasattr(env, "torch_reset") and hasattr(env, "torch_step")
+        )
         self.rollout_steps = int(config.get("n_steps", 128))
         self.batch_size = int(config.get("batch_size", 256))
         self.n_epochs = int(config.get("n_epochs", 4))
@@ -326,11 +336,21 @@ class MultiPPOTrainer:
             stage: deque(maxlen=episode_window)
             for stage in range(NUM_STAGE_POLICIES)
         }
-        self._episode_returns = np.zeros(
-            (NUM_STAGE_POLICIES, self.num_envs), dtype=np.float64
+        self._episode_returns = torch.zeros(
+            (NUM_STAGE_POLICIES, self.num_envs),
+            dtype=torch.float32,
+            device=self.torch_device,
         )
-        self._episode_lengths = np.zeros(
-            (NUM_STAGE_POLICIES, self.num_envs), dtype=np.int64
+        self._episode_lengths = torch.zeros(
+            (NUM_STAGE_POLICIES, self.num_envs),
+            dtype=torch.long,
+            device=self.torch_device,
+        )
+        self._action_low = torch.as_tensor(
+            env.action_space.low, dtype=torch.float32, device=self.torch_device
+        )
+        self._action_high = torch.as_tensor(
+            env.action_space.high, dtype=torch.float32, device=self.torch_device
         )
         self.last_train_metrics: dict[int, dict[str, float]] = {}
         self.last_train_timestep = np.full(
@@ -360,25 +380,67 @@ class MultiPPOTrainer:
     def progress_remaining(self) -> float:
         return max(0.0, 1.0 - self.global_timesteps / max(1, self.total_timesteps))
 
-    def _policy_actions(self, observations: np.ndarray, stages: np.ndarray):
+    def _env_reset_torch(self) -> torch.Tensor:
+        if self.torch_rollouts:
+            return self.env.torch_reset()
+        return torch.as_tensor(
+            self.env.reset(), dtype=torch.float32, device=self.torch_device
+        )
+
+    def _current_stages_torch(self) -> torch.Tensor:
+        if self.torch_rollouts:
+            return self.env.get_current_stages_torch()
+        return torch.as_tensor(
+            self.env.get_current_stages(),
+            dtype=torch.long,
+            device=self.torch_device,
+        )
+
+    def _env_step_torch(
+        self, actions: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+        if self.torch_rollouts:
+            return self.env.torch_step(actions)
+        obs, rewards, dones, infos = self.env.step(
+            actions.detach().cpu().numpy()
+        )
+        completed = torch.as_tensor(
+            [info.get("completed_stage", -1) for info in infos],
+            dtype=torch.long,
+            device=self.torch_device,
+        )
+        stage_after = torch.as_tensor(
+            [info.get("stage_after", -1) for info in infos],
+            dtype=torch.long,
+            device=self.torch_device,
+        )
+        return (
+            torch.as_tensor(obs, dtype=torch.float32, device=self.torch_device),
+            torch.as_tensor(rewards, dtype=torch.float32, device=self.torch_device),
+            torch.as_tensor(dones, dtype=torch.bool, device=self.torch_device),
+            {
+                "completed_stage": completed,
+                "stage_after_event": stage_after,
+            },
+        )
+
+    def _policy_actions_torch(
+        self, observations: torch.Tensor, stages: torch.Tensor
+    ):
+        """Route GPU observation rows through the corresponding PPO policy."""
         action_dim = self.env.action_space.shape[0]
-        raw_actions = np.zeros((self.num_envs, action_dim), dtype=np.float32)
+        raw_actions = torch.zeros(
+            (self.num_envs, action_dim),
+            dtype=torch.float32,
+            device=self.torch_device,
+        )
         records: dict[int, tuple] = {}
 
-        invalid = (stages < 0) | (stages >= NUM_STAGE_POLICIES)
-        if invalid.any():
-            raise RuntimeError(
-                f"No policy exists for active stages {np.unique(stages[invalid])}"
-            )
-
         for stage, model in self.models.items():
-            env_ids = np.flatnonzero(stages == stage)
-            if not len(env_ids):
+            env_ids = (stages == stage).nonzero(as_tuple=False).flatten()
+            if env_ids.numel() == 0:
                 continue
-            obs_cpu = torch.as_tensor(
-                observations[env_ids], dtype=torch.float32, device="cpu"
-            )
-            obs_device = obs_cpu.to(self.device)
+            obs_device = observations.index_select(0, env_ids)
             model.policy.set_training_mode(False)
             deterministic = bool(
                 self.frozen[stage]
@@ -388,41 +450,62 @@ class MultiPPOTrainer:
                 actions_t, values_t, log_prob_t = model.policy(
                     obs_device, deterministic=deterministic
                 )
-            actions_cpu = actions_t.detach().cpu().float()
-            raw_actions[env_ids] = actions_cpu.numpy()
+            actions_t = actions_t.detach().float()
+            raw_actions.index_copy_(0, env_ids, actions_t)
             if not self.frozen[stage]:
                 records[stage] = (
                     env_ids,
-                    obs_cpu,
-                    actions_cpu,
-                    values_t.detach().cpu().flatten().float(),
-                    log_prob_t.detach().cpu().flatten().float(),
+                    obs_device.detach(),
+                    actions_t,
+                    values_t.detach().flatten().float(),
+                    log_prob_t.detach().flatten().float(),
                 )
 
-        env_actions = np.clip(
-            raw_actions, self.env.action_space.low, self.env.action_space.high
+        env_actions = torch.maximum(
+            torch.minimum(raw_actions, self._action_high), self._action_low
         )
         return env_actions, raw_actions, records
+
+    def _next_values_torch(
+        self,
+        stage: int,
+        next_observations: torch.Tensor,
+        env_ids: torch.Tensor,
+        terminals: torch.Tensor,
+    ) -> torch.Tensor:
+        values = torch.zeros(
+            env_ids.numel(), dtype=torch.float32, device=self.torch_device
+        )
+        continuing = (~terminals).nonzero(as_tuple=False).flatten()
+        if continuing.numel():
+            continuing_env_ids = env_ids.index_select(0, continuing)
+            obs_t = next_observations.index_select(0, continuing_env_ids)
+            with torch.no_grad():
+                predicted = self.models[stage].policy.predict_values(obs_t)
+            values.index_copy_(0, continuing, predicted.detach().flatten().float())
+        return values
 
     def _next_values(
         self,
         stage: int,
-        next_observations: np.ndarray,
-        env_ids: np.ndarray,
-        terminals: np.ndarray,
+        next_observations,
+        env_ids,
+        terminals,
     ) -> torch.Tensor:
-        values = torch.zeros(len(env_ids), dtype=torch.float32, device="cpu")
-        continuing = np.flatnonzero(~terminals)
-        if len(continuing):
-            obs_t = torch.as_tensor(
-                next_observations[env_ids[continuing]],
-                dtype=torch.float32,
-                device=self.device,
-            )
-            with torch.no_grad():
-                predicted = self.models[stage].policy.predict_values(obs_t)
-            values[continuing] = predicted.detach().cpu().flatten().float()
-        return values
+        """Compatibility adapter for older CPU-only trainer tests/tools."""
+        observations_t = torch.as_tensor(
+            next_observations, dtype=torch.float32, device=self.torch_device
+        )
+        env_ids_t = torch.as_tensor(
+            env_ids, dtype=torch.long, device=self.torch_device
+        )
+        terminals_t = torch.as_tensor(
+            terminals, dtype=torch.bool, device=self.torch_device
+        )
+        result = self._next_values_torch(
+            stage, observations_t, env_ids_t, terminals_t
+        )
+        return result.cpu() if isinstance(next_observations, np.ndarray) else result
 
     def _update_outcomes(
         self,
@@ -438,120 +521,129 @@ class MultiPPOTrainer:
             self.successes[stage] += int(success)
             self.recent_outcomes[stage].append(int(success))
 
-    def _collect_rollout(self, observations: np.ndarray):
+    def _collect_rollout(self, observations: torch.Tensor):
         rollouts = {
             stage: RaggedStageRollout(self.num_envs, self.gamma, self.gae_lambda)
             for stage in range(NUM_STAGE_POLICIES)
         }
         transitions = np.zeros(NUM_STAGE_POLICIES, dtype=np.int64)
-        reward_sum = np.zeros(NUM_STAGE_POLICIES, dtype=np.float64)
-        reward_sq_sum = np.zeros(NUM_STAGE_POLICIES, dtype=np.float64)
-        action_sum = np.zeros(NUM_STAGE_POLICIES, dtype=np.float64)
-        action_sq_sum = np.zeros(NUM_STAGE_POLICIES, dtype=np.float64)
-        action_abs_sum = np.zeros(NUM_STAGE_POLICIES, dtype=np.float64)
+        reward_sum = torch.zeros(
+            NUM_STAGE_POLICIES, dtype=torch.float32, device=self.torch_device
+        )
+        reward_sq_sum = torch.zeros_like(reward_sum)
+        action_sum = torch.zeros_like(reward_sum)
+        action_sq_sum = torch.zeros_like(reward_sum)
+        action_abs_sum = torch.zeros_like(reward_sum)
         action_elements = np.zeros(NUM_STAGE_POLICIES, dtype=np.int64)
-        clipped_elements = np.zeros(NUM_STAGE_POLICIES, dtype=np.int64)
-        command_abs_sum = np.zeros(NUM_STAGE_POLICIES, dtype=np.float64)
+        clipped_elements = torch.zeros(
+            NUM_STAGE_POLICIES, dtype=torch.long, device=self.torch_device
+        )
+        command_abs_sum = torch.zeros_like(reward_sum)
         command_elements = np.zeros(NUM_STAGE_POLICIES, dtype=np.int64)
-        terminals_count = np.zeros(NUM_STAGE_POLICIES, dtype=np.int64)
-        successes_count = np.zeros(NUM_STAGE_POLICIES, dtype=np.int64)
+        terminals_count = torch.zeros_like(clipped_elements)
+        successes_count = torch.zeros_like(clipped_elements)
 
         for _ in range(self.rollout_steps):
-            stages_before = self.env.get_current_stages()
-            env_actions, raw_actions, policy_records = self._policy_actions(
+            stages_before = self._current_stages_torch()
+            env_actions, raw_actions, policy_records = self._policy_actions_torch(
                 observations, stages_before
             )
-            next_obs, rewards, dones, infos = self.env.step(env_actions)
-            next_obs = np.asarray(next_obs, dtype=np.float32)
-            rewards = np.asarray(rewards, dtype=np.float32)
-            dones = np.asarray(dones, dtype=bool)
-            stages_after = self.env.get_current_stages()
+            next_obs, rewards, dones, metadata = self._env_step_torch(env_actions)
+            stages_after_event = metadata["stage_after_event"]
+            completed = metadata["completed_stage"]
 
             for stage in range(NUM_STAGE_POLICIES):
-                env_ids = np.flatnonzero(stages_before == stage)
-                if not len(env_ids):
+                env_ids = (stages_before == stage).nonzero(as_tuple=False).flatten()
+                if env_ids.numel() == 0:
                     continue
-                local_terminals = dones[env_ids] | (stages_after[env_ids] != stage)
-                stage_rewards = rewards[env_ids]
-                stage_actions = raw_actions[env_ids]
-                clipped_actions = env_actions[env_ids]
-                transitions[stage] += len(env_ids)
-                reward_sum[stage] += float(stage_rewards.sum(dtype=np.float64))
-                reward_sq_sum[stage] += float(
-                    np.square(stage_rewards, dtype=np.float64).sum(dtype=np.float64)
+                local_dones = dones.index_select(0, env_ids)
+                local_completed = completed.index_select(0, env_ids)
+                local_stage_after = stages_after_event.index_select(0, env_ids)
+                local_terminals = (
+                    local_dones
+                    | (local_completed == stage)
+                    | (local_stage_after != stage)
                 )
-                action_sum[stage] += float(stage_actions.sum(dtype=np.float64))
-                action_sq_sum[stage] += float(
-                    np.square(stage_actions, dtype=np.float64).sum(dtype=np.float64)
-                )
-                action_abs_sum[stage] += float(
-                    np.abs(stage_actions).sum(dtype=np.float64)
-                )
-                action_elements[stage] += stage_actions.size
-                clipped_elements[stage] += int(
-                    np.count_nonzero(~np.isclose(stage_actions, clipped_actions))
-                )
+                stage_rewards = rewards.index_select(0, env_ids)
+                stage_actions = raw_actions.index_select(0, env_ids)
+                clipped_actions = env_actions.index_select(0, env_ids)
+                count = env_ids.numel()
+                transitions[stage] += count
+                reward_sum[stage] += stage_rewards.sum()
+                reward_sq_sum[stage] += stage_rewards.square().sum()
+                action_sum[stage] += stage_actions.sum()
+                action_sq_sum[stage] += stage_actions.square().sum()
+                action_abs_sum[stage] += stage_actions.abs().sum()
+                action_elements[stage] += stage_actions.numel()
+                clipped_elements[stage] += (~torch.isclose(
+                    stage_actions, clipped_actions
+                )).sum()
                 commands = stage_actions[:, -3:]
-                command_abs_sum[stage] += float(
-                    np.abs(commands).sum(dtype=np.float64)
-                )
-                command_elements[stage] += commands.size
-                terminals_count[stage] += int(local_terminals.sum())
-                successes_count[stage] += sum(
-                    int(infos[int(env_id)].get("completed_stage", -1)) == stage
-                    for env_id in env_ids
-                )
+                command_abs_sum[stage] += commands.abs().sum()
+                command_elements[stage] += commands.numel()
+                terminals_count[stage] += local_terminals.sum()
+                successes_count[stage] += (local_completed == stage).sum()
 
-                self._episode_returns[stage, env_ids] += stage_rewards
-                self._episode_lengths[stage, env_ids] += 1
-                for local_index in np.flatnonzero(local_terminals):
-                    env_id = int(env_ids[local_index])
-                    self.recent_returns[stage].append(
-                        float(self._episode_returns[stage, env_id])
-                    )
-                    self.recent_lengths[stage].append(
-                        int(self._episode_lengths[stage, env_id])
-                    )
-                    self._episode_returns[stage, env_id] = 0.0
-                    self._episode_lengths[stage, env_id] = 0
-                self._update_outcomes(
-                    stage, env_ids, local_terminals, infos
+                self._episode_returns[stage].index_add_(0, env_ids, stage_rewards)
+                self._episode_lengths[stage].index_add_(
+                    0, env_ids, torch.ones_like(env_ids)
                 )
+                terminal_local_ids = local_terminals.nonzero(
+                    as_tuple=False
+                ).flatten()
+                if terminal_local_ids.numel():
+                    terminal_env_ids = env_ids.index_select(0, terminal_local_ids)
+                    terminal_returns = self._episode_returns[
+                        stage
+                    ].index_select(0, terminal_env_ids).detach().cpu().tolist()
+                    terminal_lengths = self._episode_lengths[
+                        stage
+                    ].index_select(0, terminal_env_ids).detach().cpu().tolist()
+                    terminal_successes = (
+                        local_completed.index_select(0, terminal_local_ids) == stage
+                    ).detach().cpu().tolist()
+                    for episode_return, episode_length, success in zip(
+                        terminal_returns, terminal_lengths, terminal_successes
+                    ):
+                        self.recent_returns[stage].append(float(episode_return))
+                        self.recent_lengths[stage].append(int(episode_length))
+                        self.recent_outcomes[stage].append(int(success))
+                    num_terminals = terminal_env_ids.numel()
+                    num_successes = int(sum(terminal_successes))
+                    self.attempts[stage] += num_terminals
+                    self.successes[stage] += num_successes
+                    self._episode_returns[stage].index_fill_(
+                        0, terminal_env_ids, 0.0
+                    )
+                    self._episode_lengths[stage].index_fill_(
+                        0, terminal_env_ids, 0
+                    )
 
                 if stage not in policy_records:
                     continue
                 (
                     recorded_ids,
-                    obs_cpu,
-                    actions_cpu,
-                    values_cpu,
-                    log_prob_cpu,
+                    recorded_obs,
+                    recorded_actions,
+                    recorded_values,
+                    recorded_log_prob,
                 ) = policy_records[stage]
-                if not np.array_equal(recorded_ids, env_ids):
-                    raise RuntimeError("Stage routing changed before env.step")
-                next_values = self._next_values(
+                next_values = self._next_values_torch(
                     stage, next_obs, env_ids, local_terminals
                 )
                 rollouts[stage].add(
                     StageStep(
                         global_step=self.global_env_steps,
-                        env_ids=torch.as_tensor(
-                            env_ids, dtype=torch.long, device="cpu"
-                        ),
-                        observations=obs_cpu,
-                        actions=actions_cpu,
-                        rewards=torch.as_tensor(
-                            rewards[env_ids], dtype=torch.float32, device="cpu"
-                        ),
-                        values=values_cpu,
-                        old_log_prob=log_prob_cpu,
+                        env_ids=recorded_ids,
+                        observations=recorded_obs,
+                        actions=recorded_actions,
+                        rewards=stage_rewards,
+                        values=recorded_values,
+                        old_log_prob=recorded_log_prob,
                         next_values=next_values,
-                        terminals=torch.as_tensor(
-                            local_terminals, dtype=torch.bool, device="cpu"
-                        ),
+                        terminals=local_terminals,
                     )
                 )
-                count = len(env_ids)
                 self.samples[stage] += count
                 self.models[stage].num_timesteps += count
 
@@ -563,23 +655,39 @@ class MultiPPOTrainer:
 
         for stage, rollout in rollouts.items():
             self.pending[stage].append(rollout.finish())
+        reduced_stats = torch.stack(
+            (
+                reward_sum,
+                reward_sq_sum,
+                action_sum,
+                action_sq_sum,
+                action_abs_sum,
+                clipped_elements.float(),
+                command_abs_sum,
+                terminals_count.float(),
+                successes_count.float(),
+            ),
+            dim=1,
+        ).detach().cpu().numpy()
         self._last_rollout_stats = {}
         for stage in range(NUM_STAGE_POLICIES):
             transition_count = int(transitions[stage])
             element_count = int(action_elements[stage])
             reward_mean = (
-                reward_sum[stage] / transition_count if transition_count else 0.0
+                reduced_stats[stage, 0] / transition_count
+                if transition_count
+                else 0.0
             )
             reward_variance = (
-                reward_sq_sum[stage] / transition_count - reward_mean**2
+                reduced_stats[stage, 1] / transition_count - reward_mean**2
                 if transition_count
                 else 0.0
             )
             action_mean = (
-                action_sum[stage] / element_count if element_count else 0.0
+                reduced_stats[stage, 2] / element_count if element_count else 0.0
             )
             action_variance = (
-                action_sq_sum[stage] / element_count - action_mean**2
+                reduced_stats[stage, 3] / element_count - action_mean**2
                 if element_count
                 else 0.0
             )
@@ -590,18 +698,22 @@ class MultiPPOTrainer:
                 "action_mean": float(action_mean),
                 "action_std": float(np.sqrt(max(0.0, action_variance))),
                 "action_abs_mean": float(
-                    action_abs_sum[stage] / element_count if element_count else 0.0
+                    reduced_stats[stage, 4] / element_count
+                    if element_count
+                    else 0.0
                 ),
                 "action_clip_fraction": float(
-                    clipped_elements[stage] / element_count if element_count else 0.0
+                    reduced_stats[stage, 5] / element_count
+                    if element_count
+                    else 0.0
                 ),
                 "walk_command_abs_mean": float(
-                    command_abs_sum[stage] / command_elements[stage]
+                    reduced_stats[stage, 6] / command_elements[stage]
                     if command_elements[stage]
                     else 0.0
                 ),
-                "terminals": float(terminals_count[stage]),
-                "successes": float(successes_count[stage]),
+                "terminals": float(reduced_stats[stage, 7]),
+                "successes": float(reduced_stats[stage, 8]),
             }
         return observations
 
@@ -619,31 +731,28 @@ class MultiPPOTrainer:
             else float(model.clip_range_vf(self.progress_remaining))
         )
 
-        losses: list[float] = []
-        policy_losses: list[float] = []
-        value_losses: list[float] = []
-        entropy_losses: list[float] = []
-        approx_kls: list[float] = []
-        clip_fractions: list[float] = []
-        gradient_norms: list[float] = []
+        losses: list[torch.Tensor] = []
+        policy_losses: list[torch.Tensor] = []
+        value_losses: list[torch.Tensor] = []
+        entropy_losses: list[torch.Tensor] = []
+        approx_kls: list[torch.Tensor] = []
+        clip_fractions: list[torch.Tensor] = []
+        gradient_norms: list[torch.Tensor] = []
         stop_early = False
         num_samples = len(batch)
         epochs_completed = 0
         minibatches = 0
 
         for _epoch in range(self.n_epochs):
-            # Pending rollout tensors intentionally live on CPU. Genesis can
-            # set PyTorch's global default device to CUDA, so this must be
-            # explicit as well.
-            permutation = torch.randperm(num_samples, device="cpu")
+            permutation = torch.randperm(num_samples, device=batch.observations.device)
             for start in range(0, num_samples, self.batch_size):
                 index = permutation[start : start + self.batch_size]
-                obs = batch.observations[index].to(self.device)
-                actions = batch.actions[index].to(self.device)
-                old_values = batch.old_values[index].to(self.device)
-                old_log_prob = batch.old_log_prob[index].to(self.device)
-                advantages = batch.advantages[index].to(self.device)
-                returns = batch.returns[index].to(self.device)
+                obs = batch.observations[index]
+                actions = batch.actions[index]
+                old_values = batch.old_values[index]
+                old_log_prob = batch.old_log_prob[index]
+                advantages = batch.advantages[index]
+                returns = batch.returns[index]
 
                 if model.normalize_advantage and len(advantages) > 1:
                     advantages = (
@@ -677,14 +786,16 @@ class MultiPPOTrainer:
 
                 with torch.no_grad():
                     log_ratio = log_prob - old_log_prob
-                    approx_kl = float(
-                        ((torch.exp(log_ratio) - 1.0) - log_ratio).mean().cpu()
-                    )
-                    clip_fraction = float(
-                        (torch.abs(ratio - 1.0) > clip_range).float().mean().cpu()
-                    )
+                    approx_kl = (
+                        (torch.exp(log_ratio) - 1.0) - log_ratio
+                    ).mean()
+                    clip_fraction = (
+                        torch.abs(ratio - 1.0) > clip_range
+                    ).float().mean()
 
-                if model.target_kl is not None and approx_kl > 1.5 * model.target_kl:
+                if model.target_kl is not None and (
+                    float(approx_kl.detach().cpu()) > 1.5 * model.target_kl
+                ):
                     stop_early = True
                     break
 
@@ -695,13 +806,13 @@ class MultiPPOTrainer:
                 )
                 policy.optimizer.step()
 
-                losses.append(float(loss.detach().cpu()))
-                policy_losses.append(float(policy_loss.detach().cpu()))
-                value_losses.append(float(value_loss.detach().cpu()))
-                entropy_losses.append(float(entropy_loss.detach().cpu()))
-                approx_kls.append(approx_kl)
-                clip_fractions.append(clip_fraction)
-                gradient_norms.append(float(gradient_norm.detach().cpu()))
+                losses.append(loss.detach())
+                policy_losses.append(policy_loss.detach())
+                value_losses.append(value_loss.detach())
+                entropy_losses.append(entropy_loss.detach())
+                approx_kls.append(approx_kl.detach())
+                clip_fractions.append(clip_fraction.detach())
+                gradient_norms.append(gradient_norm.detach())
                 minibatches += 1
             model._n_updates += 1
             epochs_completed += 1
@@ -710,37 +821,76 @@ class MultiPPOTrainer:
 
         self.updates[stage] += 1
         policy.set_training_mode(False)
-        returns_np = batch.returns.numpy()
-        old_values_np = batch.old_values.numpy()
-        returns_variance = float(np.var(returns_np))
-        explained_variance = (
-            1.0 - float(np.var(returns_np - old_values_np)) / returns_variance
-            if returns_variance > 1e-12
-            else float("nan")
+        zero = torch.zeros((), dtype=torch.float32, device=self.torch_device)
+
+        def mean_or_zero(values: list[torch.Tensor]) -> torch.Tensor:
+            return torch.stack(values).mean() if values else zero
+
+        returns_variance_t = torch.var(batch.returns, correction=0)
+        explained_variance_t = torch.where(
+            returns_variance_t > 1e-12,
+            1.0
+            - torch.var(
+                batch.returns - batch.old_values, correction=0
+            )
+            / returns_variance_t,
+            torch.zeros_like(returns_variance_t),
         )
         log_std = getattr(policy, "log_std", None)
-        policy_std = (
-            float(torch.exp(log_std).mean().detach().cpu())
+        policy_std_t = (
+            torch.exp(log_std).mean()
             if log_std is not None
-            else float("nan")
+            else torch.full_like(zero, torch.nan)
         )
+        summary = torch.stack(
+            (
+                mean_or_zero(losses),
+                mean_or_zero(policy_losses),
+                mean_or_zero(value_losses),
+                mean_or_zero(entropy_losses),
+                mean_or_zero(approx_kls),
+                mean_or_zero(clip_fractions),
+                explained_variance_t,
+                policy_std_t,
+                mean_or_zero(gradient_norms),
+                batch.advantages.mean(),
+                batch.advantages.std(),
+                batch.returns.mean(),
+                batch.old_values.mean(),
+            )
+        ).detach().cpu().tolist()
+        (
+            loss_mean,
+            policy_loss_mean,
+            value_loss_mean,
+            entropy_loss_mean,
+            approx_kl_mean,
+            clip_fraction_mean,
+            explained_variance,
+            policy_std,
+            gradient_norm_mean,
+            advantage_mean,
+            advantage_std,
+            return_mean,
+            value_mean,
+        ) = summary
         update_seconds = time.perf_counter() - update_started
         metrics = {
-            "loss": float(np.mean(losses)) if losses else 0.0,
-            "policy_loss": float(np.mean(policy_losses)) if policy_losses else 0.0,
-            "value_loss": float(np.mean(value_losses)) if value_losses else 0.0,
-            "entropy_loss": float(np.mean(entropy_losses)) if entropy_losses else 0.0,
-            "entropy": float(-np.mean(entropy_losses)) if entropy_losses else 0.0,
-            "approx_kl": float(np.mean(approx_kls)) if approx_kls else 0.0,
-            "clip_fraction": float(np.mean(clip_fractions)) if clip_fractions else 0.0,
+            "loss": loss_mean,
+            "policy_loss": policy_loss_mean,
+            "value_loss": value_loss_mean,
+            "entropy_loss": entropy_loss_mean,
+            "entropy": -entropy_loss_mean,
+            "approx_kl": approx_kl_mean,
+            "clip_fraction": clip_fraction_mean,
             "clip_range": clip_range,
             "explained_variance": explained_variance,
             "policy_std": policy_std,
-            "gradient_norm": float(np.mean(gradient_norms)) if gradient_norms else 0.0,
-            "advantage_mean": float(batch.advantages.mean()),
-            "advantage_std": float(batch.advantages.std()),
-            "return_mean": float(batch.returns.mean()),
-            "value_mean": float(batch.old_values.mean()),
+            "gradient_norm": gradient_norm_mean,
+            "advantage_mean": advantage_mean,
+            "advantage_std": advantage_std,
+            "return_mean": return_mean,
+            "value_mean": value_mean,
             "learning_rate": learning_rate,
             "samples": float(num_samples),
             "epochs_completed": float(epochs_completed),
@@ -954,7 +1104,7 @@ class MultiPPOTrainer:
         progress_percent = 100.0 * self.global_timesteps / max(1, self.total_timesteps)
         remaining_timesteps = max(0, self.total_timesteps - self.global_timesteps)
         eta = remaining_timesteps / max(average_fps, 1e-9)
-        occupancy = self.env.get_current_stages()
+        occupancy = self._current_stages_torch().detach().cpu().numpy()
         sample_delta = self.samples - self._last_logged_samples
         snapshots = self._snapshot_counts()
         max_snapshot_stage = max(
@@ -1077,7 +1227,7 @@ class MultiPPOTrainer:
         log.info(f"Saved concurrent multi-policy bundle to {self.run_dir}")
 
     def learn(self) -> Path:
-        observations = np.asarray(self.env.reset(), dtype=np.float32)
+        observations = self._env_reset_torch()
         save_freq = int(self.config.get("model_save_freq", 1_000_000))
         self._initial_timesteps = self.global_timesteps
         self._start_time = time.perf_counter()
@@ -1094,6 +1244,11 @@ class MultiPPOTrainer:
         log.info(
             f"Starting concurrent ChairMan Multi-PPO with {NUM_STAGE_POLICIES} "
             f"policies, {self.num_envs} envs and {self.total_timesteps} timesteps"
+        )
+        log.info(
+            "Torch-native rollout path enabled on {}; observations, stage routing, "
+            "walking inference, actions and rollout buffers stay on this device.",
+            self.device,
         )
         log.info(
             "TensorBoard log: {}\nRun: tensorboard --logdir {}",

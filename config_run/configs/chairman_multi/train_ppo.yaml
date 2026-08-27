@@ -7,7 +7,7 @@ robots: [g1_with_hands]
 fix_base_link: false
 task: chairmanmulti #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
 decimation: 5
-num_envs: 7000
+num_envs: 15000
 headless: true
 add_table: true
 env_spacing: 4.0
@@ -20,7 +20,7 @@ force: false
 #-------------------------------------------
 # Global number of vector-environment transitions. All six policies learn
 # concurrently from whichever env rows currently occupy their stage.
-total_timesteps: 2_000_000_000
+total_timesteps: 5_000_000_000
 model_save_path: ./config_run/output/ppo_models_multi
 model_save_freq: 20_000_000
 tensorboard_log: ./config_run/output/ppo_models_multi/tensorboard
@@ -38,10 +38,10 @@ stage_advance_success_rate: 0.90
 stage_success_window: 1000
 stage_min_episodes: 1000
 
-# Every successfully reached stage is stored in the in-memory curriculum.
-# Later physical resets sample stage 0..the deepest continuously available
-# snapshot, so downstream policies do not have to wait for the full prefix.
-snapshot_save_probability: 1.0
+# The first snapshot of every newly reached stage is always kept. Afterwards
+# this probability samples successes into the bounded in-memory curriculum,
+# avoiding a large CPU-copy burst when thousands of envs advance together.
+snapshot_save_probability: 0.01
 
 # Set true only when debugging the pretrained walking controller. False keeps
 # the terminal focused on the per-policy PPO training tables.

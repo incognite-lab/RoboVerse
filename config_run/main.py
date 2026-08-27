@@ -2226,7 +2226,6 @@ def main():
     elif config.get("train_or_eval") == "eval_dagger_video":
         from dagger_vp.student_net import VisionStudent
         import cv2
-        import torch.nn.functional as F
 
         scenario.dagger = 2
 
@@ -2268,32 +2267,16 @@ def main():
             for step in range(max_steps):
                 states = metasim_env.env.handler.get_states()
 
-                # --- kamera a preprocessing vstupu neuronové sítě ---
+                # --- video frame ---
                 rgb_tensor_raw = states.cameras["camera0"].rgb
-                rgb_tensor = rgb_tensor_raw.to(device)
-                rgb_permuted = rgb_tensor.permute(0, 3, 1, 2).contiguous().float()
-                student_obs_net_input = F.interpolate(
-                    rgb_permuted,
-                    size=(128, 128),
-                    mode="bilinear",
-                    align_corners=False,
-                    antialias=True,
-                ) / 255.0
-
-                # Video zobrazuje stejný 128x128 obraz, který dostává neuronka.
-                frame_np = (
-                    student_obs_net_input[0]
-                    .permute(1, 2, 0)
-                    .mul(255.0)
-                    .round()
-                    .clamp(0, 255)
-                    .to(torch.uint8)
-                    .detach()
-                    .cpu()
-                    .numpy()
-                )
+                frame_np = rgb_tensor_raw[0].detach().cpu().numpy().astype(np.uint8)
                 frame_bgr = cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
                 video_writer.write(frame_bgr)
+
+                # --- přesně stejný preprocessing jako v train_dagger ---
+                rgb_tensor = rgb_tensor_raw.to(device)
+                rgb_permuted = rgb_tensor.permute(0, 3, 1, 2).contiguous().float()
+                student_obs_net_input = rgb_permuted / 255.0
 
                 joint_obs_tensor = torch.as_tensor(
                     obs[:, 3:num_joints + 3],
@@ -2331,6 +2314,7 @@ def main():
             env.close()
 
         log.info(f"🎬 FPV Video saved successfully to: {video_path}")
+
 
 
     elif config.get("train_or_eval") == "eval_dagger":

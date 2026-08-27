@@ -74,7 +74,7 @@ def test_chairman_checker_publishes_completed_stage_before_increment(monkeypatch
         monkeypatch.setattr(
             chairman_stages, f"stege{stage_index}_chacker", fake_stage_checker
         )
-    monkeypatch.setattr(chairman_stages, "save_snapshot_chairman", lambda *args: None)
+    monkeypatch.setattr(chairman_stages, "save_snapshots_chairman", lambda *args: [])
 
     actual_stage = torch.tensor([0, 1, 2])
     reward = SimpleNamespace(

@@ -18,8 +18,8 @@ cameras:
      type: NyxGaussianSplatCameraCfg
      params:
        name: camera0
-       width: 680
-       height: 480
+       width: 128
+       height: 128
        fov: 70.0
        clipping_range: [0.1, 100.0]
        pos: [0.0, 0.0, 0.8]
