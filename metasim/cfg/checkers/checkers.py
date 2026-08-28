@@ -900,10 +900,16 @@ class _ChairManChecker(BaseChecker):
 
         handler.task.just_finished[:] = False
         handler.task.stage_success[:] = False
-        # One-step event consumed by training callbacks.  ``completed_stages``
-        # is also used by StageProgressCfg and can be cleared while rewards are
-        # evaluated, before an SB3 callback gets a chance to inspect it.
+        # One-step event consumed by training callbacks.  The separate
+        # ``completed_stages`` flag is consumed by the completion reward while
+        # rewards are evaluated.
         handler.task.completed_stage_events.fill_(-1)
+
+        # Rewards are evaluated only after this checker returns.  Preserve the
+        # stage which produced the current transition before successful rows
+        # are advanced to the policy that will act on the *next* transition.
+        # MetaSimVecEnv temporarily exposes this tensor to every reward.
+        handler.task.reward_stage = stages.detach().clone()
 
         # --- 1. VYTVOŘENÍ MASEK ---
         mask_0 = (stages == 0)

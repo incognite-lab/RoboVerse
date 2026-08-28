@@ -1318,6 +1318,24 @@ def resolve_policy_bundle(bundle_path: str | Path):
     return paths, manifest
 
 
+def policy_stages_with_training_data(manifest: dict) -> set[int]:
+    """Return stages whose saved policy has received rollout/update data."""
+    trained: set[int] = set()
+    for stage, stage_data in manifest.get("stages", {}).items():
+        stage_id = int(stage)
+        if not 0 <= stage_id < NUM_STAGE_POLICIES:
+            continue
+        samples = stage_data.get("samples")
+        updates = stage_data.get("updates")
+        # Counters were not present in the oldest bundle format; those models
+        # must remain evaluable for backwards compatibility.
+        if samples is None and updates is None:
+            trained.add(stage_id)
+        elif int(samples or 0) > 0 or int(updates or 0) > 0:
+            trained.add(stage_id)
+    return trained
+
+
 class MultiPolicyRouter:
     """Inference-only batch router shared by PPO evaluation and DAgger."""
 
@@ -1342,7 +1360,7 @@ class MultiPolicyRouter:
                     observations[mask], deterministic=deterministic
                 )
                 actions[mask] = predicted
-        invalid = (stages < 0) | (stages > NUM_STAGE_POLICIES)
+        invalid = (stages < 0) | (stages >= NUM_STAGE_POLICIES)
         if invalid.any():
             raise ValueError(f"Unexpected stages {np.unique(stages[invalid])}")
         return np.clip(actions, self.action_space.low, self.action_space.high)

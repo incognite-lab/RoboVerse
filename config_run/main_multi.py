@@ -126,9 +126,9 @@ def main():
         #config_name = "g1_door_IK"
         #config_name = "g1_door_open_stand_train"
         #config_name = "g1_door_stand_IK"
-        #config_name = "chairman/eval_ppo_video"
+        config_name = "chairman_multi/eval_ppo_video"
         #config_name = "g1_ChairMan"
-        config_name = "chairman_multi/train_ppo"
+        #config_name = "chairman_multi/train_ppo"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
     elif len(sys.argv) == 2:
@@ -163,8 +163,12 @@ def main():
         # A successful stage transition does not reset the simulator. Physical
         # resets after failure/timeout may, however, reuse snapshots of stages
         # that have already been reached.
-        scenario.task.reset_to_stage0 = False
-        scenario.task.use_snapshot_curriculum = True
+        scenario.task.reset_to_stage0 = bool(
+            config.get("reset_to_stage0", False)
+        )
+        scenario.task.use_snapshot_curriculum = bool(
+            config.get("use_snapshot_curriculum", True)
+        )
         scenario.task.snapshot_save_probability = float(
             config.get("snapshot_save_probability", 1.0)
         )
@@ -1580,13 +1584,37 @@ def main():
         sys.modules['numpy._core'] = np.core
         sys.modules['numpy._core.numeric'] = np.core.numeric
 
-        # Load model
-        log.info(f"Loading model from {config.get('load_model_path')}")
-        model = PPO.load(
-            config.get("load_model_path"),
-            env=env,
-            device="cuda" if torch.cuda.is_available() else "cpu"
-        )
+        # Load either the original single PPO checkpoint or a concurrent
+        # ChairMan bundle containing one PPO policy per stage.
+        model_path = config.get("load_model_path")
+        if not model_path:
+            env.close()
+            raise ValueError("eval_video requires load_model_path in the YAML config")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        log.info(f"Loading model from {model_path}")
+        multi_router = None
+        multi_manifest = None
+        trained_multi_stages = set()
+        if config.get("task") == "chairmanmulti":
+            from multi_ppo_trainer import (
+                load_policy_router,
+                policy_stages_with_training_data,
+            )
+
+            multi_router, multi_manifest = load_policy_router(
+                env, model_path, device=device
+            )
+            trained_multi_stages = policy_stages_with_training_data(
+                multi_manifest
+            )
+            log.info(
+                "Loaded ChairMan Multi-PPO bundle at global timestep {}. "
+                "Policies with training data: {}",
+                int(multi_manifest.get("global_timesteps", 0)),
+                sorted(trained_multi_stages),
+            )
+        else:
+            model = PPO.load(model_path, env=env, device=device)
 
         # --- Nastavení videa ---
         video_save_path = config.get("video_save_path")
@@ -1614,9 +1642,12 @@ def main():
         obs = env.reset()
         max_steps = config.get("eval_max_steps", 1000)
 
+        allow_untrained_multi_policies = bool(
+            config.get("eval_allow_untrained_policies", False)
+        )
+        stop_on_done = bool(config.get("eval_stop_on_done", False))
+        last_policy_stage_env0 = None
         for step in range(max_steps):
-            actions, _ = model.predict(obs, deterministic=True)
-
             # -----------------------------------------------------
             # NOVÉ: Stage čteme PŘED env.step().
             # Tento krok tedy odpovídá stage, ve které politika
@@ -1628,19 +1659,44 @@ def main():
                     .actual_stage
                 )
 
-                if actual_stage is None:
-                    current_stage_env0 = 0
+                if config.get("task") == "chairmanmulti":
+                    stages_before_step = env.get_current_stages()
+                elif actual_stage is None:
+                    stages_before_step = np.zeros(env.num_envs, dtype=np.int64)
                 else:
-                    current_stage_env0 = int(
-                        actual_stage
-                        .detach()
-                        .cpu()
-                        .numpy()[0]
+                    stages_before_step = (
+                        actual_stage.detach().cpu().numpy().astype(np.int64)
                     )
+                current_stage_env0 = int(stages_before_step[0])
 
             except Exception as e:
                 log.warning(f"Could not read actual_stage during eval_video: {e}")
+                stages_before_step = np.zeros(env.num_envs, dtype=np.int64)
                 current_stage_env0 = 0
+
+            if multi_router is not None:
+                active_stages = set(np.unique(stages_before_step).tolist())
+                unavailable = sorted(active_stages - trained_multi_stages)
+                if unavailable and not allow_untrained_multi_policies:
+                    log.warning(
+                        "Stopping Multi-PPO video before step {}: active stage(s) {} "
+                        "have no training samples. Set eval_allow_untrained_policies: "
+                        "true to evaluate their randomly initialized checkpoints.",
+                        step,
+                        unavailable,
+                    )
+                    break
+                actions = multi_router.predict(
+                    obs, stages_before_step, deterministic=True
+                )
+                if current_stage_env0 != last_policy_stage_env0:
+                    log.info(
+                        "Evaluation env 0 is now controlled by PPO policy {}",
+                        current_stage_env0,
+                    )
+                    last_policy_stage_env0 = current_stage_env0
+            else:
+                actions, _ = model.predict(obs, deterministic=True)
 
             stage_per_step_env0.append(current_stage_env0)
 
@@ -1684,8 +1740,8 @@ def main():
 
             if dones.any():
                 log.info(f"Episode finished after {step + 1} steps")
-                # Pokud chceš video pouze první epizody, odkomentuj break:
-                # break
+                if stop_on_done:
+                    break
 
         observation.save()
         log.info(f"🎬 Video saved to {video_save_path}")

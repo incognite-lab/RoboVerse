@@ -114,10 +114,30 @@ class MetaSimVecEnv(VectorEnv):
         if isinstance(self.scenario.task.reward_functions, _MISSING_TYPE):
             return tot_reward
 
-        for reward_fn, weight in zip(self.scenario.task.reward_functions, self.scenario.task.reward_weights):
+        reward_functions = self.scenario.task.reward_functions
+        reward_stage = getattr(self.scenario.task, "reward_stage", None)
+        original_stages = None
+        if reward_stage is not None:
+            # The staged checker advances actual_stage before rewards are
+            # calculated.  Dense shaping and the completion bonus must still
+            # describe the transition made by the policy that just acted.
+            original_stages = [
+                getattr(reward_fn, "actual_stage", None)
+                for reward_fn in reward_functions
+            ]
+            for reward_fn in reward_functions:
+                if hasattr(reward_fn, "actual_stage"):
+                    reward_fn.actual_stage = reward_stage
 
-            reward_fn_ret = reward_fn(states, self.scenario.robots[0].name)
-            tot_reward += weight * reward_fn_ret
+        try:
+            for reward_fn, weight in zip(reward_functions, self.scenario.task.reward_weights):
+                reward_fn_ret = reward_fn(states, self.scenario.robots[0].name)
+                tot_reward += weight * reward_fn_ret
+        finally:
+            if original_stages is not None:
+                for reward_fn, actual_stage in zip(reward_functions, original_stages):
+                    if hasattr(reward_fn, "actual_stage"):
+                        reward_fn.actual_stage = actual_stage
         #print(tot_reward)
         return tot_reward
 

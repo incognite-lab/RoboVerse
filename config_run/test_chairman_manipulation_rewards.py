@@ -25,8 +25,13 @@ from metasim.cfg.tasks.humanoidbench.ChairMan import (
 )
 from metasim.cfg.tasks.humanoidbench.ChairMan_multi import (
     ChairmanmultiCfg,
+    GraspForceReward as MultiGraspForceReward,
+    HandOrientationProgressReward as MultiHandOrientationProgressReward,
+    HandTargetStillnessReward as MultiHandTargetStillnessReward,
     MultiPolicyStageCompletionReward,
+    ReachChairProgressReward as MultiReachChairProgressReward,
 )
+from metasim.wrapper.gym_vec_env import MetaSimVecEnv
 
 
 def _yaw_quaternion(yaw: float) -> torch.Tensor:
@@ -229,6 +234,63 @@ def test_stage2_dense_closure_and_contact_rewards_are_monotonic():
     )
 
 
+def test_multi_stage1_rewards_are_signed_progress_not_persistent_state_rewards():
+    far = _states(
+        left_position=(0.0, 0.2, 1.0),
+        right_position=(0.0, -0.2, 1.0),
+        left_quaternion=_yaw_quaternion(math.pi),
+        right_quaternion=_yaw_quaternion(math.pi),
+        hand_velocity=0.30,
+    )
+    closer = _states(
+        left_position=(0.45, 0.2, 1.0),
+        right_position=(0.45, -0.2, 1.0),
+        left_quaternion=_yaw_quaternion(math.pi / 2.0),
+        right_quaternion=_yaw_quaternion(math.pi / 2.0),
+        hand_velocity=0.10,
+    )
+    farther_again = _states(
+        left_position=(0.40, 0.2, 1.0),
+        right_position=(0.40, -0.2, 1.0),
+        left_quaternion=_yaw_quaternion(math.pi),
+        right_quaternion=_yaw_quaternion(math.pi),
+        hand_velocity=0.30,
+    )
+
+    reach = MultiReachChairProgressReward()
+    orientation = MultiHandOrientationProgressReward()
+    stillness = MultiHandTargetStillnessReward()
+    for reward in (reach, orientation, stillness):
+        reward.actual_stage = torch.tensor([1], dtype=torch.long)
+        assert reward(far, "g1_with_hands").item() == 0.0
+        assert reward(closer, "g1_with_hands").item() > 0.0
+        assert reward(closer, "g1_with_hands").item() == 0.0
+        assert reward(farther_again, "g1_with_hands").item() < 0.0
+
+
+def test_multi_grasp_force_matches_two_of_three_checker_rule_per_hand():
+    near_kwargs = {
+        "left_position": (0.5, 0.2, 1.0),
+        "right_position": (0.5, -0.2, 1.0),
+    }
+    one_tip_each = _states(
+        **near_kwargs, contact_forces=[2, 0, 0, 2, 0, 0]
+    )
+    two_tips_each = _states(
+        **near_kwargs, contact_forces=[2, 2, 0, 2, 2, 0]
+    )
+    three_tips_each = _states(
+        **near_kwargs, contact_forces=[2, 2, 2, 2, 2, 2]
+    )
+
+    reward = MultiGraspForceReward()
+    one_score = _evaluate(reward, one_tip_each, 2)
+    two_score = _evaluate(reward, two_tips_each, 2)
+    three_score = _evaluate(reward, three_tips_each, 2)
+    assert two_score > one_score
+    assert three_score >= two_score
+
+
 def test_stage3_grasp_and_hand_drift_terms_are_zero_at_the_safe_goal():
     target_kwargs = {
         "left_position": (0.5, 0.2, 1.0),
@@ -346,3 +408,59 @@ def test_full_and_multi_tasks_activate_balanced_stage3_to_stage5_rewards():
         assert weights["ArmDownReward"] == 14.0
         assert weights["KeepFingersOpenPenalty"] == -3.0
         assert isinstance(config.reward_functions[-1], completion_cls)
+
+
+def test_multi_completion_bonus_uses_previous_stage_and_has_single_consumer():
+    config = ChairmanmultiCfg()
+    reward_names = [type(reward).__name__ for reward in config.reward_functions]
+    assert "StageProgressCfg" not in reward_names
+    assert reward_names.count("MultiPolicyStageCompletionReward") == 1
+    completion_index = reward_names.index("MultiPolicyStageCompletionReward")
+    assert config.reward_weights[completion_index] == 100.0
+
+    current_stage = torch.tensor([1], dtype=torch.long)
+    reward_stage = torch.tensor([0], dtype=torch.long)
+
+    class CapturingDenseReward:
+        def __init__(self):
+            self.actual_stage = current_stage
+            self.seen_stage = None
+
+        def __call__(self, states, robot_name):
+            self.seen_stage = self.actual_stage.clone()
+            return (self.actual_stage == 0).float()
+
+    dense = CapturingDenseReward()
+    completion = MultiPolicyStageCompletionReward()
+    completion.actual_stage = current_stage
+    completion.completed_stages = torch.ones(1, dtype=torch.long)
+    states = SimpleNamespace(
+        robots={
+            "g1_with_hands": SimpleNamespace(joint_pos=torch.zeros((1, 1)))
+        }
+    )
+    task = SimpleNamespace(
+        reward_functions=[dense, completion],
+        reward_weights=[1.0, 100.0],
+        reward_stage=reward_stage,
+    )
+    fake_vec_env = SimpleNamespace(
+        num_envs=1,
+        env=SimpleNamespace(
+            handler=SimpleNamespace(
+                device=torch.device("cpu"),
+                get_states=lambda: states,
+            )
+        ),
+        scenario=SimpleNamespace(
+            task=task,
+            robots=[SimpleNamespace(name="g1_with_hands")],
+        ),
+    )
+
+    total = MetaSimVecEnv._calculate_rewards(fake_vec_env)
+    torch.testing.assert_close(total, torch.tensor([101.0]))
+    torch.testing.assert_close(dense.seen_stage, reward_stage)
+    assert dense.actual_stage is current_stage
+    assert completion.actual_stage is current_stage
+    torch.testing.assert_close(completion.completed_stages, torch.zeros(1, dtype=torch.long))

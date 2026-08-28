@@ -64,6 +64,12 @@ cameras:
 #-------------------------------------------
 force: false
 
+# Evaluation always starts from the procedural beginning and does not mutate
+# or sample the training snapshot curriculum.
+reset_to_stage0: true
+use_snapshot_curriculum: false
+snapshot_save_probability: 0.0
+
 #Eveluation settings
 #------------------------------------------
 #load_model_path: ./config_run/output/ppo_model/run_2026-04-16_18_chairmansimple/model_50040000
@@ -75,9 +81,17 @@ force: false
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-04-02_20_chairman/model_970776000
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-03-13_14_chairman_top/model_200070000
 #load_model_path: ./config_run/output/grpo_model/student_grpo_step_145.pth
-load_model_path: ./config_run/output/ppo_models_multi/
+# Can point either to one concrete run_*_chairmanmulti_concurrent directory or
+# to its parent. With a parent directory the newest valid run is selected.
+load_model_path: ./config_run/output/ppo_models_multi/run_2026-08-27_14-30-25_chairmanmulti_concurrent
 video_save_path: ./config_run/output/eval_videos/chairman_ppo_multi.mp4
-eval_episodes: 2000
 eval_max_steps: 2000
-eval_total_step_cap: 100
-eval_count_timeouts_as_failures: true
+
+# False is useful while only stage 0 has learned: evaluation stops cleanly as
+# soon as the robot reaches a policy that has zero samples/updates. Set true
+# only when you intentionally want to see the untrained downstream policies.
+eval_allow_untrained_policies: false
+
+# Record one physical episode instead of continuing after the wrapper reset.
+eval_stop_on_done: true
+video_slowdown: 1

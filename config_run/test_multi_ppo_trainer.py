@@ -11,9 +11,21 @@ from gymnasium import spaces
 from stable_baselines3.common.vec_env import VecEnv
 
 try:
-    from .multi_ppo_trainer import MultiPPOTrainer, RaggedStageRollout, StageStep
+    from .multi_ppo_trainer import (
+        MultiPPOTrainer,
+        MultiPolicyRouter,
+        RaggedStageRollout,
+        StageStep,
+        policy_stages_with_training_data,
+    )
 except ImportError:
-    from multi_ppo_trainer import MultiPPOTrainer, RaggedStageRollout, StageStep
+    from multi_ppo_trainer import (
+        MultiPPOTrainer,
+        MultiPolicyRouter,
+        RaggedStageRollout,
+        StageStep,
+        policy_stages_with_training_data,
+    )
 
 
 class FakeStageVecEnv(VecEnv):
@@ -110,6 +122,38 @@ class FakeStageVecEnv(VecEnv):
 
 
 class MultiPPOTrainerTest(unittest.TestCase):
+    def test_inference_router_selects_policy_by_stage(self):
+        class FakeModel:
+            def __init__(self, stage):
+                self.stage = stage
+
+            def predict(self, observations, deterministic=True):
+                return (
+                    np.full((len(observations), 2), self.stage, dtype=np.float32),
+                    None,
+                )
+
+        action_space = spaces.Box(-10.0, 10.0, shape=(2,), dtype=np.float32)
+        router = MultiPolicyRouter(
+            {stage: FakeModel(stage) for stage in range(6)}, action_space
+        )
+        actions = router.predict(
+            np.zeros((6, 4), dtype=np.float32), np.arange(6)
+        )
+        np.testing.assert_array_equal(actions[:, 0], np.arange(6))
+        with self.assertRaises(ValueError):
+            router.predict(np.zeros((1, 4), dtype=np.float32), np.array([6]))
+
+    def test_training_data_stages_support_partial_and_legacy_bundles(self):
+        manifest = {
+            "stages": {
+                "0": {"samples": 100, "updates": 1},
+                "1": {"samples": 0, "updates": 0},
+                "2": {},
+            }
+        }
+        self.assertEqual(policy_stages_with_training_data(manifest), {0, 2})
+
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA is required")
     def test_cpu_rollout_storage_with_cuda_default_device(self):
         class FakePolicy:
