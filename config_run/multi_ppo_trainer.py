@@ -119,6 +119,21 @@ def _new_stage_model(env, config: dict, stage: int, device: str) -> PPO:
     )
 
 
+def _load_stage_model(path: str | Path, env, device: str) -> PPO:
+    """Load an SB3 policy while replacing spaces that can fail cloudpickle."""
+    return PPO.load(
+        path,
+        env=env,
+        device=device,
+        custom_objects={
+            "observation_space": env.observation_space,
+            "action_space": env.action_space,
+            "_last_obs": None,
+            "_last_episode_starts": None,
+        },
+    )
+
+
 @dataclass
 class StageStep:
     global_step: int
@@ -244,7 +259,16 @@ class PendingStageBatches:
 class MultiPPOTrainer:
     """Train six independent PPO policies in one uninterrupted ChairMan env."""
 
-    def __init__(self, env, config: dict, *, resume_path: str | None = None):
+    def __init__(
+        self,
+        env,
+        config: dict,
+        *,
+        resume_path: str | None = None,
+        resume_checkpoint: str | int | None = None,
+        resume_stage_checkpoints=None,
+        resume_split_checkpoints: bool = False,
+    ):
         if not hasattr(env, "get_current_stages"):
             raise TypeError(
                 "MultiPPOTrainer requires config_run.SB3_chairman_multi_env"
@@ -289,9 +313,14 @@ class MultiPPOTrainer:
         self.console = Console()
 
         if resume_path:
-            paths, manifest = resolve_policy_bundle(resume_path)
+            paths, manifest = resolve_policy_bundle(
+                resume_path,
+                checkpoint=resume_checkpoint,
+                stage_checkpoints=resume_stage_checkpoints,
+                split_checkpoints=resume_split_checkpoints,
+            )
             self.models = {
-                stage: PPO.load(paths[stage], env=env, device=self.device)
+                stage: _load_stage_model(paths[stage], env, self.device)
                 for stage in range(NUM_STAGE_POLICIES)
             }
             self.global_timesteps = int(manifest.get("global_timesteps", 0))
@@ -1285,7 +1314,42 @@ def _model_file(path: Path) -> Path | None:
     return zipped if zipped.is_file() else None
 
 
-def resolve_policy_bundle(bundle_path: str | Path):
+def _stage_checkpoint_label(
+    stage: int,
+    *,
+    checkpoint: str | int | None,
+    stage_checkpoints,
+    split_checkpoints: bool,
+) -> str | None:
+    if not split_checkpoints:
+        return None if checkpoint in (None, "") else str(checkpoint)
+
+    if not stage_checkpoints:
+        raise ValueError(
+            "load_model_split_checkpoints is true, but load_model_stage_checkpoints is empty"
+        )
+    if isinstance(stage_checkpoints, (list, tuple)):
+        if len(stage_checkpoints) != NUM_STAGE_POLICIES:
+            raise ValueError(
+                f"load_model_stage_checkpoints must contain {NUM_STAGE_POLICIES} values"
+            )
+        value = stage_checkpoints[stage]
+    elif isinstance(stage_checkpoints, dict):
+        value = stage_checkpoints.get(stage, stage_checkpoints.get(str(stage)))
+    else:
+        raise TypeError("load_model_stage_checkpoints must be a list or dictionary")
+
+    if value in (None, ""):
+        raise ValueError(f"Missing checkpoint for stage {stage}")
+    return str(value)
+
+
+def resolve_policy_bundle(
+    bundle_path: str | Path,
+    checkpoint: str | int | None = None,
+    stage_checkpoints=None,
+    split_checkpoints: bool = False,
+):
     root = Path(bundle_path).expanduser()
     if root.is_file() and root.name == MANIFEST_NAME:
         root = root.parent
@@ -1304,17 +1368,34 @@ def resolve_policy_bundle(bundle_path: str | Path):
         raise ValueError("The bundle does not contain six ChairMan policies")
 
     paths: dict[int, str] = {}
+    selected_checkpoints: dict[int, str] = {}
     for stage in range(NUM_STAGE_POLICIES):
-        relative = manifest.get("stages", {}).get(str(stage), {}).get("model")
-        if not relative:
-            raise ValueError(f"Manifest has no model entry for stage {stage}")
-        candidate = Path(relative)
-        if not candidate.is_absolute():
-            candidate = root / candidate
+        checkpoint_label = _stage_checkpoint_label(
+            stage,
+            checkpoint=checkpoint,
+            stage_checkpoints=stage_checkpoints,
+            split_checkpoints=split_checkpoints,
+        )
+        if checkpoint_label is None:
+            relative = manifest.get("stages", {}).get(str(stage), {}).get("model")
+            if not relative:
+                raise ValueError(f"Manifest has no model entry for stage {stage}")
+            candidate = Path(relative)
+            if not candidate.is_absolute():
+                candidate = root / candidate
+        else:
+            candidate = root / f"stage_{stage}" / f"model_{checkpoint_label}"
         existing = _model_file(candidate)
         if existing is None:
             raise FileNotFoundError(f"Stage {stage} model does not exist: {candidate}")
         paths[stage] = str(existing)
+        if checkpoint_label is not None:
+            selected_checkpoints[stage] = checkpoint_label
+    if selected_checkpoints:
+        manifest = dict(manifest)
+        manifest["selected_checkpoints"] = {
+            str(stage): label for stage, label in selected_checkpoints.items()
+        }
     return paths, manifest
 
 
@@ -1366,11 +1447,23 @@ class MultiPolicyRouter:
         return np.clip(actions, self.action_space.low, self.action_space.high)
 
 
-def load_policy_router(env, bundle_path: str | Path, device: str | None = None):
-    paths, manifest = resolve_policy_bundle(bundle_path)
+def load_policy_router(
+    env,
+    bundle_path: str | Path,
+    device: str | None = None,
+    checkpoint: str | int | None = None,
+    stage_checkpoints=None,
+    split_checkpoints: bool = False,
+):
+    paths, manifest = resolve_policy_bundle(
+        bundle_path,
+        checkpoint=checkpoint,
+        stage_checkpoints=stage_checkpoints,
+        split_checkpoints=split_checkpoints,
+    )
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     models = {
-        stage: PPO.load(path, env=env, device=device)
+        stage: _load_stage_model(path, env, device)
         for stage, path in paths.items()
     }
     return MultiPolicyRouter(models, env.action_space), manifest

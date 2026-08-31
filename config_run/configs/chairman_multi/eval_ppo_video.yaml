@@ -84,6 +84,19 @@ snapshot_save_probability: 0.0
 # Can point either to one concrete run_*_chairmanmulti_concurrent directory or
 # to its parent. With a parent directory the newest valid run is selected.
 load_model_path: ./config_run/output/ppo_models_multi/run_2026-08-27_14-30-25_chairmanmulti_concurrent
+# Optional: force all stage policies to load stage_X/model_<value>.zip.
+# Leave unset to use the checkpoint referenced by multi_policy_manifest.json.
+load_model_checkpoint: 322560000
+# Optional: set a different checkpoint for each stage.
+# When true, load_model_stage_checkpoints must define stages 0 through 5.
+load_model_split_checkpoints: true
+load_model_stage_checkpoints:
+  0: 322560000
+  1: 1653120000
+  2: 4011840000
+  3: 322560000
+  4: 322560000
+  5: 322560000
 video_save_path: ./config_run/output/eval_videos/chairman_ppo_multi.mp4
 eval_max_steps: 2000
 

@@ -56,6 +56,19 @@ stage_episode_metrics_window: 1000
 # Used only with train_or_eval: load_and_train; must point to a complete
 # concurrent multi-policy run directory containing stage_0 ... stage_5.
 load_model_path:
+# Optional for load_and_train: resume from stage_X/model_<value>.zip.
+# Leave unset to use the checkpoint referenced by multi_policy_manifest.json.
+# load_model_checkpoint: 1008000000
+# Optional for load_and_train: set a different checkpoint for each stage.
+# When true, load_model_stage_checkpoints must define stages 0 through 5.
+load_model_split_checkpoints: false
+# load_model_stage_checkpoints:
+#   0: 1008000000
+#   1: 1008000000
+#   2: 1008000000
+#   3: 1008000000
+#   4: 1008000000
+#   5: 1008000000
 # PPO parameters
 #-------------------------------------------
 net_arch_pivf: true
