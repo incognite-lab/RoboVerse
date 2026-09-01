@@ -10,7 +10,6 @@ from metasim.types import EnvState
 from metasim.utils import configclass
 from metasim.utils.chair_navigation import (
     CHAIR_FINAL_DISTANCE,
-    CHAIR_STAGING_DISTANCE,
     chair_back_direction_xy,
     forward_direction_xy,
     smoothstep01,
@@ -559,33 +558,28 @@ class Stage0ArmPos(HumanoidBaseReward):
 
 class WalkToChairProgressReward(HumanoidBaseReward):
     """
-    Stage-0 navigation reward based primarily on signed progress.
+    Stage 0 reward for tracking a desired XY velocity vector toward the chair.
 
-    Far from the goal the walking controller receives a 0.5 m/s command.  In
-    the final approach it receives at least 0.28 m/s, then a discrete STOP
-    objective inside 18 cm.  Waiting outside the goal gives no positive
-    reward, while walking backwards and increasing heading error are negative.
+    The desired vector points to the final standing position behind the chair.
+    Its magnitude is the walking speed the policy should produce.  Motion in
+    the opposite direction is negative, and every step also receives a signed
+    distance-progress term.
 
     Output: <-1, 1>
     """
     def __init__(self, robot_name="g1_with_hands", target_speed=0.5):
         super().__init__(robot_name)
         self.active_stages = [0]
-        self.staging_distance = CHAIR_STAGING_DISTANCE
         self.final_distance = CHAIR_FINAL_DISTANCE
         self.target_speed = target_speed
         self.min_walk_speed = 0.28
         self.slow_radius = 0.35
         self.stop_radius = 0.18
         self.distance_progress_scale = 0.02
-        self.heading_progress_scale = 0.03
-        self.transition_half_width = 0.25
-        self.corridor_sigma = 0.45
-        self.overshoot_margin = 0.08
+        self.velocity_sigma = 0.18
         self.saved_chair_pos = None
         self.saved_chair_quat = None
         self.prev_final_distance = None
-        self.prev_heading_error = None
 
     def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
         chair = states.objects["chair"]
@@ -603,8 +597,6 @@ class WalkToChairProgressReward(HumanoidBaseReward):
 
         if self.prev_final_distance is not None:
             self.prev_final_distance[env_ids] = torch.nan
-        if self.prev_heading_error is not None:
-            self.prev_heading_error[env_ids] = torch.nan
 
         if hasattr(super(), "reset"):
             super().reset(env_ids, states)
@@ -627,7 +619,6 @@ class WalkToChairProgressReward(HumanoidBaseReward):
 
         base_idx = robot.body_names.index("pelvis")
         root_pos_xy = robot.body_state[:, base_idx, :2]
-        root_quat = robot.body_state[:, base_idx, 3:7]
         root_vel_xy = robot.body_state[:, base_idx, 7:9]
 
         chair_base_idx = chair.body_names.index("base_link")
@@ -638,39 +629,11 @@ class WalkToChairProgressReward(HumanoidBaseReward):
 
         chair_pos_xy = self.saved_chair_pos[:, :2]
         back_dir = chair_back_direction_xy(self.saved_chair_quat)
-        staging_pos = chair_pos_xy + self.staging_distance * back_dir
         final_pos = chair_pos_xy + self.final_distance * back_dir
 
-        to_staging = staging_pos - root_pos_xy
         to_final = final_pos - root_pos_xy
-        to_chair = chair_pos_xy - root_pos_xy
-        staging_dist = torch.norm(to_staging, dim=-1)
         final_dist = torch.norm(to_final, dim=-1)
-        chair_dist = torch.norm(to_chair, dim=-1)
-        staging_dir = to_staging / torch.clamp(staging_dist.unsqueeze(-1), min=1.0e-6)
         final_dir = to_final / torch.clamp(final_dist.unsqueeze(-1), min=1.0e-6)
-        face_chair_dir = to_chair / (chair_dist.unsqueeze(-1) + 1.0e-6)
-
-        # Chair-frame coordinates make the path independent of world rotation.
-        chair_to_robot = root_pos_xy - chair_pos_xy
-        along_back = torch.sum(chair_to_robot * back_dir, dim=-1)
-        side_dir = torch.stack((-back_dir[:, 1], back_dir[:, 0]), dim=-1)
-        lateral_error = torch.abs(torch.sum(chair_to_robot * side_dir, dim=-1))
-        corridor_gate = torch.exp(
-            -torch.square(lateral_error) / (2.0 * self.corridor_sigma ** 2)
-        )
-
-        # The blend grows while crossing the staging plane toward the chair.
-        # Multiplication by corridor_gate prevents cutting the corner when the
-        # robot is still far to one side of the desired approach line.
-        transition_input = (
-            self.staging_distance + self.transition_half_width - along_back
-        ) / (2.0 * self.transition_half_width)
-        approach_blend = smoothstep01(transition_input) * corridor_gate
-
-        forward_dir = forward_direction_xy(root_quat)
-        heading_cos = torch.sum(forward_dir * face_chair_dir, dim=-1)
-        heading_error = 1.0 - heading_cos
 
         if (
             self.prev_final_distance is None
@@ -692,35 +655,6 @@ class WalkToChairProgressReward(HumanoidBaseReward):
                 stage_mask, final_dist.detach(), self.prev_final_distance
             )
 
-        if (
-            self.prev_heading_error is None
-            or self.prev_heading_error.shape != heading_error.shape
-            or self.prev_heading_error.device != device
-        ):
-            self.prev_heading_error = heading_error.detach().clone()
-            heading_progress = torch.zeros_like(heading_error)
-        else:
-            previous_heading = torch.where(
-                torch.isnan(self.prev_heading_error), heading_error, self.prev_heading_error
-            )
-            heading_progress = torch.clamp(
-                (previous_heading - heading_error) / self.heading_progress_scale,
-                min=-1.0,
-                max=1.0,
-            )
-            self.prev_heading_error = torch.where(
-                stage_mask, heading_error.detach(), self.prev_heading_error
-            )
-
-        # Keep the original staging geometry, but use it only to select the
-        # route direction.  It no longer creates a persistent proximity bonus.
-        route_dir = (
-            (1.0 - approach_blend).unsqueeze(-1) * staging_dir
-            + approach_blend.unsqueeze(-1) * final_dir
-        )
-        route_dir = route_dir / torch.clamp(
-            torch.norm(route_dir, dim=-1, keepdim=True), min=1.0e-6
-        )
         desired_speed = torch.where(
             final_dist > self.slow_radius,
             torch.full_like(final_dist, self.target_speed),
@@ -730,44 +664,35 @@ class WalkToChairProgressReward(HumanoidBaseReward):
                 torch.zeros_like(final_dist),
             ),
         )
-        velocity_projection = torch.sum(root_vel_xy * route_dir, dim=-1)
-        direction_reward = torch.clamp(
+        desired_velocity = final_dir * desired_speed.unsqueeze(-1)
+        velocity_error = torch.norm(root_vel_xy - desired_velocity, dim=-1)
+        tracking_reward = 2.0 * torch.exp(
+            -torch.square(velocity_error) / (2.0 * self.velocity_sigma ** 2)
+        ) - 1.0
+
+        velocity_projection = torch.sum(root_vel_xy * final_dir, dim=-1)
+        signed_direction = torch.clamp(
             velocity_projection / torch.clamp(desired_speed, min=self.min_walk_speed),
             min=-1.0,
             max=1.0,
-        ) * (desired_speed > 0.0).float() * corridor_gate
-
-        # Going past the final chair-frame plane must never be attractive.
-        overshoot_amount = torch.clamp(
-            (self.final_distance - self.overshoot_margin) - along_back, min=0.0
         )
-        overshoot_penalty = torch.clamp(overshoot_amount / 0.10, min=0.0, max=1.0)
+
         speed_xy = torch.norm(root_vel_xy, dim=-1)
         stop_position_reward = smoothstep01(
             (self.stop_radius - final_dist) / self.stop_radius
         )
-        stop_speed_reward = smoothstep01(torch.abs(
-            (0.20 - speed_xy) / 0.20
-        ))
-        heading_reward = smoothstep01(
-            (heading_cos - 0.90) / 0.10
-        )
-        arrival_stop_reward = (
-            stop_position_reward * stop_speed_reward * heading_reward
-        )
+        stop_speed_reward = torch.clamp(1.0 - speed_xy / 0.20, min=0.0, max=1.0)
+        arrival_stop_reward = stop_position_reward * stop_speed_reward
 
-        corridor_penalty = torch.clamp(
-            (lateral_error - self.corridor_sigma) / self.corridor_sigma,
-            min=0.0,
-            max=1.0,
+        moving_reward = (
+            0.45 * signed_direction
+            + 0.35 * distance_progress
+            + 0.20 * tracking_reward
         )
-        total_reward = (
-            0.50 * distance_progress
-            + 0.20 * direction_reward
-            + 0.20 * heading_progress
-            + 0.70 * arrival_stop_reward
-            - 0.10 * corridor_penalty
-            - 0.25 * overshoot_penalty
+        total_reward = torch.where(
+            final_dist <= self.stop_radius,
+            0.75 * arrival_stop_reward + 0.25 * distance_progress,
+            moving_reward,
         )
         total_reward = torch.clamp(total_reward, min=-1.0, max=1.0)
         return total_reward * stage_mask.float()
@@ -888,20 +813,27 @@ class OpenGraspReward(HumanoidBaseReward):
 
 class FaceChairReward(HumanoidBaseReward):
     """
-    Face Chair: Udržuje pohled robota na židli (Trychtýřová odměna & Trest za odvracení)
-    Odměňuje robota za to, že osa X jeho hlavy směřuje k židli.
-    Tvrdě penalizuje, pokud úhlová rychlost hlavy směřuje pohled pryč od židle.
+    Stage 0 reward for keeping the robot facing the chair.
+
+    The main term rewards pelvis forward-axis alignment with the chair.  A
+    signed progress term rewards reducing the heading error and penalizes
+    turning farther away.
+
+    Output: <-1, 1>
     """
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
-        # Může být aktivní ve všech fázích, kdy chceme, aby robot sledoval cíl
-        self.active_stages = [1, 2, 3, 4, 5]
+        self.active_stages = [0]
+        self.progress_scale = 0.03
+        self.good_alignment = 0.92
+        self.prev_heading_error = None
 
-        # O kolik metrů výše nad base_link židle se má robot dívat (na sedák)
-        self.chair_look_z_offset = 0.4
+    def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
+        if self.prev_heading_error is not None:
+            self.prev_heading_error[env_ids] = torch.nan
 
-        # Váha trestu za odvracení zraku (úhlová rychlost pryč od cíle)
-        self.look_away_penalty_weight = 2.0
+        if hasattr(super(), "reset"):
+            super().reset(env_ids, states)
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -909,75 +841,57 @@ class FaceChairReward(HumanoidBaseReward):
         device = robot.joint_pos.device
         num_envs = robot.joint_pos.shape[0]
 
-        if self.actual_stage is None: return torch.zeros(num_envs, device=device)
-        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
-        if not stage_mask.any(): return torch.zeros(num_envs, device=device)
+        if self.actual_stage is None:
+            return torch.zeros(num_envs, device=device)
+
+        stage_mask = torch.isin(
+            self.actual_stage, torch.tensor(self.active_stages, device=device)
+        )
+        if not stage_mask.any():
+            return torch.zeros(num_envs, device=device)
 
         try:
-            head_link_idx = robot.body_names.index("head_link")
+            base_idx = robot.body_names.index("pelvis")
             chair_base_idx = chair.body_names.index("base_link")
-
-            # 1. Pozice hlavy a židle
-            head_pos = robot.body_state[:, head_link_idx, :3]
-            chair_pos = chair.body_state[:, chair_base_idx, :3]
-
-            # 2. Úhlová rychlost hlavy [N, 3] (indexy 10:13)
-            head_ang_vel = robot.body_state[:, head_link_idx, 10:13]
-
-            # 3. Orientace hlavy (Quaternion)
-            q = robot.body_state[:, head_link_idx, 3:7]
-            w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
-
         except ValueError:
             return torch.zeros(num_envs, device=device)
 
-        # --- A. VÝPOČET SMĚRŮ ---
-        # Zvedneme cíl pohledu na úroveň sedáku
-        target_pos = chair_pos.clone()
-        target_pos[:, 2] += self.chair_look_z_offset
+        base_pos_xy = robot.body_state[:, base_idx, :2]
+        base_quat = robot.body_state[:, base_idx, 3:7]
+        chair_pos_xy = chair.body_state[:, chair_base_idx, :2]
 
-        # Vektor od hlavy k židli (Normalizovaný)
-        vec_to_target = target_pos - head_pos
-        dir_to_target = vec_to_target / (torch.norm(vec_to_target, dim=-1, keepdim=True) + 1e-6)
+        to_chair = chair_pos_xy - base_pos_xy
+        chair_dist = torch.norm(to_chair, dim=-1)
+        chair_dir = to_chair / torch.clamp(chair_dist.unsqueeze(-1), min=1.0e-6)
+        forward_dir = forward_direction_xy(base_quat)
 
-        # Vektor, kam reálně hlava KOUKÁ (Osa X z quaternionu)
-        forward_x = 1 - 2 * (y**2 + z**2)
-        forward_y = 2 * (x*y + w*z)
-        forward_z = 2 * (x*z - w*y)
-        head_forward_vec = torch.stack([forward_x, forward_y, forward_z], dim=-1)
+        alignment = torch.sum(forward_dir * chair_dir, dim=-1)
+        heading_error = 1.0 - alignment
 
-        # --- B. ODMĚNA ZA POHLED (Trychtýřová odměna) ---
-        # Dot product: 1.0 = kouká přesně tam, -1.0 = kouká dozadu
-        alignment = torch.sum(head_forward_vec * dir_to_target, dim=-1)
+        if (
+            self.prev_heading_error is None
+            or self.prev_heading_error.shape != heading_error.shape
+            or self.prev_heading_error.device != device
+        ):
+            self.prev_heading_error = heading_error.detach().clone()
+            heading_progress = torch.zeros_like(heading_error)
+        else:
+            previous = torch.where(
+                torch.isnan(self.prev_heading_error), heading_error, self.prev_heading_error
+            )
+            heading_progress = torch.clamp(
+                (previous - heading_error) / self.progress_scale,
+                min=-1.0,
+                max=1.0,
+            )
+            self.prev_heading_error = torch.where(
+                stage_mask, heading_error.detach(), self.prev_heading_error
+            )
 
-        # Uděláme z toho chybu: 0.0 = perfektní, 2.0 = nejhorší
-        look_error = 1.0 - alignment
-
-        # Trychtýř (Inverse Distance): Čím menší chyba, tím strměji roste odměna k 1.0
-        rew_look = 1.0 / (1.0 + 5.0 * look_error)
-
-        # --- C. PENALIZACE ZA ODVRACENÍ ZRAKU (Angular Velocity Penalty) ---
-        # Křížový součin (Cross Product) nám dá OSU, kolem které se musí hlava
-        # otočit, aby se forward_vec srovnal s dir_to_target.
-        correction_axis = torch.cross(head_forward_vec, dir_to_target, dim=-1)
-
-        # Promítneme reálnou úhlovou rychlost hlavy na tuto ideální korekční osu.
-        # - Kladné číslo = hlava se otáčí K židli (Správně)
-        # - Záporné číslo = hlava se otáčí PRYČ od židle (Špatně!)
-        turn_progress = torch.sum(head_ang_vel * correction_axis, dim=-1)
-
-        # Ořízneme kladné hodnoty (neodměňujeme za rychlost otáčení, chceme jen klidný pohled)
-        # a ponecháme jen záporné hodnoty (odvracení zraku)
-        turning_away = torch.clamp(turn_progress, max=0.0)
-
-        # Aplikace trestu
-        penalty_turn = turning_away * self.look_away_penalty_weight
-
-        # --- D. CELKOVÉ SKÓRE ---
-        # Robot dostává body za to, že kouká na židli (rew_look),
-        # ale pokud cukne hlavou jinam, dostane facku (penalty_turn).
-        total_reward = rew_look + penalty_turn
-
+        alignment_reward = 2.0 * smoothstep01(
+            (alignment - 0.0) / (self.good_alignment - 0.0)
+        ) - 1.0
+        total_reward = 0.70 * alignment_reward + 0.30 * heading_progress
         return total_reward * stage_mask.float()
 
 
@@ -987,14 +901,14 @@ class FaceChairReward(HumanoidBaseReward):
 
 class ReachChairProgressReward(HumanoidBaseReward):
     """
-    Stage 1 dense reward for bringing *both* hands to their targets.
+    Stage 1 reward for bringing both hands to their chair targets.
 
-    A reciprocal state reward keeps a useful gradient even when the hands are
-    initially far away.  The minimum of the two hand scores prevents one hand
-    from compensating for the other one, matching the stage checker which
-    requires both hands to succeed.
+    Smaller hand-target distance gives a larger reward.  A signed progress
+    term rewards getting closer and penalizes moving away.  If either hand
+    exceeds the configured speed threshold, the reward is reduced so the policy
+    does not learn violent reaching motions.
 
-    Output: <0, 1>
+    Output: <-1, 1>
     """
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
@@ -1006,7 +920,10 @@ class ReachChairProgressReward(HumanoidBaseReward):
         self.chair_target_right = "target_hand_right"
 
         self.progress_scale = 0.01
-        self.distance_scale = 0.12
+        self.distance_scale = 0.20
+        self.precise_distance = 0.05
+        self.speed_threshold = 0.85
+        self.speed_penalty_scale = 1.25
         self.prev_distances = None
 
     def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
@@ -1046,7 +963,11 @@ class ReachChairProgressReward(HumanoidBaseReward):
         dist_right = torch.norm(p_hand_right - p_target_right, dim=-1)
         distances = torch.stack((dist_left, dist_right), dim=-1)
 
-        if self.prev_distances is None or self.prev_distances.shape != distances.shape:
+        if (
+            self.prev_distances is None
+            or self.prev_distances.shape != distances.shape
+            or self.prev_distances.device != device
+        ):
             self.prev_distances = distances.detach().clone()
             progress_per_hand = torch.zeros_like(distances)
         else:
@@ -1054,37 +975,58 @@ class ReachChairProgressReward(HumanoidBaseReward):
                 torch.isnan(self.prev_distances), distances, self.prev_distances
             )
             progress_per_hand = torch.clamp(
-                (previous - distances) / self.progress_scale, min=0.0, max=1.0
+                (previous - distances) / self.progress_scale, min=-1.0, max=1.0
             )
             self.prev_distances = torch.where(
                 stage_mask.unsqueeze(-1), distances.detach(), self.prev_distances
             )
 
-        state_per_hand = 1.0 / (
+        proximity_per_hand = 1.0 / (
             1.0 + torch.square(distances / self.distance_scale)
         )
+        precise_bonus_per_hand = smoothstep01(
+            (self.precise_distance * 2.0 - distances) / self.precise_distance
+        )
         state_reward = (
-            0.35 * torch.mean(state_per_hand, dim=-1)
-            + 0.65 * torch.min(state_per_hand, dim=-1).values
+            0.30 * torch.mean(proximity_per_hand, dim=-1)
+            + 0.50 * torch.min(proximity_per_hand, dim=-1).values
+            + 0.20 * torch.min(precise_bonus_per_hand, dim=-1).values
         )
         progress_reward = (
             0.35 * torch.mean(progress_per_hand, dim=-1)
             + 0.65 * torch.min(progress_per_hand, dim=-1).values
         )
 
-        total_reward = 0.80 * state_reward + 0.20 * progress_reward
-        return total_reward * stage_mask.float()
+        hand_speed = torch.stack(
+            (
+                torch.norm(robot.body_state[:, l_hand_idx, 7:10], dim=-1),
+                torch.norm(robot.body_state[:, r_hand_idx, 7:10], dim=-1),
+            ),
+            dim=-1,
+        )
+        max_speed = torch.max(hand_speed, dim=-1).values
+        speed_penalty = torch.clamp(
+            (max_speed - self.speed_threshold) / self.speed_penalty_scale,
+            min=0.0,
+            max=1.0,
+        )
+
+        total_reward = (
+            0.65 * state_reward
+            + 0.25 * progress_reward
+            - 0.30 * speed_penalty
+        )
+        return torch.clamp(total_reward, min=-1.0, max=1.0) * stage_mask.float()
 
 
 class HandOrientationProgressReward(HumanoidBaseReward):
     """
-    Stage 1 dense orientation reward using the checker's quaternion metric.
+    Stage 1 reward for matching both hand orientations to the targets.
 
-    The checker uses ``1 - abs(q_target dot q_hand)``.  Using that exact error
-    here avoids a reward/checker mismatch and avoids the unstable derivative
-    of ``acos`` close to perfect alignment.
+    Uses the same quaternion error as the checker and adds signed progress, so
+    improving orientation is rewarded and drifting away is penalized.
 
-    Output: <0, 1>
+    Output: <-1, 1>
     """
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
@@ -1097,7 +1039,6 @@ class HandOrientationProgressReward(HumanoidBaseReward):
 
         self.progress_scale = 0.015
         self.error_scale = 0.08
-        self.position_gate_scale = 0.25
         self.prev_errors = None
 
     def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
@@ -1145,13 +1086,17 @@ class HandOrientationProgressReward(HumanoidBaseReward):
             dim=-1,
         )
 
-        if self.prev_errors is None or self.prev_errors.shape != errors.shape:
+        if (
+            self.prev_errors is None
+            or self.prev_errors.shape != errors.shape
+            or self.prev_errors.device != device
+        ):
             self.prev_errors = errors.detach().clone()
             progress_per_hand = torch.zeros_like(errors)
         else:
             previous = torch.where(torch.isnan(self.prev_errors), errors, self.prev_errors)
             progress_per_hand = torch.clamp(
-                (previous - errors) / self.progress_scale, min=0.0, max=1.0
+                (previous - errors) / self.progress_scale, min=-1.0, max=1.0
             )
             self.prev_errors = torch.where(
                 stage_mask.unsqueeze(-1), errors.detach(), self.prev_errors
@@ -1167,30 +1112,17 @@ class HandOrientationProgressReward(HumanoidBaseReward):
             + 0.65 * torch.min(progress_per_hand, dim=-1).values
         )
 
-        # Orientation remains learnable far away, but becomes most important
-        # once the palms approach the actual handle targets.
-        left_dist = torch.norm(
-            robot.body_state[:, l_hand_idx, :3] - chair.body_state[:, l_target_idx, :3], dim=-1
-        )
-        right_dist = torch.norm(
-            robot.body_state[:, r_hand_idx, :3] - chair.body_state[:, r_target_idx, :3], dim=-1
-        )
-        max_dist = torch.maximum(left_dist, right_dist)
-        position_gate = 1.0 / (
-            1.0 + torch.square(max_dist / self.position_gate_scale)
-        )
-        total_reward = (0.80 * state_reward + 0.20 * progress_reward) * (
-            0.30 + 0.70 * position_gate
-        )
-        return total_reward * stage_mask.float()
+        total_reward = 0.75 * state_reward + 0.25 * progress_reward
+        return torch.clamp(total_reward, min=-1.0, max=1.0) * stage_mask.float()
 
 
 class HandTargetStillnessReward(HumanoidBaseReward):
     """
-    Signed reduction of absolute world hand speed near the stage-1 targets.
+    Stage 1 reward for keeping both hands on the targets after arrival.
 
-    This exactly matches the checker's use of absolute hand velocity.  A hand
-    that is already still returns zero instead of collecting reward forever.
+    Before arrival this contributes a small signed progress signal.  Once both
+    hands have reached the target region, staying there with calm hands is
+    rewarded and leaving the target region is penalized.
 
     Output: <-1, 1>
     """
@@ -1203,14 +1135,18 @@ class HandTargetStillnessReward(HumanoidBaseReward):
         self.chair_target_left = "target_hand_left"
         self.chair_target_right = "target_hand_right"
 
-        self.near_distance = 0.14
-        self.full_gate_distance = 0.07
-        self.progress_scale = 0.03
-        self.prev_max_speed = None
+        self.target_distance = 0.07
+        self.release_distance = 0.12
+        self.calm_speed = 0.20
+        self.progress_scale = 0.01
+        self.prev_max_distance = None
+        self.has_reached_target = None
 
     def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
-        if self.prev_max_speed is not None:
-            self.prev_max_speed[env_ids] = torch.nan
+        if self.prev_max_distance is not None:
+            self.prev_max_distance[env_ids] = torch.nan
+        if self.has_reached_target is not None:
+            self.has_reached_target[env_ids] = False
 
         if hasattr(super(), "reset"):
             super().reset(env_ids, states)
@@ -1251,31 +1187,60 @@ class HandTargetStillnessReward(HumanoidBaseReward):
 
         max_distance = torch.maximum(dist_left, dist_right)
         max_speed = torch.maximum(vel_left, vel_right)
-        near_gate = smoothstep01(
-            (self.near_distance - max_distance)
-            / (self.near_distance - self.full_gate_distance)
-        )
 
         if (
-            self.prev_max_speed is None
-            or self.prev_max_speed.shape != max_speed.shape
-            or self.prev_max_speed.device != device
+            self.prev_max_distance is None
+            or self.prev_max_distance.shape != max_distance.shape
+            or self.prev_max_distance.device != device
         ):
-            self.prev_max_speed = max_speed.detach().clone()
+            self.prev_max_distance = max_distance.detach().clone()
             progress = torch.zeros_like(max_speed)
         else:
             previous = torch.where(
-                torch.isnan(self.prev_max_speed), max_speed, self.prev_max_speed
+                torch.isnan(self.prev_max_distance), max_distance, self.prev_max_distance
             )
             progress = torch.clamp(
-                (previous - max_speed) / self.progress_scale,
+                (previous - max_distance) / self.progress_scale,
                 min=-1.0,
                 max=1.0,
             )
-            self.prev_max_speed = torch.where(
-                stage_mask, max_speed.detach(), self.prev_max_speed
+            self.prev_max_distance = torch.where(
+                stage_mask, max_distance.detach(), self.prev_max_distance
             )
-        return progress * near_gate * stage_mask.float()
+
+        if (
+            self.has_reached_target is None
+            or self.has_reached_target.shape != max_distance.shape
+            or self.has_reached_target.device != device
+        ):
+            self.has_reached_target = torch.zeros(
+                num_envs, dtype=torch.bool, device=device
+            )
+
+        reached_now = max_distance <= self.target_distance
+        self.has_reached_target = torch.where(
+            stage_mask, self.has_reached_target | reached_now, self.has_reached_target
+        )
+
+        hold_score = smoothstep01(
+            (self.release_distance - max_distance)
+            / (self.release_distance - self.target_distance)
+        )
+        calm_score = torch.clamp(1.0 - max_speed / self.calm_speed, min=0.0, max=1.0)
+        hold_reward = 0.70 * hold_score + 0.30 * calm_score
+        leave_penalty = -torch.clamp(
+            (max_distance - self.target_distance)
+            / (self.release_distance - self.target_distance),
+            min=0.0,
+            max=1.0,
+        )
+
+        total_reward = torch.where(
+            self.has_reached_target,
+            torch.where(max_distance <= self.release_distance, hold_reward, leave_penalty),
+            0.35 * progress,
+        )
+        return torch.clamp(total_reward, min=-1.0, max=1.0) * stage_mask.float()
 
 
 class PreciseHandTargetReward(HumanoidBaseReward):
@@ -2536,11 +2501,12 @@ HUMANLY_DOF_LIMIT_WEIGHT = -0.25
 UPRIGHT_PENALTY_WEIGHT = -1.00
 ARM_RESTING_POSE_PENALTY_WEIGHT = -0.05
 # Every stage-local policy gets the same one-shot completion bonus.
-MULTI_POLICY_STAGE_COMPLETION_WEIGHT = 200.0
+MULTI_POLICY_STAGE_COMPLETION_WEIGHT = 500.0
 
 # Stage 0
 STAGE0_ARM_POS_REWARD_WEIGHT = 2.0
 WALK_TO_CHAIR_REWARD_WEIGHT = 4.0
+FACE_CHAIR_REWARD_WEIGHT = 2.0
 OPEN_GRASP_REWARD_WEIGHT = 1.0
 KEEP_CHAIR_STILL_PENALTY_WEIGHT = -2.0
 
@@ -2614,6 +2580,7 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
 
         STAGE0_ARM_POS_REWARD_WEIGHT,
         WALK_TO_CHAIR_REWARD_WEIGHT,
+        FACE_CHAIR_REWARD_WEIGHT,
         KEEP_CHAIR_STILL_PENALTY_WEIGHT,
         OPEN_GRASP_REWARD_WEIGHT,
 
@@ -2649,6 +2616,7 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
 
         Stage0ArmPos(),
         WalkToChairProgressReward(),
+        FaceChairReward(),
         KeepChairStillPenalty(),
         OpenGraspReward(),
 
