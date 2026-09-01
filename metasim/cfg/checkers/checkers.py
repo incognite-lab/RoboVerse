@@ -942,8 +942,9 @@ class _ChairManChecker(BaseChecker):
 
         # --- 5. UKLÁDÁNÍ SNAPSHOTŮ A LOGOVÁNÍ PRŮLOMŮ ---
 
-        # A) Finále (Stage 6) - Jelikož se Stage 6 neukládá do snapshotů, vypíšeme průlom rovnou
-        just_finished = all_success & (stages == 6) # (protože jsme v kroku 4 zvedli stages na 6)
+        # A) Finále: stage 5 has just advanced to stage 6.
+        # ``stages`` is the pre-increment tensor for this transition.
+        just_finished = all_success & (stages == 5)
         handler.task.stage_success[:] = just_finished
         handler.task.just_finished[:] = just_finished
 
@@ -961,7 +962,8 @@ class _ChairManChecker(BaseChecker):
         use_snapshot_curriculum = bool(
             getattr(handler.task, "use_snapshot_curriculum", True)
         )
-        success_to_save = all_success & (stages <= 5)
+        reached_stages = stages + 1
+        success_to_save = all_success & (reached_stages >= 1) & (reached_stages <= 5)
         if not use_snapshot_curriculum:
             success_to_save = torch.zeros_like(success_to_save)
 
@@ -979,14 +981,14 @@ class _ChairManChecker(BaseChecker):
             mandatory = torch.zeros_like(success_to_save)
             for stage in range(1, 6):
                 if len(RAM_SNAPSHOT_BUFFER.get(stage, ())) == 0:
-                    candidates = success_to_save & (stages == stage)
+                    candidates = success_to_save & (reached_stages == stage)
                     mandatory |= candidates & (candidates.cumsum(dim=0) == 1)
             envs_to_save = (
                 mandatory | (success_to_save & rand_mask)
             ).nonzero(as_tuple=False).squeeze(-1)
 
             saved = save_snapshots_chairman(
-                handler, envs_to_save, stages.index_select(0, envs_to_save)
+                handler, envs_to_save, reached_stages.index_select(0, envs_to_save)
             )
             if verbose_stage_events:
                 for env_idx, new_stage in saved:

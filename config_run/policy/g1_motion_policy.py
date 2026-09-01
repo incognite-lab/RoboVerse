@@ -132,6 +132,21 @@ class G1MotionPolicy:
 
         self._policy = torch.jit.load(str(self.policy_path), map_location=self.device)
         self._policy.eval()
+        self._default_angles_torch = torch.as_tensor(
+            self.DEFAULT_ANGLES, dtype=torch.float32, device=self.device
+        )
+        self._joint_lower_limits_torch = torch.as_tensor(
+            self.JOINT_LOWER_LIMITS, dtype=torch.float32, device=self.device
+        )
+        self._joint_upper_limits_torch = torch.as_tensor(
+            self.JOINT_UPPER_LIMITS, dtype=torch.float32, device=self.device
+        )
+        self._command_scale_torch = torch.as_tensor(
+            self.COMMAND_SCALE, dtype=torch.float32, device=self.device
+        )
+        self._max_command_torch = torch.as_tensor(
+            self.MAX_COMMAND, dtype=torch.float32, device=self.device
+        )
         self._batch_size = 1
         self._previous_action = np.zeros((1, self.NUM_ACTIONS), dtype=np.float32)
         self._elapsed_time = np.zeros(1, dtype=np.float32)
@@ -308,18 +323,12 @@ class G1MotionPolicy:
         if self.validate_tensors and not bool(torch.isfinite(action).all()):
             raise RuntimeError("Motion policy produced NaN or infinite actions")
 
-        defaults = torch.as_tensor(
-            self.DEFAULT_ANGLES, dtype=torch.float32, device=self.device
-        )
-        targets = defaults.unsqueeze(0) + self.ACTION_SCALE * action
+        targets = self._default_angles_torch.unsqueeze(0) + self.ACTION_SCALE * action
         if self.clip_joint_targets:
-            lower = torch.as_tensor(
-                self.JOINT_LOWER_LIMITS, dtype=torch.float32, device=self.device
+            targets = torch.maximum(
+                torch.minimum(targets, self._joint_upper_limits_torch),
+                self._joint_lower_limits_torch,
             )
-            upper = torch.as_tensor(
-                self.JOINT_UPPER_LIMITS, dtype=torch.float32, device=self.device
-            )
-            targets = torch.maximum(torch.minimum(targets, upper), lower)
 
         self._previous_action_torch.copy_(action)
         self.last_action_torch.copy_(action)
@@ -350,15 +359,15 @@ class G1MotionPolicy:
         )
         omega = self._torch_vector(angular_velocity, 3, "angular_velocity")
         cmd = self._torch_vector(command, 3, "command")
-        max_command = torch.as_tensor(
-            self.MAX_COMMAND, dtype=torch.float32, device=self.device
-        )
         if command_is_normalized:
             if self.clip_commands:
                 cmd = cmd.clamp(-1.0, 1.0)
-            cmd = cmd * max_command
+            cmd = cmd * self._max_command_torch
         elif self.clip_commands:
-            cmd = torch.maximum(torch.minimum(cmd, max_command), -max_command)
+            cmd = torch.maximum(
+                torch.minimum(cmd, self._max_command_torch),
+                -self._max_command_torch,
+            )
 
         if (base_quaternion_wxyz is None) == (projected_gravity is None):
             raise ValueError(
@@ -413,18 +422,12 @@ class G1MotionPolicy:
                 raise ValueError("time_seconds must be non-negative")
             self._elapsed_time_torch.copy_(phase_time)
         phase = torch.remainder(phase_time, self.GAIT_PERIOD) / self.GAIT_PERIOD
-        defaults = torch.as_tensor(
-            self.DEFAULT_ANGLES, dtype=torch.float32, device=self.device
-        )
-        command_scale = torch.as_tensor(
-            self.COMMAND_SCALE, dtype=torch.float32, device=self.device
-        )
         observation = torch.cat(
             (
                 omega * self.ANGULAR_VELOCITY_SCALE,
                 gravity,
-                cmd * command_scale,
-                (q - defaults) * self.JOINT_POSITION_SCALE,
+                cmd * self._command_scale_torch,
+                (q - self._default_angles_torch) * self.JOINT_POSITION_SCALE,
                 dq * self.JOINT_VELOCITY_SCALE,
                 previous,
                 torch.sin(2.0 * torch.pi * phase).unsqueeze(1),

@@ -348,11 +348,13 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
         return full_targets
 
     def _reset_motion_state_torch(self, env_ids: torch.Tensor | None = None) -> None:
-        defaults = torch.as_tensor(
-            self.motion_policy.DEFAULT_ANGLES,
-            dtype=torch.float32,
-            device=self.torch_device,
-        )
+        defaults = getattr(self.motion_policy, "_default_angles_torch", None)
+        if defaults is None:
+            defaults = torch.as_tensor(
+                self.motion_policy.DEFAULT_ANGLES,
+                dtype=torch.float32,
+                device=self.torch_device,
+            )
         if env_ids is None:
             self.motion_policy.reset()
             self._cached_leg_targets_torch.copy_(
@@ -419,7 +421,7 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
         metadata = {
             "stage_before": stage_before,
             "stage_after_event": stage_after_event,
-            "stage_after": self.get_current_stages_torch(),
+            "stage_after": stage_after_event,
             "completed_stage": completed,
             "physical_done": unsuccessful | timeout | success,
             "task_success": success,

@@ -22,6 +22,17 @@ from .base_cfg import HumanoidBaseReward, HumanoidTaskCfg
 HEIGHT_THRESHOLD = 0.4
 
 
+def _stage_mask(actual_stage: torch.Tensor, stages: int | tuple[int, ...] | list[int]) -> torch.BoolTensor:
+    """Return a GPU boolean mask without allocating a stage tensor every step."""
+    if isinstance(stages, int):
+        return actual_stage == stages
+
+    mask = actual_stage == stages[0]
+    for stage in stages[1:]:
+        mask = mask | (actual_stage == stage)
+    return mask
+
+
 # =============================================================================
 # BASIC / AUXILIARY REWARDS
 # =============================================================================
@@ -189,6 +200,8 @@ class LocomotionCommandPenalty(HumanoidBaseReward):
         self.previous_command = None
         self.delta_scale = torch.tensor([0.08, 0.06, 0.15])
         self.command_scale = torch.tensor([0.50, 0.30, 0.80])
+        self.delta_scale_device = None
+        self.command_scale_device = None
         self.stop_radius = 0.45
 
     def set_control_context(self, command, previous_command, device=None):
@@ -214,14 +227,17 @@ class LocomotionCommandPenalty(HumanoidBaseReward):
 
         command = self.command.to(device)
         previous = self.previous_command.to(device)
+        if self.delta_scale_device is None or self.delta_scale_device.device != device:
+            self.delta_scale_device = self.delta_scale.to(device)
+            self.command_scale_device = self.command_scale.to(device)
         smoothness = torch.mean(
             torch.clamp(
-                torch.abs(command - previous) / self.delta_scale.to(device), 0.0, 1.0
+                torch.abs(command - previous) / self.delta_scale_device, 0.0, 1.0
             ),
             dim=-1,
         )
         stop_command = torch.mean(
-            torch.clamp(torch.abs(command) / self.command_scale.to(device), 0.0, 1.0),
+            torch.clamp(torch.abs(command) / self.command_scale_device, 0.0, 1.0),
             dim=-1,
         )
 
@@ -431,10 +447,9 @@ class UprightPenaltyCfg(HumanoidBaseReward):
 # =============================================================================
 class Stage0ArmPos(HumanoidBaseReward):
     """
-    Stage-0 arm-pose constraint penalty.
+    Stage-0 arm-pose reward.
 
-    A correct pose returns zero, so standing still in a good pose cannot farm
-    reward.  Use this magnitude with a negative weight.
+    A correct pose returns one and a poor pose approaches zero.
 
     Output: <0, 1>
     """
@@ -444,6 +459,9 @@ class Stage0ArmPos(HumanoidBaseReward):
         self.dof_indices = None
         self.required_pos_tensor = None
         self.required_pos_list = None
+        self.waist_mask = None
+        self.finger_mask = None
+        self.arm_mask = None
         self.arm_sigma = 0.18
         self.waist_sigma = 0.08
         self.finger_sigma = 0.25
@@ -520,24 +538,30 @@ class Stage0ArmPos(HumanoidBaseReward):
             if not self.dof_indices:
                 return torch.zeros(num_envs, device=device)
 
+            selected_names = [robot.joint_names[i] for i in self.dof_indices]
             self.dof_indices = torch.tensor(self.dof_indices, device=device, dtype=torch.long)
             self.required_pos_tensor = torch.tensor(self.required_pos_list, device=device).unsqueeze(0)
+            self.waist_mask = torch.tensor(
+                [name.startswith("waist_") for name in selected_names],
+                device=device,
+            )
+            self.finger_mask = torch.tensor(
+                ["_hand_" in name for name in selected_names],
+                device=device,
+            )
+            self.arm_mask = ~(self.waist_mask | self.finger_mask)
 
         if self.dof_indices.device != device:
             self.dof_indices = self.dof_indices.to(device)
         if self.required_pos_tensor.device != device:
             self.required_pos_tensor = self.required_pos_tensor.to(device)
+        if self.waist_mask.device != device:
+            self.waist_mask = self.waist_mask.to(device)
+            self.finger_mask = self.finger_mask.to(device)
+            self.arm_mask = self.arm_mask.to(device)
 
         q_active = joint_pos[:, self.dof_indices]
         error = torch.abs(q_active - self.required_pos_tensor)
-        selected_names = [robot.joint_names[int(i)] for i in self.dof_indices.tolist()]
-        waist_mask = torch.tensor(
-            [name.startswith("waist_") for name in selected_names], device=device
-        )
-        finger_mask = torch.tensor(
-            ["_hand_" in name for name in selected_names], device=device
-        )
-        arm_mask = ~(waist_mask | finger_mask)
 
         def group_reward(mask, sigma):
             if not mask.any():
@@ -547,11 +571,11 @@ class Stage0ArmPos(HumanoidBaseReward):
         # Do not dilute three waist joints by averaging them with 28 arm/finger
         # joints. This makes torso motion during walking visibly expensive.
         pose_score = (
-            0.45 * group_reward(waist_mask, self.waist_sigma)
-            + 0.45 * group_reward(arm_mask, self.arm_sigma)
-            + 0.10 * group_reward(finger_mask, self.finger_sigma)
+            0.45 * group_reward(self.waist_mask, self.waist_sigma)
+            + 0.45 * group_reward(self.arm_mask, self.arm_sigma)
+            + 0.10 * group_reward(self.finger_mask, self.finger_sigma)
         )
-        return (1.0 - pose_score) * stage_mask.float()
+        return pose_score * stage_mask.float()
 
 
 
@@ -610,10 +634,7 @@ class WalkToChairProgressReward(HumanoidBaseReward):
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
 
-        stage_mask = torch.isin(
-            self.actual_stage,
-            torch.tensor(self.active_stages, device=device)
-        )
+        stage_mask = _stage_mask(self.actual_stage, self.active_stages)
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
@@ -723,8 +744,7 @@ class KeepChairStillPenalty(HumanoidBaseReward):
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
 
-        active_tensor = torch.tensor(self.active_stages, device=device)
-        stage_mask = torch.isin(self.actual_stage, active_tensor)
+        stage_mask = _stage_mask(self.actual_stage, self.active_stages)
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
@@ -756,10 +776,9 @@ class KeepChairStillPenalty(HumanoidBaseReward):
 class OpenGraspReward(HumanoidBaseReward):
     """
     Stage 0 and 1:
-    Penalty magnitude for fingers that are not open and calm.
+    Reward for fingers that are open and calm.
 
     Output: <0, 1>
-    Use with NEGATIVE weight.
     """
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
@@ -781,8 +800,7 @@ class OpenGraspReward(HumanoidBaseReward):
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
 
-        active_tensor = torch.tensor(self.active_stages, device=device)
-        stage_mask = torch.isin(self.actual_stage, active_tensor)
+        stage_mask = _stage_mask(self.actual_stage, self.active_stages)
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
@@ -808,7 +826,7 @@ class OpenGraspReward(HumanoidBaseReward):
         vel_reward = torch.clamp(1.0 - vel_norm / self.vel_scale, min=0.0, max=1.0)
 
         open_score = 0.75 * pos_reward + 0.25 * vel_reward
-        return (1.0 - open_score) * stage_mask.float()
+        return open_score * stage_mask.float()
 
 
 class FaceChairReward(HumanoidBaseReward):
@@ -844,9 +862,7 @@ class FaceChairReward(HumanoidBaseReward):
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
 
-        stage_mask = torch.isin(
-            self.actual_stage, torch.tensor(self.active_stages, device=device)
-        )
+        stage_mask = _stage_mask(self.actual_stage, self.active_stages)
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
@@ -942,7 +958,7 @@ class ReachChairProgressReward(HumanoidBaseReward):
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
 
-        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        stage_mask = _stage_mask(self.actual_stage, self.active_stages)
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
@@ -1057,7 +1073,7 @@ class HandOrientationProgressReward(HumanoidBaseReward):
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
 
-        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        stage_mask = _stage_mask(self.actual_stage, self.active_stages)
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
@@ -1160,7 +1176,7 @@ class HandTargetStillnessReward(HumanoidBaseReward):
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
 
-        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        stage_mask = _stage_mask(self.actual_stage, self.active_stages)
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
@@ -1279,10 +1295,7 @@ class PreciseHandTargetReward(HumanoidBaseReward):
 
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
-        stage_mask = torch.isin(
-            self.actual_stage.to(device=device),
-            torch.tensor(self.active_stages, dtype=torch.long, device=device),
-        )
+        stage_mask = _stage_mask(self.actual_stage.to(device=device), self.active_stages)
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
@@ -1406,7 +1419,7 @@ class StayNearAnchorReward(HumanoidBaseReward):
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
 
-        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        stage_mask = _stage_mask(self.actual_stage, self.active_stages)
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
@@ -1491,8 +1504,7 @@ class CloseGraspReward(HumanoidBaseReward):
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
 
-        active_tensor = torch.tensor(self.active_stages, device=device)
-        stage_mask = torch.isin(self.actual_stage, active_tensor)
+        stage_mask = _stage_mask(self.actual_stage, self.active_stages)
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
@@ -1635,7 +1647,7 @@ class GraspForceReward(HumanoidBaseReward):
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
 
-        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        stage_mask = _stage_mask(self.actual_stage, self.active_stages)
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
@@ -1759,7 +1771,7 @@ class MaintainAnyGraspReward(HumanoidBaseReward):
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
 
-        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        stage_mask = _stage_mask(self.actual_stage, self.active_stages)
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
@@ -1934,7 +1946,7 @@ class PullChairReward(HumanoidBaseReward):
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
 
-        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        stage_mask = _stage_mask(self.actual_stage, self.active_stages)
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
@@ -2052,7 +2064,7 @@ class PulledChairStillnessReward(HumanoidBaseReward):
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
 
-        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        stage_mask = _stage_mask(self.actual_stage, self.active_stages)
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
@@ -2127,7 +2139,7 @@ class ReleaseFingersReward(HumanoidBaseReward):
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
 
-        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        stage_mask = _stage_mask(self.actual_stage, self.active_stages)
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
@@ -2233,7 +2245,7 @@ class ArmDownReward(HumanoidBaseReward):
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
 
-        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        stage_mask = _stage_mask(self.actual_stage, self.active_stages)
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
@@ -2374,7 +2386,7 @@ class ArmRestingPosePenaltyCfg(HumanoidBaseReward):
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
 
-        stage_mask = torch.isin(self.actual_stage, torch.tensor(self.active_stages, device=device))
+        stage_mask = _stage_mask(self.actual_stage, self.active_stages)
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
