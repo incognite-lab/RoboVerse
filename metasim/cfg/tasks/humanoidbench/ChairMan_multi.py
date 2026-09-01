@@ -447,11 +447,13 @@ class UprightPenaltyCfg(HumanoidBaseReward):
 # =============================================================================
 class Stage0ArmPos(HumanoidBaseReward):
     """
-    Stage-0 arm-pose reward.
+    Stage-0 arm-pose penalty.
 
-    A correct pose returns one and a poor pose approaches zero.
+    A correct pose returns zero and a poor pose approaches one.  This keeps the
+    walking policy from farming a positive standing-still reward.
 
     Output: <0, 1>
+    Use with NEGATIVE weight.
     """
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
@@ -575,7 +577,8 @@ class Stage0ArmPos(HumanoidBaseReward):
             + 0.45 * group_reward(self.arm_mask, self.arm_sigma)
             + 0.10 * group_reward(self.finger_mask, self.finger_sigma)
         )
-        return pose_score * stage_mask.float()
+        pose_penalty = 1.0 - pose_score
+        return pose_penalty * stage_mask.float()
 
 
 
@@ -776,9 +779,10 @@ class KeepChairStillPenalty(HumanoidBaseReward):
 class OpenGraspReward(HumanoidBaseReward):
     """
     Stage 0 and 1:
-    Reward for fingers that are open and calm.
+    Penalty for fingers that are not open and calm.
 
     Output: <0, 1>
+    Use with NEGATIVE weight.
     """
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
@@ -826,7 +830,8 @@ class OpenGraspReward(HumanoidBaseReward):
         vel_reward = torch.clamp(1.0 - vel_norm / self.vel_scale, min=0.0, max=1.0)
 
         open_score = 0.75 * pos_reward + 0.25 * vel_reward
-        return open_score * stage_mask.float()
+        open_penalty = 1.0 - open_score
+        return open_penalty * stage_mask.float()
 
 
 class FaceChairReward(HumanoidBaseReward):
@@ -907,7 +912,7 @@ class FaceChairReward(HumanoidBaseReward):
         alignment_reward = 2.0 * smoothstep01(
             (alignment - 0.0) / (self.good_alignment - 0.0)
         ) - 1.0
-        total_reward = 0.70 * alignment_reward + 0.30 * heading_progress
+        total_reward = 0.35 * alignment_reward + 0.65 * heading_progress
         return total_reward * stage_mask.float()
 
 
@@ -938,8 +943,8 @@ class ReachChairProgressReward(HumanoidBaseReward):
         self.progress_scale = 0.01
         self.distance_scale = 0.20
         self.precise_distance = 0.05
-        self.speed_threshold = 0.85
-        self.speed_penalty_scale = 1.25
+        self.speed_threshold = 0.50
+        self.speed_penalty_scale = 0.40
         self.prev_distances = None
 
     def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
@@ -1028,9 +1033,9 @@ class ReachChairProgressReward(HumanoidBaseReward):
         )
 
         total_reward = (
-            0.65 * state_reward
+            0.60 * state_reward
             + 0.25 * progress_reward
-            - 0.30 * speed_penalty
+            - 0.50 * speed_penalty
         )
         return torch.clamp(total_reward, min=-1.0, max=1.0) * stage_mask.float()
 
@@ -1055,6 +1060,7 @@ class HandOrientationProgressReward(HumanoidBaseReward):
 
         self.progress_scale = 0.015
         self.error_scale = 0.08
+        self.position_gate_scale = 0.25
         self.prev_errors = None
 
     def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
@@ -1087,8 +1093,12 @@ class HandOrientationProgressReward(HumanoidBaseReward):
 
         q_hand_left = robot.body_state[:, l_hand_idx, 3:7]
         q_hand_right = robot.body_state[:, r_hand_idx, 3:7]
+        p_hand_left = robot.body_state[:, l_hand_idx, :3]
+        p_hand_right = robot.body_state[:, r_hand_idx, :3]
         q_target_left = chair.body_state[:, l_target_idx, 3:7]
         q_target_right = chair.body_state[:, r_target_idx, 3:7]
+        p_target_left = chair.body_state[:, l_target_idx, :3]
+        p_target_right = chair.body_state[:, r_target_idx, :3]
 
         q_hand_left = torch.nn.functional.normalize(q_hand_left, dim=-1)
         q_hand_right = torch.nn.functional.normalize(q_hand_right, dim=-1)
@@ -1128,7 +1138,17 @@ class HandOrientationProgressReward(HumanoidBaseReward):
             + 0.65 * torch.min(progress_per_hand, dim=-1).values
         )
 
-        total_reward = 0.75 * state_reward + 0.25 * progress_reward
+        dist_left = torch.norm(p_hand_left - p_target_left, dim=-1)
+        dist_right = torch.norm(p_hand_right - p_target_right, dim=-1)
+        max_distance = torch.maximum(dist_left, dist_right)
+        position_gate = 1.0 / (
+            1.0 + torch.square(max_distance / self.position_gate_scale)
+        )
+
+        total_reward = (
+            (0.30 + 0.70 * position_gate)
+            * (0.75 * state_reward + 0.25 * progress_reward)
+        )
         return torch.clamp(total_reward, min=-1.0, max=1.0) * stage_mask.float()
 
 
@@ -1233,7 +1253,7 @@ class HandTargetStillnessReward(HumanoidBaseReward):
                 num_envs, dtype=torch.bool, device=device
             )
 
-        reached_now = max_distance <= self.target_distance
+        reached_now = (max_distance <= self.target_distance) & (max_speed <= self.calm_speed)
         self.has_reached_target = torch.where(
             stage_mask, self.has_reached_target | reached_now, self.has_reached_target
         )
@@ -2516,10 +2536,10 @@ ARM_RESTING_POSE_PENALTY_WEIGHT = -0.05
 MULTI_POLICY_STAGE_COMPLETION_WEIGHT = 500.0
 
 # Stage 0
-STAGE0_ARM_POS_REWARD_WEIGHT = 2.0
+STAGE0_ARM_POS_REWARD_WEIGHT = -1.0
 WALK_TO_CHAIR_REWARD_WEIGHT = 4.0
-FACE_CHAIR_REWARD_WEIGHT = 2.0
-OPEN_GRASP_REWARD_WEIGHT = 1.0
+FACE_CHAIR_REWARD_WEIGHT = 1.0
+OPEN_GRASP_REWARD_WEIGHT = -0.5
 KEEP_CHAIR_STILL_PENALTY_WEIGHT = -2.0
 
 # Stage 1

@@ -885,6 +885,7 @@ class _ChairManChecker(BaseChecker):
         states = handler.get_states()
         # Získáme tenzor se všemi aktuálními stages [num_envs]
         stages = handler.task.reward_functions[0].actual_stage
+        stage_before = stages.detach().clone()
         num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
         device = handler.device if hasattr(handler, "device") else torch.device("cpu")
 
@@ -909,7 +910,7 @@ class _ChairManChecker(BaseChecker):
         # stage which produced the current transition before successful rows
         # are advanced to the policy that will act on the *next* transition.
         # MetaSimVecEnv temporarily exposes this tensor to every reward.
-        handler.task.reward_stage = stages.detach().clone()
+        handler.task.reward_stage = stage_before
 
         # --- 1. VYTVOŘENÍ MASEK ---
         mask_0 = (stages == 0)
@@ -933,7 +934,7 @@ class _ChairManChecker(BaseChecker):
         all_success = succ_0 | succ_1 | succ_2 | succ_3 | succ_4 | succ_5
 
         # --- 4. ZPRACOVÁNÍ ÚSPĚCHŮ ---
-        handler.task.completed_stage_events[all_success] = stages[all_success]
+        handler.task.completed_stage_events[all_success] = stage_before[all_success]
         handler.task.reward_functions[0].actual_stage[all_success] += 1
 
         handler.task.reward_functions[0].completed_stages[all_success] = 1
@@ -943,8 +944,7 @@ class _ChairManChecker(BaseChecker):
         # --- 5. UKLÁDÁNÍ SNAPSHOTŮ A LOGOVÁNÍ PRŮLOMŮ ---
 
         # A) Finále: stage 5 has just advanced to stage 6.
-        # ``stages`` is the pre-increment tensor for this transition.
-        just_finished = all_success & (stages == 5)
+        just_finished = all_success & (stage_before == 5)
         handler.task.stage_success[:] = just_finished
         handler.task.just_finished[:] = just_finished
 
@@ -962,7 +962,7 @@ class _ChairManChecker(BaseChecker):
         use_snapshot_curriculum = bool(
             getattr(handler.task, "use_snapshot_curriculum", True)
         )
-        reached_stages = stages + 1
+        reached_stages = stage_before + 1
         success_to_save = all_success & (reached_stages >= 1) & (reached_stages <= 5)
         if not use_snapshot_curriculum:
             success_to_save = torch.zeros_like(success_to_save)
