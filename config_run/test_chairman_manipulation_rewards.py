@@ -234,7 +234,7 @@ def test_stage2_dense_closure_and_contact_rewards_are_monotonic():
     )
 
 
-def test_multi_stage1_rewards_are_signed_progress_not_persistent_state_rewards():
+def test_multi_stage1_rewards_match_full_task_reward_functions():
     far = _states(
         left_position=(0.0, 0.2, 1.0),
         right_position=(0.0, -0.2, 1.0),
@@ -257,15 +257,19 @@ def test_multi_stage1_rewards_are_signed_progress_not_persistent_state_rewards()
         hand_velocity=0.30,
     )
 
-    reach = MultiReachChairProgressReward()
-    orientation = MultiHandOrientationProgressReward()
-    stillness = MultiHandTargetStillnessReward()
-    for reward in (reach, orientation, stillness):
-        reward.actual_stage = torch.tensor([1], dtype=torch.long)
-        assert reward(far, "g1_with_hands").item() == 0.0
-        assert reward(closer, "g1_with_hands").item() > 0.0
-        assert reward(closer, "g1_with_hands").item() == 0.0
-        assert reward(farther_again, "g1_with_hands").item() < 0.0
+    reward_pairs = (
+        (ReachChairProgressReward(), MultiReachChairProgressReward()),
+        (HandOrientationProgressReward(), MultiHandOrientationProgressReward()),
+        (HandTargetStillnessReward(), MultiHandTargetStillnessReward()),
+    )
+    for full_reward, multi_reward in reward_pairs:
+        full_reward.actual_stage = torch.tensor([1], dtype=torch.long)
+        multi_reward.actual_stage = torch.tensor([1], dtype=torch.long)
+        for state in (far, closer, closer, farther_again):
+            torch.testing.assert_close(
+                multi_reward(state, "g1_with_hands"),
+                full_reward(state, "g1_with_hands"),
+            )
 
 
 def test_multi_grasp_force_matches_two_of_three_checker_rule_per_hand():

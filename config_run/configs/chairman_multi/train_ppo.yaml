@@ -22,12 +22,15 @@ force: false
 # concurrently from whichever env rows currently occupy their stage.
 total_timesteps: 5_000_000_000
 model_save_path: ./config_run/output/ppo_models_multi
-model_save_freq: 20_000_000
+# A 15k-env rollout already advances the global counter quickly. Saving less
+# often avoids spending training time and disk space on nearly identical
+# six-policy bundles.
+model_save_freq: 50_000_000
 tensorboard_log: ./config_run/output/ppo_models_multi/tensorboard
 
-# Each policy updates after collecting this many transitions of its own. This
-# may also be a six-value list or a {stage: samples} mapping.
-stage_rollout_samples: 96_000
+# Give every stage update at least eight 16k minibatches. A stage with many
+# active envs may contribute more because complete on-policy rollouts are kept.
+stage_rollout_samples: 131_072
 
 # An individual env switches policy immediately after completing a stage,
 # without a physical reset. Reliable policies can then be frozen while still
@@ -41,7 +44,7 @@ stage_min_episodes: 1000
 # The first snapshot of every newly reached stage is always kept. Afterwards
 # this probability samples successes into the bounded in-memory curriculum,
 # avoiding a large CPU-copy burst when thousands of envs advance together.
-snapshot_save_probability: 0.01
+snapshot_save_probability: 0.002
 
 # Set true only when debugging the pretrained walking controller. False keeps
 # the terminal focused on the per-policy PPO training tables.
@@ -60,23 +63,34 @@ load_model_path:
 #-------------------------------------------
 net_arch_pivf: true
 # Oddělený actor/critic; observation_dim=328 a action_dim=34.
-net_arch_pi: [256, 256, 128]
-net_arch_vf: [256, 256, 128]
+# Two 256-wide layers are large enough for the stage-local tasks. The previous
+# third layer added compute to all six policies without adding a useful wider
+# representation.
+net_arch_pi: [256, 256]
+net_arch_vf: [256, 256]
 
 learning_rate: 0.0003
+# Do not decay against global task progress: downstream policies are unlocked
+# later and must still start with the full learning rate.
+learning_schedule: constant
 
-# Global rollout length. Every policy receives only the rows whose current
-# stage matches that policy, so downstream buffers fill more slowly.
-n_steps: 32
-batch_size: 48000
-n_epochs: 5
+# A longer rollout improves temporal credit assignment for the 5-10 second
+# stages. Smaller minibatches provide substantially more optimizer steps per
+# collected sample while remaining large enough for efficient GPU training.
+n_steps: 64
+batch_size: 16384
+n_epochs: 4
 
-gamma: 0.99
-gae_lambda: 0.95
+gamma: 0.995
+gae_lambda: 0.97
 clip_range: 0.2
 ent_coef: 0.002
 # Initial standard deviation exp(-1) ~= 0.37.  The SB3 default (1.0)
 # saturates the small walking-command bounds and makes early rollouts fall.
 log_std_init: -1.0
-vf_coef: 1.0
-max_grad_norm: 1.0
+normalize_advantage: true
+vf_coef: 0.5
+max_grad_norm: 0.5
+# Stop an epoch early when a batch would move the policy too far. This is
+# especially useful after a new stage is first populated from few snapshots.
+target_kl: 0.02

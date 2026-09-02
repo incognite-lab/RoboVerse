@@ -83,7 +83,7 @@ snapshot_save_probability: 0.0
 #load_model_path: ./config_run/output/grpo_model/student_grpo_step_145.pth
 # Can point either to one concrete run_*_chairmanmulti_concurrent directory or
 # to its parent. With a parent directory the newest valid run is selected.
-load_model_path: ./config_run/output/ppo_models_multi/run_2026-08-27_14-30-25_chairmanmulti_concurrent
+load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-01_11-59-41_chairmanmulti_concurrent
 video_save_path: ./config_run/output/eval_videos/chairman_ppo_multi.mp4
 eval_max_steps: 2000
 

@@ -432,10 +432,7 @@ class UprightPenaltyCfg(HumanoidBaseReward):
 # =============================================================================
 class Stage0ArmPos(HumanoidBaseReward):
     """
-    Stage-0 arm-pose constraint penalty.
-
-    A correct pose returns zero, so standing still in a good pose cannot farm
-    reward.  Use this magnitude with a negative weight.
+    Reward for keeping arms in position suitable for stage 0 (approaching chair).
 
     Output: <0, 1>
     """
@@ -547,26 +544,26 @@ class Stage0ArmPos(HumanoidBaseReward):
 
         # Do not dilute three waist joints by averaging them with 28 arm/finger
         # joints. This makes torso motion during walking visibly expensive.
-        pose_score = (
+        reward = (
             0.45 * group_reward(waist_mask, self.waist_sigma)
             + 0.45 * group_reward(arm_mask, self.arm_sigma)
             + 0.10 * group_reward(finger_mask, self.finger_sigma)
         )
-        return (1.0 - pose_score) * stage_mask.float()
+        return reward * stage_mask.float()
 
 
 
 
 class WalkToChairProgressReward(HumanoidBaseReward):
     """
-    Stage-0 navigation reward based primarily on signed progress.
+    Stage 0 navigation through a staging point behind the chair.
 
-    Far from the goal the walking controller receives a 0.5 m/s command.  In
-    the final approach it receives at least 0.28 m/s, then a discrete STOP
-    objective inside 18 cm.  Waiting outside the goal gives no positive
-    reward, while walking backwards and increasing heading error are negative.
+    The robot first walks to a point 1.5 m behind the backrest.  Around that
+    point it is rewarded for stopping and facing the chair.  Once aligned, the
+    desired velocity opens smoothly toward the final point 0.75 m behind the
+    backrest.  There is no discontinuous phase switch inside this reward.
 
-    Output: <-1, 1>
+    Output: <0, 1>
     """
     def __init__(self, robot_name="g1_with_hands", target_speed=0.5):
         super().__init__(robot_name)
@@ -574,18 +571,20 @@ class WalkToChairProgressReward(HumanoidBaseReward):
         self.staging_distance = CHAIR_STAGING_DISTANCE
         self.final_distance = CHAIR_FINAL_DISTANCE
         self.target_speed = target_speed
-        self.min_walk_speed = 0.28
-        self.slow_radius = 0.35
-        self.stop_radius = 0.18
-        self.distance_progress_scale = 0.02
-        self.heading_progress_scale = 0.03
+        self.vel_sigma = 0.18
+        self.staging_braking_distance = 0.55
+        self.final_braking_distance = 0.55
         self.transition_half_width = 0.25
         self.corridor_sigma = 0.45
+        self.turn_reward_radius = 0.55
+        self.stop_position_sigma = 0.15
+        self.stop_speed_sigma = 0.12
+        self.direction_speed_scale = target_speed
+        self.heading_gate_start = 0.50   # 60 degrees from the chair
+        self.heading_gate_full = 0.94    # about 20 degrees from the chair
         self.overshoot_margin = 0.08
         self.saved_chair_pos = None
         self.saved_chair_quat = None
-        self.prev_final_distance = None
-        self.prev_heading_error = None
 
     def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
         chair = states.objects["chair"]
@@ -600,11 +599,6 @@ class WalkToChairProgressReward(HumanoidBaseReward):
         else:
             self.saved_chair_pos[env_ids] = chair_pos[env_ids].clone()
             self.saved_chair_quat[env_ids] = chair_quat[env_ids].clone()
-
-        if self.prev_final_distance is not None:
-            self.prev_final_distance[env_ids] = torch.nan
-        if self.prev_heading_error is not None:
-            self.prev_heading_error[env_ids] = torch.nan
 
         if hasattr(super(), "reset"):
             super().reset(env_ids, states)
@@ -647,8 +641,8 @@ class WalkToChairProgressReward(HumanoidBaseReward):
         staging_dist = torch.norm(to_staging, dim=-1)
         final_dist = torch.norm(to_final, dim=-1)
         chair_dist = torch.norm(to_chair, dim=-1)
-        staging_dir = to_staging / torch.clamp(staging_dist.unsqueeze(-1), min=1.0e-6)
-        final_dir = to_final / torch.clamp(final_dist.unsqueeze(-1), min=1.0e-6)
+        staging_dir = to_staging / (staging_dist.unsqueeze(-1) + 1.0e-6)
+        final_dir = to_final / (final_dist.unsqueeze(-1) + 1.0e-6)
         face_chair_dir = to_chair / (chair_dist.unsqueeze(-1) + 1.0e-6)
 
         # Chair-frame coordinates make the path independent of world rotation.
@@ -670,106 +664,70 @@ class WalkToChairProgressReward(HumanoidBaseReward):
 
         forward_dir = forward_direction_xy(root_quat)
         heading_cos = torch.sum(forward_dir * face_chair_dir, dim=-1)
-        heading_error = 1.0 - heading_cos
+        heading_input = (
+            heading_cos - self.heading_gate_start
+        ) / (self.heading_gate_full - self.heading_gate_start)
+        heading_gate = smoothstep01(heading_input)
+        heading_reward = torch.clamp((heading_cos + 1.0) * 0.5, min=0.0, max=1.0)
 
-        if (
-            self.prev_final_distance is None
-            or self.prev_final_distance.shape != final_dist.shape
-            or self.prev_final_distance.device != device
-        ):
-            self.prev_final_distance = final_dist.detach().clone()
-            distance_progress = torch.zeros_like(final_dist)
-        else:
-            previous_distance = torch.where(
-                torch.isnan(self.prev_final_distance), final_dist, self.prev_final_distance
-            )
-            distance_progress = torch.clamp(
-                (previous_distance - final_dist) / self.distance_progress_scale,
-                min=-1.0,
-                max=1.0,
-            )
-            self.prev_final_distance = torch.where(
-                stage_mask, final_dist.detach(), self.prev_final_distance
-            )
+        staging_speed = self.target_speed * torch.clamp(
+            staging_dist / self.staging_braking_distance, min=0.0, max=1.0
+        )
+        final_speed = self.target_speed * torch.clamp(
+            final_dist / self.final_braking_distance, min=0.0, max=1.0
+        ) * heading_gate
+        staging_vel = staging_speed.unsqueeze(-1) * staging_dir
+        final_vel = final_speed.unsqueeze(-1) * final_dir
+        target_vel_vec = (
+            (1.0 - approach_blend).unsqueeze(-1) * staging_vel
+            + approach_blend.unsqueeze(-1) * final_vel
+        )
 
-        if (
-            self.prev_heading_error is None
-            or self.prev_heading_error.shape != heading_error.shape
-            or self.prev_heading_error.device != device
-        ):
-            self.prev_heading_error = heading_error.detach().clone()
-            heading_progress = torch.zeros_like(heading_error)
-        else:
-            previous_heading = torch.where(
-                torch.isnan(self.prev_heading_error), heading_error, self.prev_heading_error
-            )
-            heading_progress = torch.clamp(
-                (previous_heading - heading_error) / self.heading_progress_scale,
-                min=-1.0,
-                max=1.0,
-            )
-            self.prev_heading_error = torch.where(
-                stage_mask, heading_error.detach(), self.prev_heading_error
-            )
+        vel_error_sq = torch.sum(torch.square(root_vel_xy - target_vel_vec), dim=-1)
+        velocity_reward = torch.exp(-vel_error_sq / (2.0 * self.vel_sigma ** 2))
 
-        # Keep the original staging geometry, but use it only to select the
-        # route direction.  It no longer creates a persistent proximity bonus.
-        route_dir = (
-            (1.0 - approach_blend).unsqueeze(-1) * staging_dir
-            + approach_blend.unsqueeze(-1) * final_dir
-        )
-        route_dir = route_dir / torch.clamp(
-            torch.norm(route_dir, dim=-1, keepdim=True), min=1.0e-6
-        )
-        desired_speed = torch.where(
-            final_dist > self.slow_radius,
-            torch.full_like(final_dist, self.target_speed),
-            torch.where(
-                final_dist > self.stop_radius,
-                torch.full_like(final_dist, self.min_walk_speed),
-                torch.zeros_like(final_dist),
-            ),
-        )
-        velocity_projection = torch.sum(root_vel_xy * route_dir, dim=-1)
+        desired_speed = torch.norm(target_vel_vec, dim=-1)
+        desired_dir = target_vel_vec / (desired_speed.unsqueeze(-1) + 1.0e-6)
+        velocity_projection = torch.sum(root_vel_xy * desired_dir, dim=-1)
         direction_reward = torch.clamp(
-            velocity_projection / torch.clamp(desired_speed, min=self.min_walk_speed),
-            min=-1.0,
+            velocity_projection / self.direction_speed_scale,
+            min=0.0,
             max=1.0,
-        ) * (desired_speed > 0.0).float() * corridor_gate
+        )
+        backward_amount = torch.clamp(-velocity_projection, min=0.0)
+        backward_penalty = torch.clamp(backward_amount / 0.4, min=0.0, max=1.0)
+        backward_factor = 1.0 - backward_penalty
 
         # Going past the final chair-frame plane must never be attractive.
         overshoot_amount = torch.clamp(
             (self.final_distance - self.overshoot_margin) - along_back, min=0.0
         )
         overshoot_penalty = torch.clamp(overshoot_amount / 0.10, min=0.0, max=1.0)
-        speed_xy = torch.norm(root_vel_xy, dim=-1)
-        stop_position_reward = smoothstep01(
-            (self.stop_radius - final_dist) / self.stop_radius
-        )
-        stop_speed_reward = smoothstep01(
-            (0.20 - speed_xy) / 0.20
-        )
-        heading_reward = smoothstep01(
-            (heading_cos - 0.90) / 0.10
-        )
-        arrival_stop_reward = (
-            stop_position_reward * stop_speed_reward * heading_reward
-        )
+        overshoot_factor = 1.0 - overshoot_penalty
 
-        corridor_penalty = torch.clamp(
-            (lateral_error - self.corridor_sigma) / self.corridor_sigma,
-            min=0.0,
-            max=1.0,
+        speed_xy = torch.norm(root_vel_xy, dim=-1)
+        stop_position_reward = torch.exp(
+            -torch.square(final_dist) / (2.0 * self.stop_position_sigma ** 2)
         )
-        total_reward = (
-            0.40 * distance_progress
-            + 0.20 * direction_reward
-            + 0.15 * heading_progress
+        stop_speed_reward = torch.exp(
+            -torch.square(speed_xy) / (2.0 * self.stop_speed_sigma ** 2)
+        )
+        arrival_stop_reward = stop_position_reward * stop_speed_reward * heading_reward
+
+        staging_proximity = torch.exp(
+            -torch.square(staging_dist) / (2.0 * self.turn_reward_radius ** 2)
+        )
+        turn_context = torch.maximum(staging_proximity, approach_blend)
+        turn_reward = turn_context * heading_reward
+
+        base_reward = (
+            0.15 * velocity_reward
+            + 0.35 * direction_reward
+            + 0.25 * turn_reward
             + 0.25 * arrival_stop_reward
-            - 0.10 * corridor_penalty
-            - 0.25 * overshoot_penalty
         )
-        total_reward = torch.clamp(total_reward, min=-1.0, max=1.0)
+        total_reward = base_reward * backward_factor * overshoot_factor
+        total_reward = torch.clamp(total_reward, min=0.0, max=1.0)
         return total_reward * stage_mask.float()
 
 
@@ -831,10 +789,9 @@ class KeepChairStillPenalty(HumanoidBaseReward):
 class OpenGraspReward(HumanoidBaseReward):
     """
     Stage 0 and 1:
-    Penalty magnitude for fingers that are not open and calm.
+    Keep fingers open and calm.
 
     Output: <0, 1>
-    Use with NEGATIVE weight.
     """
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
@@ -882,8 +839,8 @@ class OpenGraspReward(HumanoidBaseReward):
         pos_reward = torch.clamp(1.0 - pos_error / self.pos_scale, min=0.0, max=1.0)
         vel_reward = torch.clamp(1.0 - vel_norm / self.vel_scale, min=0.0, max=1.0)
 
-        open_score = 0.75 * pos_reward + 0.25 * vel_reward
-        return (1.0 - open_score) * stage_mask.float()
+        total_reward = 0.75 * pos_reward + 0.25 * vel_reward
+        return total_reward * stage_mask.float()
 
 
 class FaceChairReward(HumanoidBaseReward):
@@ -987,13 +944,14 @@ class FaceChairReward(HumanoidBaseReward):
 
 class ReachChairProgressReward(HumanoidBaseReward):
     """
-    Signed reduction of the worse hand-to-target distance in stage 1.
+    Stage 1 dense reward for bringing *both* hands to their targets.
 
-    Matching the checker through the worse hand prevents one good hand from
-    hiding the other.  Holding a fixed pose returns zero; moving away is
-    explicitly negative.
+    A reciprocal state reward keeps a useful gradient even when the hands are
+    initially far away.  The minimum of the two hand scores prevents one hand
+    from compensating for the other one, matching the stage checker which
+    requires both hands to succeed.
 
-    Output: <-1, 1>
+    Output: <0, 1>
     """
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
@@ -1005,11 +963,12 @@ class ReachChairProgressReward(HumanoidBaseReward):
         self.chair_target_right = "target_hand_right"
 
         self.progress_scale = 0.01
-        self.prev_worst_distance = None
+        self.distance_scale = 0.12
+        self.prev_distances = None
 
     def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
-        if self.prev_worst_distance is not None:
-            self.prev_worst_distance[env_ids] = torch.nan
+        if self.prev_distances is not None:
+            self.prev_distances[env_ids] = torch.nan
 
         if hasattr(super(), "reset"):
             super().reset(env_ids, states)
@@ -1042,30 +1001,36 @@ class ReachChairProgressReward(HumanoidBaseReward):
 
         dist_left = torch.norm(p_hand_left - p_target_left, dim=-1)
         dist_right = torch.norm(p_hand_right - p_target_right, dim=-1)
-        worst_distance = torch.maximum(dist_left, dist_right)
+        distances = torch.stack((dist_left, dist_right), dim=-1)
 
-        if (
-            self.prev_worst_distance is None
-            or self.prev_worst_distance.shape != worst_distance.shape
-            or self.prev_worst_distance.device != device
-        ):
-            self.prev_worst_distance = worst_distance.detach().clone()
-            progress = torch.zeros_like(worst_distance)
+        if self.prev_distances is None or self.prev_distances.shape != distances.shape:
+            self.prev_distances = distances.detach().clone()
+            progress_per_hand = torch.zeros_like(distances)
         else:
             previous = torch.where(
-                torch.isnan(self.prev_worst_distance),
-                worst_distance,
-                self.prev_worst_distance,
+                torch.isnan(self.prev_distances), distances, self.prev_distances
             )
-            progress = torch.clamp(
-                (previous - worst_distance) / self.progress_scale,
-                min=-1.0,
-                max=1.0,
+            progress_per_hand = torch.clamp(
+                (previous - distances) / self.progress_scale, min=0.0, max=1.0
             )
-            self.prev_worst_distance = torch.where(
-                stage_mask, worst_distance.detach(), self.prev_worst_distance
+            self.prev_distances = torch.where(
+                stage_mask.unsqueeze(-1), distances.detach(), self.prev_distances
             )
-        return progress * stage_mask.float()
+
+        state_per_hand = 1.0 / (
+            1.0 + torch.square(distances / self.distance_scale)
+        )
+        state_reward = (
+            0.35 * torch.mean(state_per_hand, dim=-1)
+            + 0.65 * torch.min(state_per_hand, dim=-1).values
+        )
+        progress_reward = (
+            0.35 * torch.mean(progress_per_hand, dim=-1)
+            + 0.65 * torch.min(progress_per_hand, dim=-1).values
+        )
+
+        total_reward = 0.80 * state_reward + 0.20 * progress_reward
+        return total_reward * stage_mask.float()
 
 
 class HandOrientationProgressReward(HumanoidBaseReward):
@@ -1076,7 +1041,7 @@ class HandOrientationProgressReward(HumanoidBaseReward):
     here avoids a reward/checker mismatch and avoids the unstable derivative
     of ``acos`` close to perfect alignment.
 
-    Output: <-1, 1>
+    Output: <0, 1>
     """
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
@@ -1088,11 +1053,13 @@ class HandOrientationProgressReward(HumanoidBaseReward):
         self.chair_target_right = "target_hand_right"
 
         self.progress_scale = 0.015
-        self.prev_worst_error = None
+        self.error_scale = 0.08
+        self.position_gate_scale = 0.25
+        self.prev_errors = None
 
     def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
-        if self.prev_worst_error is not None:
-            self.prev_worst_error[env_ids] = torch.nan
+        if self.prev_errors is not None:
+            self.prev_errors[env_ids] = torch.nan
 
         if hasattr(super(), "reset"):
             super().reset(env_ids, states)
@@ -1127,64 +1094,74 @@ class HandOrientationProgressReward(HumanoidBaseReward):
         q_hand_right = torch.nn.functional.normalize(q_hand_right, dim=-1)
         q_target_left = torch.nn.functional.normalize(q_target_left, dim=-1)
         q_target_right = torch.nn.functional.normalize(q_target_right, dim=-1)
-        worst_error = torch.maximum(
-            1.0 - torch.abs(torch.sum(q_hand_left * q_target_left, dim=-1)),
-            1.0 - torch.abs(torch.sum(q_hand_right * q_target_right, dim=-1)),
+        errors = torch.stack(
+            (
+                1.0 - torch.abs(torch.sum(q_hand_left * q_target_left, dim=-1)),
+                1.0 - torch.abs(torch.sum(q_hand_right * q_target_right, dim=-1)),
+            ),
+            dim=-1,
         )
 
-        if (
-            self.prev_worst_error is None
-            or self.prev_worst_error.shape != worst_error.shape
-            or self.prev_worst_error.device != device
-        ):
-            self.prev_worst_error = worst_error.detach().clone()
-            progress = torch.zeros_like(worst_error)
+        if self.prev_errors is None or self.prev_errors.shape != errors.shape:
+            self.prev_errors = errors.detach().clone()
+            progress_per_hand = torch.zeros_like(errors)
         else:
-            previous = torch.where(
-                torch.isnan(self.prev_worst_error),
-                worst_error,
-                self.prev_worst_error,
+            previous = torch.where(torch.isnan(self.prev_errors), errors, self.prev_errors)
+            progress_per_hand = torch.clamp(
+                (previous - errors) / self.progress_scale, min=0.0, max=1.0
             )
-            progress = torch.clamp(
-                (previous - worst_error) / self.progress_scale,
-                min=-1.0,
-                max=1.0,
+            self.prev_errors = torch.where(
+                stage_mask.unsqueeze(-1), errors.detach(), self.prev_errors
             )
-            self.prev_worst_error = torch.where(
-                stage_mask, worst_error.detach(), self.prev_worst_error
-            )
-        return progress * stage_mask.float()
+
+        state_per_hand = 1.0 / (1.0 + torch.square(errors / self.error_scale))
+        state_reward = (
+            0.35 * torch.mean(state_per_hand, dim=-1)
+            + 0.65 * torch.min(state_per_hand, dim=-1).values
+        )
+        progress_reward = (
+            0.35 * torch.mean(progress_per_hand, dim=-1)
+            + 0.65 * torch.min(progress_per_hand, dim=-1).values
+        )
+
+        # Orientation remains learnable far away, but becomes most important
+        # once the palms approach the actual handle targets.
+        left_dist = torch.norm(
+            robot.body_state[:, l_hand_idx, :3] - chair.body_state[:, l_target_idx, :3], dim=-1
+        )
+        right_dist = torch.norm(
+            robot.body_state[:, r_hand_idx, :3] - chair.body_state[:, r_target_idx, :3], dim=-1
+        )
+        max_dist = torch.maximum(left_dist, right_dist)
+        position_gate = 1.0 / (
+            1.0 + torch.square(max_dist / self.position_gate_scale)
+        )
+        total_reward = (0.80 * state_reward + 0.20 * progress_reward) * (
+            0.30 + 0.70 * position_gate
+        )
+        return total_reward * stage_mask.float()
 
 
 class HandTargetStillnessReward(HumanoidBaseReward):
     """
-    Signed reduction of absolute world hand speed near the stage-1 targets.
+    Stage 1 and 2:
+    Reward for having both hands:
+    1) close to targets,
+    2) with low linear velocity.
 
-    This exactly matches the checker's use of absolute hand velocity.  A hand
-    that is already still returns zero instead of collecting reward forever.
-
-    Output: <-1, 1>
+    Output: <0, 1>
     """
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
-        self.active_stages = [1]
+        self.active_stages = [1,2]
 
         self.robot_left_hand = "left_endeffector"
         self.robot_right_hand = "endeffector"
         self.chair_target_left = "target_hand_left"
         self.chair_target_right = "target_hand_right"
 
-        self.near_distance = 0.14
-        self.full_gate_distance = 0.07
-        self.progress_scale = 0.03
-        self.prev_max_speed = None
-
-    def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
-        if self.prev_max_speed is not None:
-            self.prev_max_speed[env_ids] = torch.nan
-
-        if hasattr(super(), "reset"):
-            super().reset(env_ids, states)
+        self.dist_scale = 0.07
+        self.vel_scale = 0.15
 
     def __call__(self, states: list["EnvState"], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -1220,33 +1197,20 @@ class HandTargetStillnessReward(HumanoidBaseReward):
         vel_left = torch.norm(v_hand_left, dim=-1)
         vel_right = torch.norm(v_hand_right, dim=-1)
 
-        max_distance = torch.maximum(dist_left, dist_right)
-        max_speed = torch.maximum(vel_left, vel_right)
-        near_gate = smoothstep01(
-            (self.near_distance - max_distance)
-            / (self.near_distance - self.full_gate_distance)
+        distances = torch.stack((dist_left, dist_right), dim=-1)
+        velocities = torch.stack((vel_left, vel_right), dim=-1)
+        dist_per_hand = 1.0 / (
+            1.0 + torch.pow(distances / self.dist_scale, 4)
         )
-
-        if (
-            self.prev_max_speed is None
-            or self.prev_max_speed.shape != max_speed.shape
-            or self.prev_max_speed.device != device
-        ):
-            self.prev_max_speed = max_speed.detach().clone()
-            progress = torch.zeros_like(max_speed)
-        else:
-            previous = torch.where(
-                torch.isnan(self.prev_max_speed), max_speed, self.prev_max_speed
-            )
-            progress = torch.clamp(
-                (previous - max_speed) / self.progress_scale,
-                min=-1.0,
-                max=1.0,
-            )
-            self.prev_max_speed = torch.where(
-                stage_mask, max_speed.detach(), self.prev_max_speed
-            )
-        return progress * near_gate * stage_mask.float()
+        vel_per_hand = torch.exp(
+            -torch.square(velocities) / (2.0 * self.vel_scale ** 2)
+        )
+        per_hand = dist_per_hand * (0.30 + 0.70 * vel_per_hand)
+        total_reward = (
+            0.25 * torch.mean(per_hand, dim=-1)
+            + 0.75 * torch.min(per_hand, dim=-1).values
+        )
+        return total_reward * stage_mask.float()
 
 
 class PreciseHandTargetReward(HumanoidBaseReward):
@@ -1706,18 +1670,19 @@ class GraspForceReward(HumanoidBaseReward):
             max_f, _ = torch.max(tip_force_vals, dim=1)
             tip_forces[:, tip_id] = max_f
 
-        # The checker requires at least two of three fingertips on each hand.
-        # Consequently, the second-strongest fingertip is the exact smooth
-        # statistic that crosses the checker threshold for each hand.
+        # Weak first contacts already provide a signal, but the largest part
+        # of the reward is available only when both hands and every fingertip
+        # satisfy the same condition as the stage checker.
         tip_rewards = torch.sqrt(
             torch.clamp(tip_forces / self.force_threshold, min=0.0, max=1.0)
         )
-        left_sorted = torch.sort(tip_rewards[:, 0:3], dim=1, descending=True).values
-        right_sorted = torch.sort(tip_rewards[:, 3:6], dim=1, descending=True).values
-        bilateral_two_tip_score = torch.minimum(left_sorted[:, 1], right_sorted[:, 1])
+        left_reward = torch.mean(tip_rewards[:, 0:3], dim=1)
+        right_reward = torch.mean(tip_rewards[:, 3:6], dim=1)
+        all_tips_reward = torch.min(tip_rewards, dim=1).values
         total_reward = (
             0.25 * torch.mean(tip_rewards, dim=1)
-            + 0.75 * bilateral_two_tip_score
+            + 0.35 * torch.minimum(left_reward, right_reward)
+            + 0.40 * all_tips_reward
         )
 
         return total_reward * stage_mask.float()
@@ -2412,56 +2377,6 @@ class ArmRestingPosePenaltyCfg(HumanoidBaseReward):
         penalty = torch.clamp(mean_violation / 0.25, min=0.0, max=1.0)
 
         return penalty * stage_mask.float()
-class StageProgressCfg(HumanoidBaseReward):
-    """
-    One-shot reward for completing a stage.
-
-    The checker increments ``actual_stage`` first, therefore transition k->k+1
-    returns k+1 once and zero on all following steps.
-    """
-    def __init__(self, robot_name="g1_with_hands"):
-        super().__init__(robot_name)
-
-    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
-        # Pokud není actual_stage inicializováno, vrátíme 0
-        if self.actual_stage is None or self.completed_stages is None:
-            robot = states.robots[robot_name]
-            return torch.zeros(robot.joint_pos.shape[0], device=robot.joint_pos.device)
-
-        if self.completed_stages.any():
-            ret = self.completed_stages.float() * self.actual_stage.float()
-            self.completed_stages.zero_()
-            return ret
-        else:
-            return torch.zeros_like(self.completed_stages)
-class ContinuousStageReward(HumanoidBaseReward):
-    """
-    Continuous Stage Reward: Dává permanentní odměnu za to, ve kterém Stage se robot nachází.
-    Stage 0 = 0 bodů
-    Stage 1 = 1 * váha
-    Stage 2 = 2 * váha
-    ... atd.
-
-    Tímto robotovi jasně říkáme, že udržet se v pozdějších fázích je matematicky
-    nejvýhodnější věc v celé hře.
-    """
-    def __init__(self, robot_name="g1_with_hands"):
-        super().__init__(robot_name)
-
-    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
-        # 1. Ochrana pro úplně první krok, kdy stage ještě nemusí být zinicializován
-        if self.actual_stage is None:
-            robot = states.robots[robot_name]
-            num_envs = robot.joint_pos.shape[0]
-            device = robot.joint_pos.device
-            return torch.zeros(num_envs, device=device)
-
-        # 2. Jednoduše vrátíme aktuální číslo stage (0, 1, 2, 3...)
-        # Váš framework (Metasim/Gym wrapper) tuto hodnotu následně
-        # automaticky vynásobí váhou, kterou máte definovanou v configu.
-        return self.actual_stage.float()
-
-
 class MultiPolicyStageCompletionReward(HumanoidBaseReward):
     """One-shot completion reward without leaking reward across policies.
 
@@ -2499,31 +2414,33 @@ class MultiPolicyStageCompletionReward(HumanoidBaseReward):
 TERMINATION_WEIGHT = -50.0
 
 # General optional penalties / rewards
-DELTA_ACTION_RATE_WEIGHT = -0.2
+DELTA_ACTION_RATE_WEIGHT = -1.5
 DOF_VELOCITY_ACCELERATION_WEIGHT = -0.75
-LOCOMOTION_COMMAND_PENALTY_WEIGHT = -0.5
+LOCOMOTION_COMMAND_PENALTY_WEIGHT = -2.5
 DOF_POSITION_LIMITS_WEIGHT = -1.0
 HUMANLY_DOF_LIMIT_WEIGHT = -0.25
 UPRIGHT_PENALTY_WEIGHT = -5.00
+FACE_CHAIR_REWARD_WEIGHT = 0.25
 ARM_RESTING_POSE_PENALTY_WEIGHT = -0.05
 # Every stage-local policy gets the same one-shot completion bonus.
 MULTI_POLICY_STAGE_COMPLETION_WEIGHT = 100.0
 
 # Stage 0
-STAGE0_ARM_POS_REWARD_WEIGHT = -0.5
-WALK_TO_CHAIR_REWARD_WEIGHT = 2.0
-OPEN_GRASP_REWARD_WEIGHT = -0.2
-KEEP_CHAIR_STILL_PENALTY_WEIGHT = -0.5
+STAGE0_ARM_POS_REWARD_WEIGHT = 4.0
+WALK_TO_CHAIR_REWARD_WEIGHT = 5.0
+OPEN_GRASP_REWARD_WEIGHT = 0.50
+KEEP_CHAIR_STILL_PENALTY_WEIGHT = -2.0
 
 # Stage 1
-REACH_CHAIR_REWARD_WEIGHT = 4.0
-REACH_ORIENTATION_REWARD_WEIGHT = 2.0
-HAND_TARGET_STILLNESS_REWARD_WEIGHT = 1.0
-STAY_NEAR_ANCHOR_REWARD_WEIGHT = -1.0
+REACH_CHAIR_REWARD_WEIGHT = 6.0
+REACH_ORIENTATION_REWARD_WEIGHT = 3.0
+HAND_TARGET_STILLNESS_REWARD_WEIGHT = 4.0
+PRECISE_HAND_TARGET_REWARD_WEIGHT = 5.0
+STAY_NEAR_ANCHOR_REWARD_WEIGHT = -3.0
 
 # Stage 2
-CLOSE_GRASP_REWARD_WEIGHT = 2.0
-FORCE_GRASP_REWARD_WEIGHT = 2.0
+CLOSE_GRASP_REWARD_WEIGHT = 8.0
+FORCE_GRASP_REWARD_WEIGHT = 10.0
 
 # Stage 3
 MAINTAIN_ANY_GRASP_REWARD_WEIGHT = 6.0
@@ -2591,6 +2508,7 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
         REACH_CHAIR_REWARD_WEIGHT,
         REACH_ORIENTATION_REWARD_WEIGHT,
         HAND_TARGET_STILLNESS_REWARD_WEIGHT,
+        PRECISE_HAND_TARGET_REWARD_WEIGHT,
         STAY_NEAR_ANCHOR_REWARD_WEIGHT,
 
         CLOSE_GRASP_REWARD_WEIGHT,
@@ -2605,6 +2523,7 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
         ARM_DOWN_REWARD_WEIGHT,
         KEEP_FINGERS_OPEN_PENALTY_WEIGHT,
 
+        FACE_CHAIR_REWARD_WEIGHT,
         # ARM_RESTING_POSE_PENALTY_WEIGHT,
         MULTI_POLICY_STAGE_COMPLETION_WEIGHT,
     ]
@@ -2626,6 +2545,7 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
         ReachChairProgressReward(),
         HandOrientationProgressReward(),
         HandTargetStillnessReward(),
+        PreciseHandTargetReward(),
         StayNearAnchorReward(),
 
         CloseGraspReward(),
@@ -2640,6 +2560,7 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
         ArmDownReward(),
         KeepFingersOpenPenalty(),
 
+        FaceChairReward(),
         # ArmRestingPosePenaltyCfg(),
         MultiPolicyStageCompletionReward(),
     ]
