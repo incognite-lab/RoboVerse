@@ -44,7 +44,7 @@ stage_min_episodes: 1000
 # The first snapshot of every newly reached stage is always kept. Afterwards
 # this probability samples successes into the bounded in-memory curriculum,
 # avoiding a large CPU-copy burst when thousands of envs advance together.
-snapshot_save_probability: 0.002
+snapshot_save_probability: 0.1
 
 # Set true only when debugging the pretrained walking controller. False keeps
 # the terminal focused on the per-policy PPO training tables.
@@ -66,8 +66,8 @@ net_arch_pivf: true
 # Two 256-wide layers are large enough for the stage-local tasks. The previous
 # third layer added compute to all six policies without adding a useful wider
 # representation.
-net_arch_pi: [256, 256]
-net_arch_vf: [256, 256]
+net_arch_pi: [256, 256, 128]
+net_arch_vf: [256, 256, 128]
 
 learning_rate: 0.0003
 # Do not decay against global task progress: downstream policies are unlocked

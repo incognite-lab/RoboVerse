@@ -30,6 +30,7 @@ from metasim.cfg.tasks.humanoidbench.ChairMan_multi import (
     HandTargetStillnessReward as MultiHandTargetStillnessReward,
     MultiPolicyStageCompletionReward,
     ReachChairProgressReward as MultiReachChairProgressReward,
+    Stage1ArmJointVelocityPenalty,
 )
 from metasim.wrapper.gym_vec_env import MetaSimVecEnv
 
@@ -232,6 +233,32 @@ def test_stage2_dense_closure_and_contact_rewards_are_monotonic():
     assert _evaluate(GraspForceReward(), partial_contact, 2) > _evaluate(
         GraspForceReward(), no_contact, 2
     )
+
+
+def test_stage1_arm_joint_velocity_penalty_is_thresholded_and_exponential():
+    reward = Stage1ArmJointVelocityPenalty()
+    states = _states()
+    shoulder_idx = list(states.robots["g1_with_hands"].joint_names).index(
+        "left_shoulder_pitch_joint"
+    )
+
+    def penalty_at(speed, stage=1):
+        states.robots["g1_with_hands"].joint_vel.zero_()
+        states.robots["g1_with_hands"].joint_vel[0, shoulder_idx] = speed
+        return _evaluate(reward, states, stage)
+
+    assert penalty_at(1.5) == 0.0
+    low_excess = penalty_at(2.0)
+    medium_excess = penalty_at(2.5)
+    full_excess = penalty_at(3.0)
+    assert 0.0 < low_excess < medium_excess < full_excess <= 1.0
+    assert (medium_excess - low_excess) > low_excess
+    assert penalty_at(3.0, stage=0) == 0.0
+
+    config = ChairmanmultiCfg()
+    reward_names = [type(item).__name__ for item in config.reward_functions]
+    reward_index = reward_names.index("Stage1ArmJointVelocityPenalty")
+    assert config.reward_weights[reward_index] == -4.0
 
 
 def test_multi_stage1_rewards_match_full_task_reward_functions():

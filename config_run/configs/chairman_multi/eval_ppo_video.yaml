@@ -81,6 +81,20 @@ snapshot_save_probability: 0.0
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-04-02_20_chairman/model_970776000
 #load_model_path: ./config_run/output/ppo_model_cluster/run_2026-03-13_14_chairman_top/model_200070000
 #load_model_path: ./config_run/output/grpo_model/student_grpo_step_145.pth
+
+# Optional: force all stage policies to load stage_X/model_<value>.zip.
+# Leave unset to use the checkpoint referenced by multi_policy_manifest.json.
+#load_model_checkpoint: 322560000
+# Optional: set a different checkpoint for each stage.
+# When true, load_model_stage_checkpoints must define stages 0 through 5.
+load_model_split_checkpoints: true
+load_model_stage_checkpoints:
+  0: 1491840000
+  1: 2459520000
+  2: 1491840000
+  3: 1491840000
+  4: 1491840000
+  5: 1491840000
 # Can point either to one concrete run_*_chairmanmulti_concurrent directory or
 # to its parent. With a parent directory the newest valid run is selected.
 load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-01_11-59-41_chairmanmulti_concurrent

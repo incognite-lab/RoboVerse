@@ -30,9 +30,9 @@ STAGE_TIMEOUTS = {
     # checker converts them to the active dt below, so changing simulation
     # decimation no longer halves/doubles the physical time available.
     0: 400,  # Dojít k židli (8 s)
-    1: 500,  # Reach + orientace + ustálení obou rukou (10 s)
+    1: 400,  # Reach + orientace + ustálení obou rukou (10 s)
     2: 400,  # Postupné zavření všech prstů a vytvoření kontaktů (8 s)
-    3: 500,  # Zatažení za židli
+    3: 400,  # Zatažení za židli
     4: 100,  # Zastavení židle
     5: 100   # Svěšení rukou
 }
@@ -97,13 +97,13 @@ def _held_condition(handler, name, idx, condition, required_steps):
 # =========================================================
 
 # Pokud True, při startu se načtou snapshoty z disku do RAM bufferu.
-ENABLE_DISK_SNAPSHOT_LOAD = False
+ENABLE_DISK_SNAPSHOT_LOAD = True
 
 # Pokud True, nové snapshoty se budou průběžně zapisovat i na disk.
 ENABLE_DISK_SNAPSHOT_SAVE = True
 
 SNAPSHOT_DIR = Path("config_run/snapshots_chair/")
-MAX_SNAPSHOTS = 100
+MAX_SNAPSHOTS = 200
 # Pokud True, všechny envy vždy startují od stage 0
 # a snapshot curriculum se zcela ignoruje.
 FORCE_START_FROM_STAGE0 = False
@@ -1278,17 +1278,17 @@ def stage0_init(robot_name: str):
                         "waist_yaw_joint": 0.0,
                         "waist_roll_joint": 0.0,
                         "waist_pitch_joint": 0.0,
-                        "left_shoulder_pitch_joint": 0.0,
-                        "left_shoulder_roll_joint": 0.0,
+                        "left_shoulder_pitch_joint": 0.28,
+                        "left_shoulder_roll_joint": 0.35,
                         "left_shoulder_yaw_joint": 0.0,
-                        "left_elbow_joint": 0.0,
+                        "left_elbow_joint": 0.77,
                         "left_wrist_roll_joint": 0.0,
                         "left_wrist_pitch_joint": 0.0,
                         "left_wrist_yaw_joint": 0.0,
-                        "right_shoulder_pitch_joint": 0.0,
-                        "right_shoulder_roll_joint": 0.0,
+                        "right_shoulder_pitch_joint": 0.28,
+                        "right_shoulder_roll_joint": -0.35,
                         "right_shoulder_yaw_joint": 0.0,
-                        "right_elbow_joint": 0.0,
+                        "right_elbow_joint": 0.77,
                         "right_wrist_roll_joint": 0.0,
                         "right_wrist_pitch_joint": 0.0,
                         "right_wrist_yaw_joint": 0.0,

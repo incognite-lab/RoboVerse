@@ -126,9 +126,9 @@ def main():
         #config_name = "g1_door_IK"
         #config_name = "g1_door_open_stand_train"
         #config_name = "g1_door_stand_IK"
-        #config_name = "chairman_multi/eval_ppo_video"
+        config_name = "chairman_multi/eval_ppo_video"
         #config_name = "g1_ChairMan"
-        config_name = "chairman_multi/train_ppo"
+        #config_name = "chairman_multi/train_ppo"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
     elif len(sys.argv) == 2:
@@ -1602,7 +1602,12 @@ def main():
             )
 
             multi_router, multi_manifest = load_policy_router(
-                env, model_path, device=device
+                env,
+                model_path,
+                device=device,
+                checkpoint=config.get("load_model_checkpoint"),
+                stage_checkpoints=config.get("load_model_stage_checkpoints"),
+                split_checkpoints=bool(config.get("load_model_split_checkpoints", False)),
             )
             trained_multi_stages = policy_stages_with_training_data(
                 multi_manifest
@@ -1926,6 +1931,9 @@ def main():
                 env,
                 config,
                 resume_path=config.get("load_model_path"),
+                resume_checkpoint=config.get("load_model_checkpoint"),
+                resume_stage_checkpoints=config.get("load_model_stage_checkpoints"),
+                resume_split_checkpoints=bool(config.get("load_model_split_checkpoints", False)),
             )
             try:
                 run_dir = trainer.learn()
