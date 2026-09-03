@@ -1012,6 +1012,59 @@ class Stage1ArmJointVelocityPenalty(HumanoidBaseReward):
         return penalty * stage_mask.float()
 
 
+class WaistStraightReward(HumanoidBaseReward):
+    """Reward a neutral waist pose during hand manipulation stages.
+
+    The score is one when yaw, roll and pitch are all zero and decays
+    smoothly towards zero as the three joints move away from neutral.
+    It is active only in stages 1 and 2.
+    """
+
+    def __init__(self, robot_name="g1_with_hands"):
+        super().__init__(robot_name)
+        self.active_stages = (1, 2)
+        self.joint_names = (
+            "waist_yaw_joint",
+            "waist_roll_joint",
+            "waist_pitch_joint",
+        )
+        self.sigma = 0.15
+        self.joint_indices = None
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        robot = states.robots[robot_name]
+        joint_pos = robot.joint_pos
+        device = joint_pos.device
+        num_envs = joint_pos.shape[0]
+
+        if self.actual_stage is None:
+            return torch.zeros(num_envs, dtype=joint_pos.dtype, device=device)
+
+        if self.joint_indices is None:
+            name_to_index = {name: index for index, name in enumerate(robot.joint_names)}
+            missing = [name for name in self.joint_names if name not in name_to_index]
+            if missing:
+                raise ValueError(
+                    "WaistStraightReward could not find required joints: "
+                    + ", ".join(missing)
+                )
+            self.joint_indices = torch.tensor(
+                [name_to_index[name] for name in self.joint_names],
+                dtype=torch.long,
+                device=device,
+            )
+        elif self.joint_indices.device != device:
+            self.joint_indices = self.joint_indices.to(device)
+
+        waist_pos = joint_pos.index_select(1, self.joint_indices)
+        normalized_error = waist_pos / self.sigma
+        pose_score = torch.exp(-torch.mean(normalized_error.square(), dim=-1))
+        stage_mask = _stage_mask(
+            self.actual_stage.to(device=device), self.active_stages
+        )
+        return pose_score * stage_mask.to(dtype=joint_pos.dtype)
+
+
 class ReachChairProgressReward(HumanoidBaseReward):
     """
     Stage 1 reward for bringing both hands to their chair targets.
@@ -2604,7 +2657,7 @@ TERMINATION_WEIGHT = -50.0
 # General optional penalties / rewards
 DELTA_ACTION_RATE_WEIGHT = -1.2
 DOF_VELOCITY_ACCELERATION_WEIGHT = -1.75
-LOCOMOTION_COMMAND_PENALTY_WEIGHT = -0.4
+LOCOMOTION_COMMAND_PENALTY_WEIGHT = -1.4
 DOF_POSITION_LIMITS_WEIGHT = -1.0
 HUMANLY_DOF_LIMIT_WEIGHT = -0.25
 UPRIGHT_PENALTY_WEIGHT = -1.00
@@ -2620,11 +2673,12 @@ OPEN_GRASP_REWARD_WEIGHT = 1.0
 KEEP_CHAIR_STILL_PENALTY_WEIGHT = -2.0
 
 # Stage 1
-STAGE1_ARM_JOINT_VELOCITY_PENALTY_WEIGHT = -4.0
+STAGE1_ARM_JOINT_VELOCITY_PENALTY_WEIGHT = -1.0
+WAIST_STRAIGHT_REWARD_WEIGHT = 2.0
 REACH_CHAIR_REWARD_WEIGHT = 3.0
 REACH_ORIENTATION_REWARD_WEIGHT = 2.0
 HAND_TARGET_STILLNESS_REWARD_WEIGHT = 1.0
-STAY_NEAR_ANCHOR_REWARD_WEIGHT = -1.0
+STAY_NEAR_ANCHOR_REWARD_WEIGHT = -4.0
 
 # Stage 2
 CLOSE_GRASP_REWARD_WEIGHT = 2.0
@@ -2695,6 +2749,7 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
         OPEN_GRASP_REWARD_WEIGHT,
 
         STAGE1_ARM_JOINT_VELOCITY_PENALTY_WEIGHT,
+        WAIST_STRAIGHT_REWARD_WEIGHT,
         REACH_CHAIR_REWARD_WEIGHT,
         REACH_ORIENTATION_REWARD_WEIGHT,
         HAND_TARGET_STILLNESS_REWARD_WEIGHT,
@@ -2732,6 +2787,7 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
         OpenGraspReward(),
 
         Stage1ArmJointVelocityPenalty(),
+        WaistStraightReward(),
         ReachChairProgressReward(),
         HandOrientationProgressReward(),
         HandTargetStillnessReward(),

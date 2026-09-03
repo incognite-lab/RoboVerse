@@ -646,67 +646,189 @@ class GenesisHandler(BaseSimHandler):
         else:
             return None
 
-    def _set_states(self, states: list[EnvState], env_ids: list[int] | None = None) -> None:
-        if env_ids is None:
-            env_ids = list(range(self.num_envs))
+    @staticmethod
+    def _state_value_tensor(value, *, device: torch.device) -> torch.Tensor:
+        """Convert one legacy EnvState value without routing through NumPy."""
+        return torch.as_tensor(value, dtype=torch.float32, device=device)
+
+    @classmethod
+    def _state_vector_or_zeros(cls, row, keys: tuple[str, ...], *, device: torch.device) -> torch.Tensor:
+        for key in keys:
+            value = row.get(key)
+            if value is not None:
+                return cls._state_value_tensor(value, device=device)
+        return torch.zeros(3, dtype=torch.float32, device=device)
+
+    def pack_state_batch(self, states: list[EnvState]) -> dict[str, dict[str, torch.Tensor]]:
+        """Pack legacy nested states once into batched tensors on the sim GPU.
+
+        The returned representation is reusable.  Chairman uses it for its
+        stage-0 template and snapshot banks, so the nested dictionaries are
+        not traversed on every reset.
+        """
+        if not states:
+            raise ValueError("Cannot pack an empty state batch")
+
         states_flat = [state["objects"] | state["robots"] for state in states]
-        if len(states) < self.num_envs:
-            states = states * self.num_envs
-        states_flat = [state["objects"] | state["robots"] for state in states]
+        packed: dict[str, dict[str, torch.Tensor]] = {}
         for obj in self.objects + [self.robot]:
+            obj_name = obj.name
+            if any(obj_name not in state for state in states_flat):
+                # Fixed scenery is often intentionally absent from curriculum
+                # snapshots and does not need to be rewritten during reset.
+                continue
+
+            rows = [state[obj_name] for state in states_flat]
+            pos = torch.stack(
+                [self._state_value_tensor(row["pos"], device=self.device) for row in rows]
+            )
+            quat = torch.stack(
+                [self._state_value_tensor(row["rot"], device=self.device) for row in rows]
+            )
+            quat = quat / torch.linalg.vector_norm(quat, dim=1, keepdim=True).clamp_min(1.0e-8)
+
+            entity = {"pos": pos, "quat": quat}
+            obj_inst = self.object_inst_dict[obj_name]
+            valid_joints = [joint for joint in obj_inst.joints if joint.name != "root_joint"]
+            if valid_joints:
+                joint_pos = torch.tensor(
+                    [
+                        [float((row.get("dof_pos") or {}).get(joint.name, 0.0)) for joint in valid_joints]
+                        for row in rows
+                    ],
+                    dtype=torch.float32,
+                    device=self.device,
+                )
+                joint_vel = torch.tensor(
+                    [
+                        [float((row.get("dof_vel") or {}).get(joint.name, 0.0)) for joint in valid_joints]
+                        for row in rows
+                    ],
+                    dtype=torch.float32,
+                    device=self.device,
+                )
+            else:
+                joint_pos = torch.empty((len(rows), 0), dtype=torch.float32, device=self.device)
+                joint_vel = torch.empty_like(joint_pos)
+
+            root_qpos = torch.cat((pos, quat), dim=1)
+            root_vel = torch.stack([
+                self._state_vector_or_zeros(row, ("vel",), device=self.device)
+                for row in rows
+            ])
+            root_ang = torch.stack(
+                [
+                    self._state_vector_or_zeros(row, ("ang_vel", "ang"), device=self.device)
+                    for row in rows
+                ]
+            )
+
+            expected_qs = getattr(obj_inst, "n_qs", 0)
+            if expected_qs > 0 and expected_qs == joint_pos.shape[1]:
+                entity["qpos"] = joint_pos
+            elif expected_qs == 7 + joint_pos.shape[1]:
+                entity["qpos"] = torch.cat((root_qpos, joint_pos), dim=1)
+            elif expected_qs == 7:
+                entity["qpos"] = root_qpos
+            elif expected_qs > 0:
+                raise RuntimeError(
+                    f"Genesis qpos size mismatch for {obj_name}: expected {expected_qs}, "
+                    f"got {joint_pos.shape[1]} fixed-base or {7 + joint_pos.shape[1]} floating-base values"
+                )
+
+            expected_dofs = getattr(obj_inst, "n_dofs", 0)
+            root_qvel = torch.cat((root_vel, root_ang), dim=1)
+            if expected_dofs > 0 and expected_dofs == joint_vel.shape[1]:
+                entity["qvel"] = joint_vel
+            elif expected_dofs == 6 + joint_vel.shape[1]:
+                entity["qvel"] = torch.cat((root_qvel, joint_vel), dim=1)
+            elif expected_dofs == 6:
+                entity["qvel"] = root_qvel
+            elif expected_dofs > 0:
+                raise RuntimeError(
+                    f"Genesis qvel size mismatch for {obj_name}: expected {expected_dofs}, "
+                    f"got {joint_vel.shape[1]} fixed-base or {6 + joint_vel.shape[1]} floating-base values"
+                )
+
+            entity["joint_pos"] = joint_pos
+            packed[obj_name] = entity
+        return packed
+
+    def set_packed_state_batch(
+        self,
+        packed: dict[str, dict[str, torch.Tensor]],
+        env_ids: list[int] | torch.Tensor | None = None,
+    ) -> None:
+        """Install a prepacked state batch directly from GPU tensors."""
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, dtype=torch.long, device=self.device)
+        elif not isinstance(env_ids, torch.Tensor):
+            env_ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
+        else:
+            env_ids = env_ids.to(device=self.device, dtype=torch.long)
+
+        self._state_cache_expire = True
+        for obj in self.objects + [self.robot]:
+            entity = packed.get(obj.name)
+            if entity is None:
+                continue
             obj_inst = self.object_inst_dict[obj.name]
-            if isinstance(obj, RigidObjCfg) and obj.fix_base_link and not (len(env_ids) == self.num_envs):
-                continue  # Ignorujeme nastavení pozice pro pevné objekty, protože to může způsobit problémy se stabilitou simulace
-            # --- Base link position ---
-            pos_tensor = torch.stack([states_flat[eid][obj.name]["pos"] for eid in env_ids])  # [N,3]
-            pos = pos_tensor.cpu().numpy()
-            obj_inst.set_pos(pos, envs_idx=env_ids, relative=False)
-            # --- Base link rotation ---
-            quat_tensor = torch.stack([states_flat[eid][obj.name]["rot"] for eid in env_ids])  # [N,4]
-            #TODO toto se mi nelíbí
-            quat = quat_tensor.cpu().numpy()
-            # Normalize quaternions
-            norms = np.linalg.norm(quat, axis=1, keepdims=True)
-            norms[norms == 0] = 1.0
-            quat = quat / norms
-            obj_inst.set_quat(quat, envs_idx=env_ids, relative=False)
+            if (
+                isinstance(obj, RigidObjCfg)
+                and obj.fix_base_link
+                and env_ids.numel() != self.num_envs
+            ):
+                continue
+            qpos = entity.get("qpos")
+            qvel = entity.get("qvel")
+            has_qvel = qvel is not None and qvel.shape[1] > 0
+            if qpos is not None:
+                # qvel below performs the required forward pass, so avoid
+                # doing it twice for the same entity during every reset.
+                obj_inst.set_qpos(
+                    qpos,
+                    envs_idx=env_ids,
+                    zero_velocity=False,
+                    skip_forward=has_qvel,
+                )
+            else:
+                obj_inst.set_pos(entity["pos"], envs_idx=env_ids, relative=False)
+                obj_inst.set_quat(entity["quat"], envs_idx=env_ids, relative=False)
 
-            # --- Joint positions (only if articulation) ---
-            if isinstance(obj, ArticulationObjCfg):
-                joint_names = self.get_joint_names(obj.name, sort=False)
-                if len(joint_names) == 0 or joint_names == ["root_joint"]:
-                    #print("DEBUG: no joints for", obj.name)
-                    continue
-                else:
-                    dof_pos = np.array(
-                        [
-                            [
-                                states_flat[env_id][obj.name]["dof_pos"][joint.name]
-                                for joint in obj_inst.joints
-                                if joint.name != "root_joint"
-                            ]
-                            for env_id in env_ids
-                        ],
-                        dtype=np.float32,
+            if has_qvel:
+                obj_inst.set_dofs_velocity(qvel, envs_idx=env_ids)
+
+            if obj.name == self.robot.name:
+                target = entity["joint_pos"]
+                previous = self._previous_dof_pos_target.get(obj.name)
+                if previous is None or previous.shape != (self.num_envs, target.shape[1]):
+                    previous = torch.zeros(
+                        (self.num_envs, target.shape[1]), dtype=target.dtype, device=self.device
                     )
-                    if dof_pos.dtype != np.float32:
-                        dof_pos = dof_pos.astype(np.float32)
-                    base_pos = obj_inst.get_pos(envs_idx=env_ids)   # [N,3]
-                    base_quat = obj_inst.get_quat(envs_idx=env_ids) # [N,4]
+                    self._previous_dof_pos_target[obj.name] = previous
+                previous.index_copy_(0, env_ids, target)
 
-                    root_state = np.concatenate([base_pos.detach().cpu().numpy(), base_quat.detach().cpu().numpy()], axis=1)  # [N,7]
-                    #full_qpos = np.concatenate([root_state, dof_pos], axis=1)   # [N, 7 + n_joints]
+    def _set_states(
+        self,
+        states: list[EnvState],
+        env_ids: list[int] | torch.Tensor | None = None,
+    ) -> None:
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, dtype=torch.long, device=self.device)
+            selected_states = states
+        else:
+            if isinstance(env_ids, torch.Tensor):
+                env_ids = env_ids.to(device=self.device, dtype=torch.long)
+                env_ids_for_selection = env_ids.detach().cpu().tolist()
+            else:
+                env_ids_for_selection = env_ids
+            if len(states) == len(env_ids_for_selection):
+                selected_states = states
+            else:
+                selected_states = [states[env_id] for env_id in env_ids_for_selection]
 
-                    expected_qs = getattr(obj_inst, "n_qs", None)
-                    if expected_qs == dof_pos.shape[1]:
-                        qpos_to_set = dof_pos
-                    elif expected_qs == 7 + dof_pos.shape[1]:
-                        qpos_to_set = np.concatenate([root_state, dof_pos], axis=1)
-                    elif expected_qs == 7:
-                        qpos_to_set = root_state
-                    else:
-                        raise RuntimeError(...)
-                    obj_inst.set_qpos(qpos_to_set, envs_idx=env_ids)
+        packed = self.pack_state_batch(selected_states)
+        self.set_packed_state_batch(packed, env_ids=env_ids)
 
 
     def _set_states_advanced(self, states: list[EnvState], env_ids: list[int] | None = None) -> None:
@@ -873,8 +995,9 @@ class GenesisHandler(BaseSimHandler):
 
     def refresh_render(self):
         """Refresh the render."""
-        if not self.headless:
-            self.scene_inst.viewer.update()
+        if self.headless:
+            return
+        self.scene_inst.viewer.update()
         self.scene_inst.visualizer.update()
 
     def close(self):

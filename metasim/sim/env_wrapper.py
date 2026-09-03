@@ -87,9 +87,17 @@ def GymEnvWrapper(cls: type[THandler]) -> type[EnvWrapper[THandler]]:
             self.handler.launch()
             self._episode_length_buf = torch.zeros(self.handler.num_envs, dtype=torch.int32, device=self.handler.device)
 
-        def reset(self, states: list[EnvState] | None = None, env_ids: list[int] | None = None) -> tuple[Obs, Extra]:
+        def reset(
+            self,
+            states: list[EnvState] | None = None,
+            env_ids: list[int] | torch.Tensor | None = None,
+        ) -> tuple[Obs, Extra]:
             if env_ids is None:
-                env_ids = list(range(self.handler.num_envs))
+                env_ids = torch.arange(
+                    self.handler.num_envs,
+                    device=self.handler.device,
+                    dtype=torch.long,
+                )
 
             self._episode_length_buf[env_ids] = 0
             if states is not None:
@@ -98,7 +106,10 @@ def GymEnvWrapper(cls: type[THandler]) -> type[EnvWrapper[THandler]]:
             #print(self.handler.physics.contexts)#zázračný print bez kterého to nefunguje
             if hasattr(self.handler, 'physics'):
                 contexts = self.handler.physics.contexts
-            self.handler.refresh_render()
+            # Headless PPO does not consume rendered frames.  In Genesis a
+            # visualizer update can synchronize the GPU even without a viewer.
+            if not self.handler.headless:
+                self.handler.refresh_render()
 
             states = self.handler.get_states()
             return states, None

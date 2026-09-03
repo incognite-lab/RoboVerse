@@ -31,6 +31,7 @@ from metasim.cfg.tasks.humanoidbench.ChairMan_multi import (
     MultiPolicyStageCompletionReward,
     ReachChairProgressReward as MultiReachChairProgressReward,
     Stage1ArmJointVelocityPenalty,
+    WaistStraightReward,
 )
 from metasim.wrapper.gym_vec_env import MetaSimVecEnv
 
@@ -52,6 +53,7 @@ def _states(
     chair_velocity=(0.0, 0.0, 0.0),
     robot_velocity=(0.0, 0.0, 0.0),
     arm_fraction=0.0,
+    waist_position=(0.0, 0.0, 0.0),
 ):
     joint_names = list(G1WithHandsCfg().joint_limits)
     joint_pos = torch.zeros((1, len(joint_names)), dtype=torch.float32)
@@ -60,6 +62,11 @@ def _states(
         joint_pos[0, joint_names.index(name)] = closure_fraction * target
     for name in ArmDownReward().arm_joint_scales:
         joint_pos[0, joint_names.index(name)] = arm_fraction
+    for name, value in zip(
+        ("waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint"),
+        waist_position,
+    ):
+        joint_pos[0, joint_names.index(name)] = value
 
     robot_body_names = ["pelvis", "left_endeffector", "endeffector"]
     robot_body_state = torch.zeros((1, 3, 13), dtype=torch.float32)
@@ -259,6 +266,25 @@ def test_stage1_arm_joint_velocity_penalty_is_thresholded_and_exponential():
     reward_names = [type(item).__name__ for item in config.reward_functions]
     reward_index = reward_names.index("Stage1ArmJointVelocityPenalty")
     assert config.reward_weights[reward_index] == -4.0
+
+
+def test_waist_straight_reward_is_active_only_in_stages_1_and_2():
+    reward = WaistStraightReward()
+    straight = _states(waist_position=(0.0, 0.0, 0.0))
+    slightly_bent = _states(waist_position=(0.10, 0.10, 0.10))
+    bent = _states(waist_position=(0.30, 0.30, 0.30))
+
+    assert math.isclose(_evaluate(reward, straight, 1), 1.0, abs_tol=1e-6)
+    assert math.isclose(_evaluate(reward, straight, 2), 1.0, abs_tol=1e-6)
+    assert _evaluate(reward, straight, 1) > _evaluate(reward, slightly_bent, 1)
+    assert _evaluate(reward, slightly_bent, 1) > _evaluate(reward, bent, 1)
+    assert math.isclose(_evaluate(reward, straight, 0), 0.0, abs_tol=1e-6)
+    assert math.isclose(_evaluate(reward, straight, 3), 0.0, abs_tol=1e-6)
+
+    config = ChairmanmultiCfg()
+    reward_names = [type(item).__name__ for item in config.reward_functions]
+    reward_index = reward_names.index("WaistStraightReward")
+    assert config.reward_weights[reward_index] == 2.0
 
 
 def test_multi_stage1_rewards_match_full_task_reward_functions():

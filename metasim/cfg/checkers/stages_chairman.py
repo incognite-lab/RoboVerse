@@ -103,19 +103,20 @@ ENABLE_DISK_SNAPSHOT_LOAD = True
 ENABLE_DISK_SNAPSHOT_SAVE = True
 
 SNAPSHOT_DIR = Path("config_run/snapshots_chair/")
-MAX_SNAPSHOTS = 200
+MAX_SNAPSHOTS = 100
 # Pokud True, všechny envy vždy startují od stage 0
 # a snapshot curriculum se zcela ignoruje.
 FORCE_START_FROM_STAGE0 = False
 RAM_SNAPSHOT_BUFFER = {1: [], 2: [], 3: [], 4: [], 5: []}
 BUFFER_INITIALIZED = False
+SNAPSHOT_BUFFER_VERSION = 0
 UNSAVED_COUNT = 0
 SYNC_THRESHOLD = 30  # Každých 50 uložených snapshotů se jeden zapíše trvale na disk
 LOCK = threading.Lock()
 
 def init_ram_buffer():
     """Inicializuje RAM snapshot buffer. Volitelně načte snapshoty z disku."""
-    global BUFFER_INITIALIZED, RAM_SNAPSHOT_BUFFER
+    global BUFFER_INITIALIZED, RAM_SNAPSHOT_BUFFER, SNAPSHOT_BUFFER_VERSION
 
     if BUFFER_INITIALIZED:
         return
@@ -125,6 +126,7 @@ def init_ram_buffer():
 
     if not ENABLE_DISK_SNAPSHOT_LOAD:
         BUFFER_INITIALIZED = True
+        SNAPSHOT_BUFFER_VERSION += 1
         print("RAM Snapshot Buffer inicializován bez načítání z disku.")
         return
 
@@ -142,6 +144,7 @@ def init_ram_buffer():
                     pass
 
     BUFFER_INITIALIZED = True
+    SNAPSHOT_BUFFER_VERSION += 1
     counts = [len(RAM_SNAPSHOT_BUFFER[s]) for s in range(1, 6)]
     print(f"RAM Buffer načten. Počty snapshotů pro stages 1-5: {counts}")
 
@@ -737,16 +740,118 @@ def stege5_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
 
     return terminated, success
 
-def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
+def _repeat_packed_state(packed, count: int):
+    """Create a writable reset batch from a cached one-row GPU template."""
+    return {
+        obj_name: {
+            key: value.expand((count,) + value.shape[1:]).clone()
+            for key, value in entity.items()
+        }
+        for obj_name, entity in packed.items()
+    }
+
+
+def _cached_stage0_batch(handler: BaseSimHandler, env_ids: torch.Tensor):
+    """Return cached stage 0 tensors, ready for future domain randomization."""
+    cache_key = (handler.robot.name, str(handler.device))
+    cache = getattr(handler, "_chairman_stage0_state_cache", None)
+    if cache is None or cache[0] != cache_key:
+        cache = (cache_key, handler.pack_state_batch([stage0_init(handler.robot.name)]))
+        handler._chairman_stage0_state_cache = cache
+
+    batch = _repeat_packed_state(cache[1], env_ids.numel())
+    randomizer = getattr(handler.task, "randomize_chairman_reset_batch", None)
+    if callable(randomizer):
+        # A future randomizer can modify root poses, qpos and qvel in place;
+        # all tensors are already on the simulator device.
+        randomizer(batch, env_ids=env_ids)
+    return batch
+
+
+def _snapshot_tensor_banks(handler: BaseSimHandler, max_stage: int):
+    """Lazily convert loaded snapshot dictionaries to reusable GPU tensors."""
+    cache = getattr(handler, "_chairman_snapshot_tensor_cache", None)
+    if cache is not None and cache[0] == SNAPSHOT_BUFFER_VERSION:
+        return cache[1]
+
+    banks = {
+        stage: handler.pack_state_batch(RAM_SNAPSHOT_BUFFER[stage])
+        for stage in range(1, max_stage + 1)
+        if RAM_SNAPSHOT_BUFFER[stage]
+    }
+    handler._chairman_snapshot_tensor_cache = (SNAPSHOT_BUFFER_VERSION, banks)
+    return banks
+
+
+def _copy_packed_rows(destination, source, row_ids, source_ids):
+    """Scatter selected snapshot rows into a reset batch on the GPU."""
+    for obj_name, destination_entity in destination.items():
+        source_entity = source.get(obj_name)
+        if source_entity is None:
+            continue
+        for key, destination_value in destination_entity.items():
+            source_value = source_entity.get(key)
+            if source_value is not None:
+                destination_value[row_ids] = source_value.index_select(0, source_ids)
+
+
+def _reset_chairman_legacy(
+    handler: BaseSimHandler,
+    env_ids: torch.Tensor,
+    current_stages: torch.Tensor,
+    completed_stages: torch.Tensor,
+    reset_to_stage0: bool,
+):
+    """Compatibility path for simulators without the Genesis tensor API."""
+    cpu_ids = env_ids.detach().cpu().tolist()
+    stage0_state = stage0_init(handler.robot.name)
+    states = [stage0_state] * handler.num_envs
+    max_available_stage = 0
+    if not reset_to_stage0:
+        for stage in range(1, 6):
+            if RAM_SNAPSHOT_BUFFER[stage]:
+                max_available_stage = stage
+            else:
+                break
+
+    selected_stages = []
+    for env_id in cpu_ids:
+        stage = 0 if reset_to_stage0 else random.randint(0, max_available_stage)
+        state = load_snapshot_chairman(stage) if stage > 0 else None
+        if state is None:
+            stage = 0
+            state = stage0_state
+        selected_stages.append(stage)
+        states[env_id] = state
+
+    selected_stages_tensor = torch.as_tensor(
+        selected_stages, dtype=torch.long, device=handler.device
+    )
+    current_stages.index_copy_(0, env_ids, selected_stages_tensor)
+    completed_stages.index_fill_(0, env_ids, 0)
+    handler.set_states(states=states, env_ids=cpu_ids)
+    return handler.get_states()
+
+
+def reset_chairman(
+    handler: BaseSimHandler,
+    env_ids: list[int] | torch.Tensor | None = None,
+):
     global BUFFER_INITIALIZED
 
-    # 1. Inicializace RAM bufferu
     if not BUFFER_INITIALIZED:
         init_ram_buffer()
 
-    states = [stage0_init(handler.robot.name)] * handler.num_envs
     if env_ids is None:
-        env_ids = list(range(handler.num_envs))
+        env_ids = torch.arange(handler.num_envs, dtype=torch.long, device=handler.device)
+    elif not isinstance(env_ids, torch.Tensor):
+        env_ids = torch.as_tensor(env_ids, dtype=torch.long, device=handler.device)
+    else:
+        env_ids = env_ids.to(device=handler.device, dtype=torch.long)
+    env_ids = env_ids.flatten()
+    reset_count = env_ids.numel()
+    if reset_count == 0:
+        return
 
     for counter_name in (
         "stage0_success_steps", "stage1_success_steps", "stage2_success_steps",
@@ -754,102 +859,84 @@ def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
     ):
         counter = getattr(handler.task, counter_name, None)
         if counter is not None:
-            counter[env_ids] = 0
+            counter.index_fill_(0, env_ids, 0)
 
-    current_stages_tensor = handler.task.reward_functions[0].actual_stage
-    if current_stages_tensor is None:
-        current_stages_tensor = torch.tensor([0] * handler.num_envs, device=handler.device)
-        current_stages_completed = torch.tensor([0] * handler.num_envs, device=handler.device)
-        for i in range(len(handler.task.reward_functions)):
-            handler.task.reward_functions[i].actual_stage = current_stages_tensor
-            handler.task.reward_functions[i].completed_stages = current_stages_completed
+    reward_functions = handler.task.reward_functions
+    current_stages = reward_functions[0].actual_stage
+    if current_stages is None:
+        current_stages = torch.zeros(handler.num_envs, dtype=torch.long, device=handler.device)
+        completed_stages = torch.zeros_like(current_stages)
+    else:
+        completed_stages = reward_functions[0].completed_stages
 
-    # =====================================================
-    # Režim: vždy start od stage 0
-    # =====================================================
-    use_snapshot_curriculum = bool(
-        getattr(handler.task, "use_snapshot_curriculum", True)
-    )
+    # Rewards share these tensors.  Only one indexed write is then needed per
+    # reset instead of one small GPU operation per reward and environment.
+    for reward_fn in reward_functions:
+        reward_fn.actual_stage = current_stages
+        reward_fn.completed_stages = completed_stages
+
+    use_snapshot_curriculum = bool(getattr(handler.task, "use_snapshot_curriculum", True))
     reset_to_stage0 = (
         FORCE_START_FROM_STAGE0
         or bool(getattr(handler.task, "reset_to_stage0", False))
         or not use_snapshot_curriculum
     )
-    if reset_to_stage0:
-        for reward_fn in handler.task.reward_functions:
-            reward_fn.actual_stage[env_ids] = 0
-            reward_fn.completed_stages[env_ids] = 0
 
-        stage0_state = stage0_init(handler.robot.name)
-        for env in env_ids:
-            states[env] = stage0_state
-
-        if hasattr(handler.task, "recorded_stage") and env_ids is not None:
-            handler.task.recorded_stage[env_ids] = -1
-
-        handler.set_states(states=states, env_ids=env_ids)
-        states2 = handler.get_states()
-
-        for reward_fn in handler.task.reward_functions:
+    if not hasattr(handler, "pack_state_batch") or not hasattr(handler, "set_packed_state_batch"):
+        states = _reset_chairman_legacy(
+            handler, env_ids, current_stages, completed_stages, reset_to_stage0
+        )
+        if hasattr(handler.task, "recorded_stage"):
+            handler.task.recorded_stage.index_fill_(0, env_ids, -1)
+        for reward_fn in reward_functions:
             if hasattr(reward_fn, "reset"):
-                reward_fn.reset(env_ids=env_ids, states=states2)
-
+                reward_fn.reset(env_ids=env_ids, states=states)
         return
 
-    # =====================================================
-    # Curriculum režim
-    # =====================================================
-    max_available_stage = 0
-    for i in range(1, 6):
-        if len(RAM_SNAPSHOT_BUFFER[i]) > 0:
-            max_available_stage = i
-        else:
-            break
+    reset_batch = _cached_stage0_batch(handler, env_ids)
 
-    #print(f"[reset_chairman] Max available stage found in RAM buffer: {max_available_stage}")
+    if reset_to_stage0:
+        new_stages = torch.zeros(reset_count, dtype=torch.long, device=handler.device)
+    else:
+        max_available_stage = 0
+        for stage in range(1, 6):
+            if RAM_SNAPSHOT_BUFFER[stage]:
+                max_available_stage = stage
+            else:
+                break
 
-    for env in env_ids:
-        new_stage = random.randint(0, max_available_stage)
-        for i in range(len(handler.task.reward_functions)):
-            handler.task.reward_functions[i].actual_stage[env] = new_stage
-            handler.task.reward_functions[i].completed_stages[env] = 0
+        new_stages = torch.randint(
+            0, max_available_stage + 1, (reset_count,), device=handler.device
+        )
+        snapshot_banks = _snapshot_tensor_banks(handler, max_available_stage)
+        for stage in range(1, max_available_stage + 1):
+            row_ids = (new_stages == stage).nonzero(as_tuple=False).flatten()
+            bank = snapshot_banks.get(stage)
+            if row_ids.numel() == 0 or bank is None:
+                continue
+            first_entity = next(iter(bank.values()))
+            bank_size = next(iter(first_entity.values())).shape[0]
+            source_ids = torch.randint(
+                0, bank_size, (row_ids.numel(),), device=handler.device
+            )
+            _copy_packed_rows(reset_batch, bank, row_ids, source_ids)
 
-        #print(f"[reset_chairman] Resetting env {env} to stage {new_stage} (max available: {max_available_stage})")
+    current_stages.index_copy_(0, env_ids, new_stages)
+    completed_stages.index_fill_(0, env_ids, 0)
+    if hasattr(handler.task, "recorded_stage"):
+        handler.task.recorded_stage.index_fill_(0, env_ids, -1)
 
-        state = None
-        if new_stage > 0:
-            state = load_snapshot_chairman(stage=new_stage)
-
-        if state is None:
-            if new_stage > 0:
-                #print(f"[reset_chairman] Warning: failed to load snapshot for stage {new_stage}, reverting env {env} to stage 0")
-                for i in range(len(handler.task.reward_functions)):
-                    handler.task.reward_functions[i].actual_stage[env] = 0
-                    handler.task.reward_functions[i].completed_stages[env] = 0
-
-            state = stage0_init(handler.robot.name)
-            #print(f"[reset_chairman] env {env} -> using procedural stage0_init")
-        else:
-            #print(f"[reset_chairman] env {env} -> loaded snapshot for stage {new_stage}")
-            pass
-
-        states[env] = state
-
-    if hasattr(handler.task, "recorded_stage") and env_ids is not None:
-        handler.task.recorded_stage[env_ids] = -1
-
-    handler.set_states(states=states, env_ids=env_ids)
-    states2 = handler.get_states()
-
-    for reward_fn in handler.task.reward_functions:
+    handler.set_packed_state_batch(reset_batch, env_ids=env_ids)
+    states = handler.get_states()
+    for reward_fn in reward_functions:
         if hasattr(reward_fn, "reset"):
-            reward_fn.reset(env_ids=env_ids, states=states2)
+            reward_fn.reset(env_ids=env_ids, states=states)
 
 
 
-def _store_snapshot(stage: int, snapshot_data: dict) -> None:
+def _store_snapshot(stage: int, snapshot_data: dict) -> int:
     """Insert one already CPU-resident snapshot into the curriculum buffer."""
-    global UNSAVED_COUNT
+    global UNSAVED_COUNT, SNAPSHOT_BUFFER_VERSION
     with LOCK:
         if len(RAM_SNAPSHOT_BUFFER[stage]) < MAX_SNAPSHOTS:
             RAM_SNAPSHOT_BUFFER[stage].append(snapshot_data)
@@ -858,6 +945,7 @@ def _store_snapshot(stage: int, snapshot_data: dict) -> None:
             idx = random.randint(0, MAX_SNAPSHOTS - 1)
             RAM_SNAPSHOT_BUFFER[stage][idx] = snapshot_data
 
+        SNAPSHOT_BUFFER_VERSION += 1
         UNSAVED_COUNT += 1
         trigger_sync = False
         if ENABLE_DISK_SNAPSHOT_SAVE and UNSAVED_COUNT >= SYNC_THRESHOLD:
@@ -868,6 +956,34 @@ def _store_snapshot(stage: int, snapshot_data: dict) -> None:
     if trigger_sync:
         thread = threading.Thread(target=_sync_to_disk_worker, args=(stage, snapshot_data, idx))
         thread.start()
+    return idx
+
+
+def _update_snapshot_tensor_cache(handler, stage: int, index: int, snapshot_data: dict, old_version: int):
+    """Incrementally mirror one CPU reservoir update into an existing GPU bank."""
+    cache = getattr(handler, "_chairman_snapshot_tensor_cache", None)
+    if cache is None or cache[0] != old_version:
+        return
+
+    banks = cache[1]
+    packed_row = handler.pack_state_batch([snapshot_data])
+    bank = banks.get(stage)
+    if bank is None:
+        banks[stage] = packed_row
+    else:
+        for obj_name, row_entity in packed_row.items():
+            if obj_name not in bank:
+                bank[obj_name] = row_entity
+                continue
+            for key, row_value in row_entity.items():
+                bank_value = bank[obj_name].get(key)
+                if bank_value is None:
+                    bank[obj_name][key] = row_value
+                elif index == bank_value.shape[0]:
+                    bank[obj_name][key] = torch.cat((bank_value, row_value), dim=0)
+                else:
+                    bank_value[index] = row_value[0]
+    handler._chairman_snapshot_tensor_cache = (SNAPSHOT_BUFFER_VERSION, banks)
 
 
 def save_snapshots_chairman(
@@ -929,7 +1045,12 @@ def save_snapshots_chairman(
                 "dof_vel": dict(zip(joint_names, joint_vel[row])),
             }
             snapshot_data["objects"][obj_name] = obj_data
-        _store_snapshot(stage, snapshot_data)
+        old_version = SNAPSHOT_BUFFER_VERSION
+        snapshot_index = _store_snapshot(stage, snapshot_data)
+        if hasattr(handler, "pack_state_batch"):
+            _update_snapshot_tensor_cache(
+                handler, stage, snapshot_index, snapshot_data, old_version
+            )
         saved.append((int(env_id), stage))
     return saved
 
@@ -971,198 +1092,6 @@ def load_snapshot_chairman(stage: int) -> dict | None:
         }
 
     return formatted_data
-# Ponechejte zde zbytek vašich původních reset a save funkcí (save_snapshot_chairman atd.)
-# Doporučuji ponechat rychlou verzi ukládání pomocí random.randint(0, MAX_SNAPSHOTS) jak jsme řešili minule.
-# def reset_chairman(handler: BaseSimHandler, env_ids: list[int] | None = None):
-#     """
-#     Reset s logikou "Curriculum Learning":
-#     1. Zkontroluje, které stage (1-5) již mají uložené snapshoty.
-#     2. Náhodně vybere stage mezi 0 a maximální dostupnou stage.
-#     3. Inicializuje robota (buď procedurálně pro stage 0, nebo načtením snapshotu).
-#     """
-#     states = [stage0_init(handler.robot.name)] * handler.num_envs
-
-#     if env_ids is None:
-#         env_ids = list(range(handler.num_envs))
-
-#     # Inicializace pole pro trackování stage v reward function, pokud neexistuje
-#     current_stages_tensor = handler.task.reward_functions[0].actual_stage
-#     if current_stages_tensor is None:
-#         current_stages_tensor = torch.tensor([0] * handler.num_envs, device=handler.device)
-#         current_stages_completed = torch.tensor([0] * handler.num_envs, device=handler.device)
-#         for i in range(len(handler.task.reward_functions)):
-#             handler.task.reward_functions[i].actual_stage = current_stages_tensor
-#             handler.task.reward_functions[i].completed_stages = current_stages_completed
-
-#     # --- KROK 1: Zjištění maximální dostupné stage ---
-#     # Projdeme složky a zjistíme, kam až jsme se dostali.
-#     # Stage 0 je dostupná vždy (procedurální).
-#     max_available_stage = 0
-
-#     # Předpokládáme max stage 5 dle definice
-#     for i in range(1, 3):#TODO 6
-#         stage_dir = SNAPSHOT_DIR / f"stage_{i}"
-#         # Stage považujeme za dostupnou, pokud složka existuje a obsahuje alespoň jeden .pkl soubor
-#         if stage_dir.exists() and any(stage_dir.glob("*.pkl")):
-#             max_available_stage = i
-#         else:
-#             # Pokud chybí např. stage 2, nemá smysl hledat stage 3 (curriculum je postupné)
-#             break
-
-#     #print(f"DEBUG: Max available stage found: {max_available_stage}")
-
-#     # --- KROK 2: Resetování jednotlivých prostředí ---
-#     for env in env_ids:
-#         # Náhodná volba stage: 0 až max_available_stage
-#         new_stage = random.randint(0, max_available_stage)
-#         #new_stage = 2 #TODO DEBUG!!! --- IGNORE ---
-#         # Aktualizace informace o stage v reward funkcích
-#         for i in range(len(handler.task.reward_functions)):
-#             handler.task.reward_functions[i].actual_stage[env] = new_stage
-#             handler.task.reward_functions[i].completed_stages[env] = 0
-
-#         #print(f"Resetting env {env} to stage {new_stage} (Max avail: {max_available_stage})")
-
-#         state = None
-
-#         # Pokus o načtení stavu pro stage > 0
-#         if new_stage > 0:
-#             state = load_snapshot_chairman(stage=new_stage)
-
-#         # --- KROK 3: Fallback a Stage 0 ---
-#         # Pokud je stage 0, NEBO pokud načtení vyšší stage selhalo (state je None),
-#         # provedeme inicializaci na stage 0.
-#         if state is None:
-#             if new_stage > 0:
-#                 print(f"Warning: Failed to load snapshot for stage {new_stage}, reverting env {env} to Stage 0.")
-#                 # Musíme opravit i záznam v reward funkci zpět na 0
-#                 for i in range(len(handler.task.reward_functions)):
-#                     handler.task.reward_functions[i].actual_stage[env] = 0
-#                     handler.task.reward_functions[i].completed_stages[env] = 0
-#             state = stage0_init(handler.robot.name)
-
-#         # Sestavení listu states pro handler (zachování původní logiky pole)
-#         if states is None:
-#             states = [state] * handler.num_envs
-#         else:
-#             states[env] = state
-
-#     handler.set_states(states=states, env_ids=env_ids)
-
-
-# def save_snapshot_chairman(handler: BaseSimHandler, env_id: int, stage: int) -> None:
-#     """
-#     Uloží aktuální stav prostředí (robota a objektů) do souboru pro danou stage.
-#     Kontroluje limit 100 snapshotů - pokud je překročen, smaže nejstarší.
-#     """
-#     # 1. Příprava adresáře pro danou stage
-#     stage_dir = SNAPSHOT_DIR / f"stage_{stage}"
-#     stage_dir.mkdir(parents=True, exist_ok=True)
-#     # 2. Získání aktuálního stavu z handleru
-#     full_states = handler.get_states()
-#     snapshot_data = {
-#         "robots": {},
-#         "objects": {}
-#     }
-#     # Extrahuje data robota (převedeme na CPU a Numpy pro uložení)
-#     robot_name = handler.robot.name
-#     robot_states = full_states.robots[robot_name]
-#     joint_names = robot_states.joint_names.tolist()
-#     joint_pos = robot_states.joint_pos[env_id].detach().cpu().numpy()
-#     joint_vel = robot_states.joint_vel[env_id].detach().cpu().numpy()
-
-#     robot_pos = robot_states.root_state[env_id,:3].detach()
-#     robot_rot = robot_states.root_state[env_id,3:7].detach()
-#     dof_pos = {}
-#     dof_vel = {}
-#     for i, name in enumerate(joint_names):
-#         dof_pos[name] = joint_pos[i]
-#         dof_vel[name] = joint_vel[i]
-
-
-
-#     snapshot_data["robots"][robot_name] = {
-#         "pos": robot_pos,
-#         "rot": robot_rot,
-#         "dof_pos": dof_pos,
-#         "dof_vel": dof_vel,
-#     }
-
-
-#     # Extrahuje data objektů (např. dveře)
-#     for obj_name, obj_state in full_states.objects.items():
-#         joint_names = obj_state.joint_names.tolist()
-#         joint_pos = obj_state.joint_pos[env_id].detach().cpu().numpy()
-#         joint_vel = obj_state.joint_vel[env_id].detach().cpu().numpy()
-#         dof_pos = {}
-#         dof_vel = {}
-#         for i, name in enumerate(joint_names):
-#             dof_pos[name] = joint_pos[i]
-#             dof_vel[name] = joint_vel[i]
-
-
-#         snapshot_data["objects"][obj_name] = {
-#             "pos": obj_state.root_state[env_id,:3].detach(),
-#             "rot": obj_state.root_state[env_id,3:7].detach(),
-#             "dof_vel": dof_vel,
-#             "dof_pos": dof_pos,
-#         }
-#     # 3. Kontrola limitu snapshotů (Mazání nejstaršího)
-#     # Získáme seznam všech .pkl souborů v adresáři
-#     list_of_files = sorted(stage_dir.glob("*.pkl"), key=os.path.getctime)
-
-#     while len(list_of_files) >= MAX_SNAPSHOTS:
-#         oldest_file = list_of_files.pop(0) # První je nejstarší
-#         try:
-#             os.remove(oldest_file)
-#         except OSError as e:
-#             print(f"Error deleting old snapshot: {e}")
-
-#     # 4. Uložení nového snapshotu
-#     # Název souboru obsahuje timestamp pro unikátnost
-#     timestamp = int(time() * 1000)
-#     filename = stage_dir / f"snapshot_{timestamp}_{env_id}.pkl"
-
-#     with open(filename, 'wb') as f:
-#         pickle.dump(snapshot_data, f)
-
-
-
-# def load_snapshot_chairman(stage: int) -> dict | None:
-#     """
-#     Načte náhodný snapshot pro danou stage.
-#     Vrací slovník se strukturou { "robots": {...}, "objects": {...} },
-#     který je kompatibilní s handler.set_states().
-#     """
-#     stage_dir = SNAPSHOT_DIR / f"stage_{stage}"
-
-#     # 1. Kontrola existence adresáře
-#     if not stage_dir.exists():
-#         return None
-
-#     # 2. Získání seznamu všech snapshotů (.pkl soubory)
-#     # glob vrací iterátor, převedeme na list
-#     list_of_files = list(stage_dir.glob("*.pkl"))
-
-#     if not list_of_files:
-#         return None # Adresář existuje, ale je prázdný
-
-#     # 3. Náhodný výběr jednoho souboru (Staged Reset logika)
-#     random_file = random.choice(list_of_files)
-
-#     # 4. Načtení dat
-#     try:
-#         with open(random_file, 'rb') as f:
-#             snapshot_data = pickle.load(f)
-
-#         # Data jsou již uložena jako {"robots": ..., "objects": ...} a hodnoty jsou numpy array/dict,
-#         # což je přesně to, co handler.set_states obvykle zpracovává.
-#         return snapshot_data
-
-#     except Exception as e:
-#         print(f"Chyba při načítání snapshotu {random_file}: {e}")
-#         return None
-
 
 def stage0_init(robot_name: str):
     if robot_name == "g1_slider":

@@ -411,8 +411,7 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
         reset_ids = reset_mask.nonzero(as_tuple=False).flatten()
         if reset_ids.numel():
             self.timesteps.index_fill_(0, reset_ids, 0.0)
-            cpu_ids = reset_ids.detach().cpu().tolist()
-            obs, _ = self.env.reset(env_ids=cpu_ids)
+            obs, _ = self.env.reset(env_ids=reset_ids)
             self._reset_motion_state_torch(reset_ids)
 
         observation = self.add_extra_to_obs_torch(obs)

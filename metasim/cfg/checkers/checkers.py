@@ -764,6 +764,9 @@ class _DoorChecker(BaseChecker):
 
 
 class _DoorManChecker(BaseChecker):
+    def handles_state_reset(self) -> bool:
+            """DoorMan selects and installs its own stage/curriculum state."""
+            return True
     def reset_counters(self, handler: BaseSimHandler,env):
         idx = handler.task.function_index_success_save_time #TODO součást debilního řešení potřeba předělat
         handler.task.reward_functions[idx].reset_steps(env)
@@ -857,7 +860,9 @@ class _DoorManChecker(BaseChecker):
         print("reset door checker")
 
 class _ChairManChecker(BaseChecker):
-
+    def handles_state_reset(self) -> bool:
+            """ChairMan selects and installs its own stage/curriculum state."""
+            return True
     def check(self, handler: BaseSimHandler) -> torch.BoolTensor:
         from metasim.cfg.checkers.stages_chairman import (
             stege0_chacker, stege1_chacker, stege2_chacker,
@@ -1017,7 +1022,9 @@ class _ChairManChecker(BaseChecker):
                 handler.task.stage_success[env_ids] = False
         #print("reset chairman checker")
 class _ChairManCheckerSimple(BaseChecker):
-
+    def handles_state_reset(self) -> bool:
+            """ChairMan selects and installs its own stage/curriculum state."""
+            return True
     def check(self, handler: BaseSimHandler) -> torch.BoolTensor:
         from metasim.cfg.checkers.stages_chairman_simple import (
             stege0_chacker, stege1_chacker, stege2_chacker,
@@ -1147,7 +1154,9 @@ class _ChairManCheckerSimple(BaseChecker):
         #print("reset chairman checker")
 
 class _ChairManCheckerSimpleGRPO(BaseChecker):
-
+    def handles_state_reset(self) -> bool:
+            """ChairMan selects and installs its own stage/curriculum state."""
+            return True
     def check(self, handler: BaseSimHandler) -> torch.BoolTensor:
         from metasim.cfg.checkers.stages_chairman_simple import (
             common_chairman_checker,

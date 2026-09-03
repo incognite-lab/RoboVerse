@@ -17,6 +17,16 @@ class BaseChecker:
         """The code to run when the environment is reset."""
         pass
 
+    def handles_state_reset(self) -> bool:
+        """Return whether :meth:`reset` installs the simulator state itself.
+
+        Most checkers only clear bookkeeping and therefore still need the
+        generic trajectory state supplied by the environment wrapper.
+        Staged tasks with curriculum snapshots can override this method so a
+        reset does not write a generic state immediately before its own state.
+        """
+        return False
+
     def check(self, handler: BaseSimHandler):
         """Check whether the task is executed successfully."""
         import torch

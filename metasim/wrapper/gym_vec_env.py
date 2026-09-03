@@ -53,11 +53,14 @@ class MetaSimVecEnv(VectorEnv):
     ############################################################
     ## Gym-like interface
     ############################################################
-    def reset(self, env_ids: list[int] | None = None, seed: int | None = None):
+    def reset(self, env_ids: list[int] | torch.Tensor | None = None, seed: int | None = None):
         """Reset the environment."""
         if env_ids is None:
-            env_ids = list(range(self.num_envs))
-        init_states = self.unwrapped._get_default_states(seed)
+            env_ids = torch.arange(
+                self.num_envs, device=self.env.handler.device, dtype=torch.long
+            )
+        checker_owns_state = self.env.handler.checker.handles_state_reset()
+        init_states = None if checker_owns_state else self.unwrapped._get_default_states(seed)
         #self.env.handler.checker.reset(self.env.handler)
         #tic = time.time()
         self.env.reset(states=init_states, env_ids=env_ids)

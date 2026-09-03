@@ -155,6 +155,55 @@ class ChairmanMultiVecEnvTest(unittest.TestCase):
         self.assertIs(applied["states"][0], stage1_snapshot)
         self.assertEqual(applied["env_ids"], [0])
 
+    def test_genesis_reset_uses_cached_gpu_stage0_batch(self):
+        handler = Container()
+        handler.num_envs = 2
+        handler.device = torch.device("cpu")
+        handler.robot = Container()
+        handler.robot.name = "g1_with_hands"
+        handler.task = Container()
+        handler.task.reset_to_stage0 = True
+        handler.task.use_snapshot_curriculum = False
+
+        reward = Container()
+        reward.actual_stage = torch.ones(2, dtype=torch.long)
+        reward.completed_stages = torch.ones(2, dtype=torch.long)
+        reward.reset = lambda **_: None
+        handler.task.reward_functions = [reward]
+        handler.get_states = lambda: Container()
+
+        pack_calls = []
+        packed_template = {
+            "robot": {
+                "qpos": torch.zeros((1, 2)),
+                "qvel": torch.zeros((1, 2)),
+                "joint_pos": torch.zeros((1, 2)),
+            }
+        }
+        handler.pack_state_batch = lambda states: (
+            pack_calls.append(states) or packed_template
+        )
+        applied = []
+        handler.set_packed_state_batch = lambda packed, env_ids: applied.append(
+            (packed, env_ids.clone())
+        )
+
+        stage0_state = object()
+        with (
+            patch.object(stages_module, "BUFFER_INITIALIZED", True),
+            patch.object(stages_module, "stage0_init", return_value=stage0_state) as stage0,
+        ):
+            stages_module.reset_chairman(handler, env_ids=torch.tensor([0]))
+            stages_module.reset_chairman(handler, env_ids=torch.tensor([1]))
+
+        stage0.assert_called_once_with("g1_with_hands")
+        self.assertEqual(len(pack_calls), 1)
+        self.assertEqual(len(applied), 2)
+        torch.testing.assert_close(applied[0][1], torch.tensor([0]))
+        torch.testing.assert_close(applied[1][1], torch.tensor([1]))
+        torch.testing.assert_close(reward.actual_stage, torch.zeros(2, dtype=torch.long))
+        torch.testing.assert_close(reward.completed_stages, torch.zeros(2, dtype=torch.long))
+
 
 if __name__ == "__main__":
     unittest.main()
