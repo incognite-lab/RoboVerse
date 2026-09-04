@@ -8,7 +8,7 @@ import torch
 # ``foldable_chair_debug.urdf`` has its handle/backrest on local +Y.  Both
 # navigation targets are therefore placed on that side of the chair.
 CHAIR_STAGING_DISTANCE = 1.50
-CHAIR_FINAL_DISTANCE = 0.75
+CHAIR_FINAL_DISTANCE = 0.65
 CHAIR_FINAL_TOLERANCE = 0.15
 
 

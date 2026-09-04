@@ -801,6 +801,7 @@ def _reset_chairman_legacy(
     current_stages: torch.Tensor,
     completed_stages: torch.Tensor,
     reset_to_stage0: bool,
+    requested_stage: int | None,
 ):
     """Compatibility path for simulators without the Genesis tensor API."""
     cpu_ids = env_ids.detach().cpu().tolist()
@@ -816,7 +817,10 @@ def _reset_chairman_legacy(
 
     selected_stages = []
     for env_id in cpu_ids:
-        stage = 0 if reset_to_stage0 else random.randint(0, max_available_stage)
+        if requested_stage is not None:
+            stage = requested_stage
+        else:
+            stage = 0 if reset_to_stage0 else random.randint(0, max_available_stage)
         state = load_snapshot_chairman(stage) if stage > 0 else None
         if state is None:
             stage = 0
@@ -876,15 +880,41 @@ def reset_chairman(
         reward_fn.completed_stages = completed_stages
 
     use_snapshot_curriculum = bool(getattr(handler.task, "use_snapshot_curriculum", True))
+    requested_stage = getattr(handler.task, "eval_start_stage", None)
+    if requested_stage is not None:
+        if isinstance(requested_stage, bool) or not isinstance(requested_stage, int):
+            raise ValueError(
+                f"eval_start_stage must be an integer from 0 to 5, got {requested_stage!r}"
+            )
+        if not 0 <= requested_stage <= 5:
+            raise ValueError(
+                f"eval_start_stage must be between 0 and 5, got {requested_stage}"
+            )
+        if requested_stage > 0 and not RAM_SNAPSHOT_BUFFER[requested_stage]:
+            stage_dir = SNAPSHOT_DIR / f"stage_{requested_stage}"
+            raise RuntimeError(
+                f"Cannot start evaluation from stage {requested_stage}: no snapshot is available. "
+                f"Expected snapshots in {stage_dir}."
+            )
+
     reset_to_stage0 = (
-        FORCE_START_FROM_STAGE0
-        or bool(getattr(handler.task, "reset_to_stage0", False))
-        or not use_snapshot_curriculum
+        requested_stage == 0
+        if requested_stage is not None
+        else (
+            FORCE_START_FROM_STAGE0
+            or bool(getattr(handler.task, "reset_to_stage0", False))
+            or not use_snapshot_curriculum
+        )
     )
 
     if not hasattr(handler, "pack_state_batch") or not hasattr(handler, "set_packed_state_batch"):
         states = _reset_chairman_legacy(
-            handler, env_ids, current_stages, completed_stages, reset_to_stage0
+            handler,
+            env_ids,
+            current_stages,
+            completed_stages,
+            reset_to_stage0,
+            requested_stage,
         )
         if hasattr(handler.task, "recorded_stage"):
             handler.task.recorded_stage.index_fill_(0, env_ids, -1)
@@ -898,16 +928,24 @@ def reset_chairman(
     if reset_to_stage0:
         new_stages = torch.zeros(reset_count, dtype=torch.long, device=handler.device)
     else:
-        max_available_stage = 0
-        for stage in range(1, 6):
-            if RAM_SNAPSHOT_BUFFER[stage]:
-                max_available_stage = stage
-            else:
-                break
+        if requested_stage is not None:
+            max_available_stage = requested_stage
+        else:
+            max_available_stage = 0
+            for stage in range(1, 6):
+                if RAM_SNAPSHOT_BUFFER[stage]:
+                    max_available_stage = stage
+                else:
+                    break
 
-        new_stages = torch.randint(
-            0, max_available_stage + 1, (reset_count,), device=handler.device
-        )
+        if requested_stage is None:
+            new_stages = torch.randint(
+                0, max_available_stage + 1, (reset_count,), device=handler.device
+            )
+        else:
+            new_stages = torch.full(
+                (reset_count,), requested_stage, dtype=torch.long, device=handler.device
+            )
         snapshot_banks = _snapshot_tensor_banks(handler, max_available_stage)
         for stage in range(1, max_available_stage + 1):
             row_ids = (new_stages == stage).nonzero(as_tuple=False).flatten()

@@ -64,10 +64,12 @@ cameras:
 #-------------------------------------------
 force: false
 
-# Evaluation always starts from the procedural beginning and does not mutate
-# or sample the training snapshot curriculum.
-reset_to_stage0: true
-use_snapshot_curriculum: false
+# Stage in which every evaluation reset starts. Stage 0 is procedural;
+# stages 1-5 require at least one snapshot in snapshots_chair/stage_X.
+# The reset fails with a clear error when the requested snapshot is missing.
+eval_start_stage: 0
+reset_to_stage0: false
+use_snapshot_curriculum: true
 snapshot_save_probability: 0.0
 
 #Eveluation settings
@@ -97,7 +99,7 @@ load_model_stage_checkpoints:
   5: 1491840000
 # Can point either to one concrete run_*_chairmanmulti_concurrent directory or
 # to its parent. With a parent directory the newest valid run is selected.
-load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-03_12-39-31_chairmanmulti_concurrent
+load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-03_16-38-28_chairmanmulti_concurrent
 video_save_path: ./config_run/output/eval_videos/chairman_ppo_multi.mp4
 eval_max_steps: 2000
 

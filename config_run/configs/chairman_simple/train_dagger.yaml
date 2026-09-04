@@ -7,7 +7,7 @@ robots: [g1_slider_simple]
 fix_base_link: true
 task: chairmansimplegaussian #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
 decimation: 5
-num_envs: 200
+num_envs: 100
 headless: true
 add_table: true
 env_spacing: 4.0
@@ -78,11 +78,11 @@ tensorboard_log: ./config_run/output/dagger/tensorboard_dagger
 # 100 * 5000 = 500 000 vzorků; při RGB uint8 3x128x128 zabere
 # buffer přibližně 22.9 GiB VRAM. Zbytek 48GB GPU zůstá pro Nyx,
 # Genesis a tréninkové tensory.
-dagger_store_per_step: 100
+dagger_store_per_step: 50
 dagger_train_every: 20
 dagger_updates_per_train: 10
 dagger_batch_size: 1024
-dagger_buffer_steps: 5000
+dagger_buffer_steps: 2000
 dagger_buffer_device: cuda
 dagger_buffer_pin_memory: false
 beta_start: 1.0

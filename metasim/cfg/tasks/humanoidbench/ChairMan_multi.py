@@ -2670,15 +2670,15 @@ STAGE0_ARM_POS_REWARD_WEIGHT = 3.0
 WALK_TO_CHAIR_REWARD_WEIGHT = 3.0
 FACE_CHAIR_REWARD_WEIGHT = 2.0
 OPEN_GRASP_REWARD_WEIGHT = 1.0
-KEEP_CHAIR_STILL_PENALTY_WEIGHT = -2.0
+KEEP_CHAIR_STILL_PENALTY_WEIGHT = -1.0
 
 # Stage 1
-STAGE1_ARM_JOINT_VELOCITY_PENALTY_WEIGHT = -1.0
+STAGE1_ARM_JOINT_VELOCITY_PENALTY_WEIGHT = -0.5
 WAIST_STRAIGHT_REWARD_WEIGHT = 2.0
-REACH_CHAIR_REWARD_WEIGHT = 3.0
-REACH_ORIENTATION_REWARD_WEIGHT = 2.0
+REACH_CHAIR_REWARD_WEIGHT = 4.0
+REACH_ORIENTATION_REWARD_WEIGHT = 3.0
 HAND_TARGET_STILLNESS_REWARD_WEIGHT = 1.0
-STAY_NEAR_ANCHOR_REWARD_WEIGHT = -4.0
+STAY_NEAR_ANCHOR_REWARD_WEIGHT = -1.0
 
 # Stage 2
 CLOSE_GRASP_REWARD_WEIGHT = 2.0
@@ -2715,6 +2715,9 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
     # With an empty RAM buffer the initial reset still necessarily uses stage 0.
     reset_to_stage0: bool = False
     use_snapshot_curriculum: bool = True
+    # None selects the normal curriculum.  Evaluation may set 0..5 to force
+    # every reset to a deterministic stage (stages 1..5 require a snapshot).
+    eval_start_stage: int | None = None
     snapshot_save_probability: float = 1.0
     verbose_motion_diagnostics: bool = False
     num_policy_stages: int = 6

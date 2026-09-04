@@ -172,6 +172,7 @@ def main():
         scenario.task.snapshot_save_probability = float(
             config.get("snapshot_save_probability", 1.0)
         )
+        scenario.task.eval_start_stage = config.get("eval_start_stage")
         scenario.task.verbose_motion_diagnostics = bool(
             config.get("verbose_motion_diagnostics", False)
         )

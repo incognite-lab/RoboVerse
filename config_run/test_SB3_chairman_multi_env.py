@@ -122,6 +122,7 @@ class ChairmanMultiVecEnvTest(unittest.TestCase):
         handler.task = Container()
         handler.task.reset_to_stage0 = False
         handler.task.use_snapshot_curriculum = True
+        handler.task.eval_start_stage = 1
 
         reward = Container()
         reward.actual_stage = torch.zeros(2, dtype=torch.long)
@@ -203,6 +204,30 @@ class ChairmanMultiVecEnvTest(unittest.TestCase):
         torch.testing.assert_close(applied[1][1], torch.tensor([1]))
         torch.testing.assert_close(reward.actual_stage, torch.zeros(2, dtype=torch.long))
         torch.testing.assert_close(reward.completed_stages, torch.zeros(2, dtype=torch.long))
+
+    def test_requested_eval_stage_requires_snapshot(self):
+        handler = Container()
+        handler.num_envs = 1
+        handler.device = torch.device("cpu")
+        handler.robot = Container()
+        handler.robot.name = "g1_with_hands"
+        handler.task = Container()
+        handler.task.reset_to_stage0 = False
+        handler.task.use_snapshot_curriculum = True
+        handler.task.eval_start_stage = 3
+
+        reward = Container()
+        reward.actual_stage = torch.zeros(1, dtype=torch.long)
+        reward.completed_stages = torch.zeros(1, dtype=torch.long)
+        handler.task.reward_functions = [reward]
+        empty_buffers = {stage: [] for stage in range(1, 6)}
+
+        with (
+            patch.object(stages_module, "BUFFER_INITIALIZED", True),
+            patch.object(stages_module, "RAM_SNAPSHOT_BUFFER", empty_buffers),
+            self.assertRaisesRegex(RuntimeError, "no snapshot is available"),
+        ):
+            stages_module.reset_chairman(handler, env_ids=[0])
 
 
 if __name__ == "__main__":
