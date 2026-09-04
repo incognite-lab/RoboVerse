@@ -40,11 +40,30 @@ def _stage_mask(actual_stage: torch.Tensor, stages: int | tuple[int, ...] | list
 # =============================================================================
 
 class TerminationCfg(HumanoidBaseReward):
-    """Termination condition based on humanoid neck height."""
+    """Penalty signal for every unsuccessful termination from the checker.
+
+    The checker can terminate an environment for more reasons than a fall
+    (for example when the chair is displaced too far).  ``termination_events``
+    is populated by ``_ChairManChecker`` before rewards are evaluated.
+    """
     def __init__(self):
         super().__init__()
+        self.termination_events = None
+
+    def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
+        if self.termination_events is not None:
+            self.termination_events[env_ids] = False
 
     def __call__(self, states: EnvState, robot_name) -> torch.FloatTensor:
+        if self.termination_events is not None:
+            robot = states.robots[robot_name]
+            return self.termination_events.to(
+                device=robot.joint_pos.device,
+                dtype=robot.joint_pos.dtype,
+            )
+
+        # Backward-compatible fallback for direct use outside the staged
+        # Chairman checker.
         neck_heights = neck_height_tensor(states, robot_name)
         return torch.where(
             neck_heights < HEIGHT_THRESHOLD,
@@ -2675,8 +2694,8 @@ KEEP_CHAIR_STILL_PENALTY_WEIGHT = -1.0
 # Stage 1
 STAGE1_ARM_JOINT_VELOCITY_PENALTY_WEIGHT = -0.5
 WAIST_STRAIGHT_REWARD_WEIGHT = 2.0
-REACH_CHAIR_REWARD_WEIGHT = 4.0
-REACH_ORIENTATION_REWARD_WEIGHT = 3.0
+REACH_CHAIR_REWARD_WEIGHT = 6.0
+REACH_ORIENTATION_REWARD_WEIGHT = 4.0
 HAND_TARGET_STILLNESS_REWARD_WEIGHT = 1.0
 STAY_NEAR_ANCHOR_REWARD_WEIGHT = -1.0
 

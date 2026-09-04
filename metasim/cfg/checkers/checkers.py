@@ -945,6 +945,15 @@ class _ChairManChecker(BaseChecker):
 
         all_terminated[all_success] = False
 
+        # Rewards are evaluated after this checker returns.  Publish the final
+        # unsuccessful-termination mask so TerminationCfg also penalizes chair
+        # displacement and stage timeout, not only a low neck/fall.  Successful
+        # stage transitions were removed from the mask just above and therefore
+        # never receive the termination penalty.
+        for reward_fn in handler.task.reward_functions:
+            if hasattr(reward_fn, "termination_events"):
+                reward_fn.termination_events = all_terminated
+
         # --- 5. UKLÁDÁNÍ SNAPSHOTŮ A LOGOVÁNÍ PRŮLOMŮ ---
 
         # A) Finále (Stage 6) - Jelikož se Stage 6 neukládá do snapshotů, vypíšeme průlom rovnou
