@@ -99,7 +99,7 @@ load_model_stage_checkpoints:
   5: 1491840000
 # Can point either to one concrete run_*_chairmanmulti_concurrent directory or
 # to its parent. With a parent directory the newest valid run is selected.
-load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-03_16-38-28_chairmanmulti_concurrent
+load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-06_19-21-06_chairmanmulti_concurrent
 video_save_path: ./config_run/output/eval_videos/chairman_ppo_multi.mp4
 eval_max_steps: 2000
 

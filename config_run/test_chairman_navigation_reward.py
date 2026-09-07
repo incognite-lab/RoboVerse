@@ -8,6 +8,10 @@ from metasim.cfg.tasks.humanoidbench.ChairMan import (
     StayNearAnchorReward,
     WalkToChairProgressReward,
 )
+from metasim.cfg.tasks.humanoidbench.ChairMan_multi import (
+    STAY_NEAR_ANCHOR_REWARD_WEIGHT as MULTI_STAY_NEAR_ANCHOR_REWARD_WEIGHT,
+    StayNearAnchorReward as MultiStayNearAnchorReward,
+)
 from metasim.utils.chair_navigation import chair_back_direction_xy
 
 
@@ -127,3 +131,27 @@ def test_stay_near_anchor_penalty_is_inactive_outside_manipulation_stages():
     robot_body[0, 0, 0] = 1.0
 
     assert penalty(states, "g1_with_hands").item() == 0.0
+
+
+def test_multi_stay_near_anchor_is_a_positive_reward():
+    robot_body = torch.zeros((1, 1, 13), dtype=torch.float32)
+    robot = SimpleNamespace(
+        body_names=["pelvis"],
+        body_state=robot_body,
+        joint_pos=torch.zeros((1, 1)),
+    )
+    states = SimpleNamespace(robots={"g1_with_hands": robot})
+
+    reward = MultiStayNearAnchorReward()
+    reward.actual_stage = torch.tensor([1])
+
+    assert reward(states, "g1_with_hands").item() == 1.0
+
+    robot_body[0, 0, 0] = reward.max_xy_drift / 2.0
+    assert math.isclose(
+        reward(states, "g1_with_hands").item(), 0.5, rel_tol=0.0, abs_tol=1.0e-6
+    )
+
+    robot_body[0, 0, 0] = reward.max_xy_drift
+    assert reward(states, "g1_with_hands").item() == 0.0
+    assert MULTI_STAY_NEAR_ANCHOR_REWARD_WEIGHT > 0.0

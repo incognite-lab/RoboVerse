@@ -29,9 +29,11 @@ from metasim.cfg.tasks.humanoidbench.ChairMan_multi import (
     HandOrientationProgressReward as MultiHandOrientationProgressReward,
     HandTargetStillnessReward as MultiHandTargetStillnessReward,
     MultiPolicyStageCompletionReward,
+    PreciseHandTargetReward as MultiPreciseHandTargetReward,
     ReachChairProgressReward as MultiReachChairProgressReward,
     Stage1ArmJointVelocityPenalty,
     WaistStraightReward,
+    _stage1_hand_height_bonus,
 )
 from metasim.wrapper.gym_vec_env import MetaSimVecEnv
 
@@ -323,6 +325,47 @@ def test_multi_stage1_rewards_match_full_task_reward_functions():
                 multi_reward(state, "g1_with_hands"),
                 full_reward(state, "g1_with_hands"),
             )
+
+
+def test_multi_stage1_height_bonus_is_bilateral_smooth_and_local():
+    target = torch.zeros((9, 3))
+    hand = target.clone()
+    hand[:, 2] = torch.tensor([-0.05, -0.04, -0.03, -0.02, 0.0, 0.02, 0.04, 0.08, 0.20])
+    gain = _stage1_hand_height_bonus(hand, hand, target, target)
+    torch.testing.assert_close(gain[:2], torch.zeros(2))
+    assert 0 < gain[2] < gain[3]
+    torch.testing.assert_close(gain[3:6], torch.full((3,), 0.5))
+    assert gain[5] > gain[6] > gain[7] > gain[8] >= 0
+    low_hand = target.clone()
+    low_hand[:, 2] = -0.10
+    torch.testing.assert_close(
+        _stage1_hand_height_bonus(hand, low_hand, target, target), torch.zeros(9)
+    )
+    far = target.clone()
+    far[:, 0] = 1.0
+    assert (_stage1_hand_height_bonus(far, far, target, target) < 0.01).all()
+    # Each hand is measured relative to its own target, including raised chairs.
+    torch.testing.assert_close(
+        gain, _stage1_hand_height_bonus(hand + 2, hand + 3, target + 2, target + 3)
+    )
+    for boundary in (-0.04, -0.02, 0.02):
+        p = torch.tensor([[0.0, 0.0, boundary - 1e-6], [0.0, 0.0, boundary + 1e-6]])
+        g = _stage1_hand_height_bonus(p, p, target[:2], target[:2])
+        assert abs((g[1] - g[0]).item()) < 1e-4
+
+
+def test_multi_stage1_rewards_prefer_target_height_and_preserve_stage2():
+    def pose(z):
+        return _states(left_position=(0.5, 0.2, z), right_position=(0.5, -0.2, z))
+
+    for reward_type in (MultiReachChairProgressReward, MultiHandOrientationProgressReward, MultiPreciseHandTargetReward):
+        below = _evaluate(reward_type(), pose(0.95), 1)
+        at_target = _evaluate(reward_type(), pose(1.0), 1)
+        above = _evaluate(reward_type(), pose(1.05), 1)
+        assert at_target > above > below
+        assert _evaluate(reward_type(), pose(1.0), 0) == 0
+    assert _evaluate(MultiPreciseHandTargetReward(), pose(1.0), 1) == 1.5
+    assert _evaluate(MultiPreciseHandTargetReward(), pose(1.0), 2) == 1.0
 
 
 def test_multi_grasp_force_matches_two_of_three_checker_rule_per_hand():

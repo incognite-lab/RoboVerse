@@ -24,6 +24,25 @@ from .base_cfg import HumanoidBaseReward, HumanoidTaskCfg
 HEIGHT_THRESHOLD = 0.4
 
 
+def _stage1_hand_height_bonus(left_hand, right_hand, left_target, right_target):
+    """Bilateral height gain in [0, 0.5], using each target's world Z.
+
+    Smooth onset from -4 to -2 cm, maximum throughout +/-2 cm, then
+    Gaussian decay above the band (4 cm scale). The worse hand controls
+    the gain; XY proximity prevents rewarding height alone far from targets.
+    Inputs are batched positions or body states, with XYZ in the first columns.
+    """
+    offsets = torch.stack(
+        (left_hand[:, :3] - left_target[:, :3],
+         right_hand[:, :3] - right_target[:, :3]), dim=1,
+    )
+    dz = offsets[:, :, 2]
+    below = smoothstep01((dz + 0.04) / 0.02)
+    above = torch.exp(-torch.square(torch.clamp(dz - 0.02, min=0.0) / 0.04))
+    xy_proximity = 1.0 / (1.0 + torch.sum(offsets[:, :, :2].square(), dim=-1) / 0.10**2)
+    return 0.5 * torch.min(below * above * xy_proximity, dim=-1).values
+
+
 def _stage_mask(actual_stage: torch.Tensor, stages: int | tuple[int, ...] | list[int]) -> torch.BoolTensor:
     """Return a GPU boolean mask without allocating a stage tensor every step."""
     if isinstance(stages, int):
@@ -1093,7 +1112,8 @@ class ReachChairProgressReward(HumanoidBaseReward):
     exceeds the configured speed threshold, the reward is reduced so the policy
     does not learn violent reaching motions.
 
-    Output: <-1, 1>
+    Stage-1 height shaping boosts only the positive state term by up to 50%.
+    Output: <-1, 1.5>
     """
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
@@ -1107,7 +1127,7 @@ class ReachChairProgressReward(HumanoidBaseReward):
         self.progress_scale = 0.01
         self.distance_scale = 0.20
         self.precise_distance = 0.05
-        self.speed_threshold = 0.85
+        self.speed_threshold = 0.70
         self.speed_penalty_scale = 1.25
         self.prev_distances = None
 
@@ -1201,7 +1221,13 @@ class ReachChairProgressReward(HumanoidBaseReward):
             + 0.25 * progress_reward
             - 0.30 * speed_penalty
         )
-        return torch.clamp(total_reward, min=-1.0, max=1.0) * stage_mask.float()
+        height_bonus = _stage1_hand_height_bonus(
+            p_hand_left, p_hand_right, p_target_left, p_target_right
+        )
+        return (
+            torch.clamp(total_reward, min=-1.0, max=1.0)
+            + height_bonus * 0.65 * state_reward
+        ) * stage_mask.float()
 
 
 class HandOrientationProgressReward(HumanoidBaseReward):
@@ -1211,7 +1237,8 @@ class HandOrientationProgressReward(HumanoidBaseReward):
     Uses the same quaternion error as the checker and adds signed progress, so
     improving orientation is rewarded and drifting away is penalized.
 
-    Output: <-1, 1>
+    Stage-1 height shaping boosts only the positive state term by up to 50%.
+    Output: <-1, 1.5>
     """
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
@@ -1298,7 +1325,14 @@ class HandOrientationProgressReward(HumanoidBaseReward):
         )
 
         total_reward = 0.75 * state_reward + 0.25 * progress_reward
-        return torch.clamp(total_reward, min=-1.0, max=1.0) * stage_mask.float()
+        height_bonus = _stage1_hand_height_bonus(
+            robot.body_state[:, l_hand_idx], robot.body_state[:, r_hand_idx],
+            chair.body_state[:, l_target_idx], chair.body_state[:, r_target_idx],
+        )
+        return (
+            torch.clamp(total_reward, min=-1.0, max=1.0)
+            + height_bonus * 0.75 * state_reward
+        ) * stage_mask.float()
 
 
 class HandTargetStillnessReward(HumanoidBaseReward):
@@ -1320,9 +1354,9 @@ class HandTargetStillnessReward(HumanoidBaseReward):
         self.chair_target_left = "target_hand_left"
         self.chair_target_right = "target_hand_right"
 
-        self.target_distance = 0.07
+        self.target_distance = 0.05
         self.release_distance = 0.12
-        self.calm_speed = 0.20
+        self.calm_speed = 0.10
         self.progress_scale = 0.01
         self.prev_max_distance = None
         self.has_reached_target = None
@@ -1412,7 +1446,9 @@ class HandTargetStillnessReward(HumanoidBaseReward):
             / (self.release_distance - self.target_distance)
         )
         calm_score = torch.clamp(1.0 - max_speed / self.calm_speed, min=0.0, max=1.0)
-        hold_reward = 0.70 * hold_score + 0.30 * calm_score
+        hold_reward = torch.sqrt(
+            torch.clamp(hold_score * calm_score, min=0.0)
+        )
         leave_penalty = -torch.clamp(
             (max_distance - self.target_distance)
             / (self.release_distance - self.target_distance),
@@ -1431,12 +1467,13 @@ class HandTargetStillnessReward(HumanoidBaseReward):
 class PreciseHandTargetReward(HumanoidBaseReward):
     """Stage 1-2 reward for holding both end effectors on their targets.
 
-    The reward is zero unless both hands are within the checker's 7 cm
+    The reward is zero unless both hands are within the 10 cm shaping
     threshold. Inside that region, position shaping smoothly reaches the full
-    precision bonus at 3 cm. The bonus includes quaternion alignment and hand
+    precision bonus at 2 cm. The bonus includes quaternion alignment and hand
     stillness, so position alone is not sufficient.
 
-    Output: <0, 1>
+    Stage 1 additionally gains up to 50% for bilateral target-height alignment.
+    Output: <0, 1.5> in stage 1; <0, 1> in stage 2.
     """
 
     def __init__(self, robot_name="g1_with_hands"):
@@ -1445,11 +1482,11 @@ class PreciseHandTargetReward(HumanoidBaseReward):
         # the chair more profitable than completing the pull. Stage 3 uses a
         # zero-at-goal drift penalty instead.
         self.active_stages = (1, 2)
-        self.precise_distance = 0.03
-        self.shaping_distance = 0.07
-        self.precise_orientation_error = 0.03
-        self.shaping_orientation_error = 0.08
-        self.precise_speed = 0.15
+        self.precise_distance = 0.02
+        self.shaping_distance = 0.10
+        self.precise_orientation_error = 0.02
+        self.shaping_orientation_error = 0.05
+        self.precise_speed = 0.10
         self.shaping_speed = 0.30
         self.robot_left_hand = "left_endeffector"
         self.robot_right_hand = "endeffector"
@@ -1536,21 +1573,25 @@ class PreciseHandTargetReward(HumanoidBaseReward):
             (0.10 + 0.90 * orientation_score)
             * (0.20 + 0.80 * stillness_score)
         )
+        height_bonus = _stage1_hand_height_bonus(
+            left_state, right_state, left_target, right_target
+        ) * (self.actual_stage.to(device=device) == 1).float()
         return (
             position_score
             * checker_alignment
             * both_hands_near.float()
             * stage_mask.float()
+            * (1.0 + height_bonus)
         )
 
 
 class StayNearAnchorReward(HumanoidBaseReward):
     """
     Stage 1 and 2:
-    Penalty for moving the pelvis away from its anchor position.
+    Reward for keeping the pelvis near its anchor position.
 
-    Output: <0, 1>, where 0 means no drift and 1 means the robot has
-    drifted by ``max_xy_drift`` or more. Use with a negative weight.
+    Output: <0, 1>, where 1 means no drift and 0 means the robot has
+    drifted by ``max_xy_drift`` or more. Use with a positive weight.
     """
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
@@ -1608,9 +1649,13 @@ class StayNearAnchorReward(HumanoidBaseReward):
         self.prev_stages = self.actual_stage.clone()
 
         drift = torch.norm(current_xy - self.saved_positions_xy, dim=-1)
-        penalty = torch.clamp(drift / self.max_xy_drift, min=0.0, max=1.0)
+        reward = torch.clamp(
+            1.0 - drift / self.max_xy_drift,
+            min=0.0,
+            max=1.0,
+        )
 
-        return penalty * stage_mask.float()
+        return reward * stage_mask.float()
 
 
 # =============================================================================
@@ -2696,8 +2741,9 @@ STAGE1_ARM_JOINT_VELOCITY_PENALTY_WEIGHT = -0.5
 WAIST_STRAIGHT_REWARD_WEIGHT = 2.0
 REACH_CHAIR_REWARD_WEIGHT = 6.0
 REACH_ORIENTATION_REWARD_WEIGHT = 4.0
-HAND_TARGET_STILLNESS_REWARD_WEIGHT = 1.0
-STAY_NEAR_ANCHOR_REWARD_WEIGHT = -1.0
+HAND_TARGET_STILLNESS_REWARD_WEIGHT = 5.0
+STAY_NEAR_ANCHOR_REWARD_WEIGHT = 1.0
+PRECISE_HAND_TARGET_REWARD_WEIGHT = 6.0
 
 # Stage 2
 CLOSE_GRASP_REWARD_WEIGHT = 2.0
@@ -2776,6 +2822,8 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
         REACH_ORIENTATION_REWARD_WEIGHT,
         HAND_TARGET_STILLNESS_REWARD_WEIGHT,
         STAY_NEAR_ANCHOR_REWARD_WEIGHT,
+        PRECISE_HAND_TARGET_REWARD_WEIGHT,
+
 
         CLOSE_GRASP_REWARD_WEIGHT,
         FORCE_GRASP_REWARD_WEIGHT,
@@ -2814,6 +2862,7 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
         HandOrientationProgressReward(),
         HandTargetStillnessReward(),
         StayNearAnchorReward(),
+        PreciseHandTargetReward(),
 
         CloseGraspReward(),
         GraspForceReward(),
