@@ -121,7 +121,8 @@ def main():
         #config_name = "g1_door_stand_IK"
         #config_name = "chairman/eval_ppo_video"
         #config_name = "g1_ChairMan"
-        config_name = "chairman_multi/train_ppo"
+        #config_name = "chairman_multi/train_ppo"
+        config_name = "chairman2/train_ppo"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
     elif len(sys.argv) == 2:
@@ -155,10 +156,14 @@ def main():
 
 
     #TODO import correct StableBaseline3VecEnv
+
     if config.get("task") == "stand":
         from SB3_stand_env import StableBaseline3VecEnv
         scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
+
         scenario.robots[0].fix_base_link = False
+    elif config.get("task") == "chairman2":
+        from SB3_chairman2_env import StableBaseline3VecEnv
     elif config.get("task") == "reachpos":
         from SB3_reach_pos_env import StableBaseline3VecEnv
     elif config.get("task") == "reachposori":

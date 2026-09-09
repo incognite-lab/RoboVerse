@@ -1162,6 +1162,74 @@ class _ChairManCheckerSimple(BaseChecker):
                 handler.task.stage_success[env_ids] = False
         #print("reset chairman checker")
 
+
+class _ChairMan2Checker(BaseChecker):
+    """Run all six Chairman2 stages and publish events/anchors for rewards."""
+    def handles_state_reset(self) -> bool:
+        return True
+
+    def check(self, handler: BaseSimHandler) -> torch.BoolTensor:
+        from metasim.cfg.checkers import stages_chairman2 as checks
+
+        task = handler.task
+        states = handler.get_states()
+        stages = task.reward_functions[0].actual_stage
+        task.reward_stage = stages.detach().clone()
+        # Rewards are evaluated after transitions; reward_stage keeps shaping
+        # assigned to the policy that performed this action (gym_vec_env).
+        failed = (stages < 0) | (stages > 5)
+        succeeded = torch.zeros_like(failed)
+        task.completed_stage_events = torch.full_like(stages, -1)
+        task.reward_functions[0].completed_stages.zero_()
+        checkers = (checks.stege0_chacker, checks.stege1_chacker,
+                    checks.stege2_chacker, checks.stege3_chacker,
+                    checks.stege4_chacker, checks.stege5_chacker)
+        for stage, checker in enumerate(checkers):
+            terminated, success = checker(states, handler, stages == stage)
+            failed |= terminated & ~success
+            succeeded |= success
+        task.completed_stage_events[succeeded] = stages[succeeded]
+        task.just_finished = succeeded & (stages == 5)
+        task.stage_success = task.just_finished.clone()
+        stages[succeeded] += 1
+        task.reward_functions[0].completed_stages[succeeded] = 1
+
+        for reward in task.reward_functions:
+            if hasattr(reward, "termination_events"):
+                reward.termination_events = failed
+            if hasattr(reward, "robot_anchor"):
+                reward.robot_anchor = getattr(task, "chairman_robot_anchor", None)
+                reward.chair_anchor = getattr(task, "chairman_chair_anchor", None)
+                reward.pull_direction = getattr(task, "chairman_pull_direction", None)
+
+        probability = float(getattr(task, "snapshot_save_probability", 1.0))
+        if not 0 <= probability <= 1:
+            raise ValueError("snapshot_save_probability must be in [0, 1]")
+        if bool(getattr(task, "use_snapshot_curriculum", True)) and probability > 0:
+            save = succeeded & ~task.just_finished
+            if probability < 1:
+                save &= torch.rand(stages.shape, device=stages.device) < probability
+            ids = save.nonzero(as_tuple=True)[0]
+            checks.save_snapshots_chairman(handler, ids, stages[ids])
+        return failed
+
+    def reset(self, handler: BaseSimHandler, env_ids: list[int] | None = None):
+        from metasim.cfg.checkers.stages_chairman2 import reset_chairman
+
+        reset_chairman(handler, env_ids)
+        ids = slice(None) if env_ids is None else env_ids
+        for name in ("just_finished", "stage_success"):
+            flags = getattr(handler.task, name, None)
+            if flags is not None:
+                flags[ids] = False
+        events = getattr(handler.task, "completed_stage_events", None)
+        if events is not None:
+            events[ids] = -1
+        reward_stage = getattr(handler.task, "reward_stage", None)
+        if reward_stage is not None:
+            reward_stage[ids] = handler.task.reward_functions[0].actual_stage[ids]
+
+
 class _ChairManCheckerSimpleGRPO(BaseChecker):
     def handles_state_reset(self) -> bool:
             """ChairMan selects and installs its own stage/curriculum state."""

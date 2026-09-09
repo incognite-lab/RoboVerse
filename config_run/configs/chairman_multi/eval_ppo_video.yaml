@@ -95,12 +95,12 @@ visualize_reach_waypoints: true
 # When true, load_model_stage_checkpoints must define stages 0 through 5.
 load_model_split_checkpoints: true
 load_model_stage_checkpoints:
-  0: 152640000
-  1: 610560000
-  2: 203520000
-  3: 203520000
-  4: 203520000
-  5: 203520000
+  0: 1068480000
+  1: 101760000
+  2: 101760000
+  3: 101760000
+  4: 101760000
+  5: 101760000
 # Can point either to one concrete run_*_chairmanmulti_concurrent directory or
 # to its parent. With a parent directory the newest valid run is selected.
 load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-08_13-51-34_chairmanmulti_concurrent

@@ -25,6 +25,7 @@ def __get_quick_ref():
     from .humanoidbench import DoorStandCfg
     from .humanoidbench import ChairmanCfg, ChairmansimpleCfg, ChairmansimplegrpoCfg, ChairmansimplegaussiangrpoCfg, ChairmansimplegaussianCfg
     from .humanoidbench.ChairMan_multi import ChairmanmultiCfg
+    from .humanoidbench.ChairMan_2 import Chairman2Cfg
     from .humanoidbench.door_cfg import DoorCfg
     from .isaacgym_envs.allegrohand_cfg import AllegroHandCfg
     from .isaacgym_envs.ant_isaacgym_cfg import AntIsaacGymCfg

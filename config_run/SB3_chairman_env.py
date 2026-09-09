@@ -92,10 +92,17 @@ class StableBaseline3VecEnv(VecEnv):
         'torso_link',
     )
 
+    def _policy_joint_limits(self, robot_cfg):
+        return robot_cfg.joint_limits
+
+    def _policy_upper_joint_names(self):
+        leg_joint_set = set(self.leg_joint_names)
+        return tuple(name for name in self.robot_joint_names if name not in leg_joint_set)
+
     def __init__(self, env: MetaSimVecEnv):
         """Initialize the environment."""
         robot_cfg = env.scenario.robots[0]
-        joint_limits = robot_cfg.joint_limits
+        joint_limits = self._policy_joint_limits(robot_cfg)
         self.robot_name = robot_cfg.name
         self.robot_joint_names = tuple(joint_limits.keys())
         self.leg_joint_names = G1MotionPolicy.JOINT_NAMES
@@ -110,10 +117,7 @@ class StableBaseline3VecEnv(VecEnv):
                 "Walking cannot move a fixed pelvis. Set fix_base_link: false in the Chairman YAML config."
             )
 
-        leg_joint_set = set(self.leg_joint_names)
-        self.upper_body_joint_names = tuple(
-            name for name in self.robot_joint_names if name not in leg_joint_set
-        )
+        self.upper_body_joint_names = self._policy_upper_joint_names()
         self.action_names = self.upper_body_joint_names + self.LOCOMOTION_COMMAND_NAMES
         self._upper_default_targets = np.asarray(
             [robot_cfg.default_joint_positions[name] for name in self.upper_body_joint_names],

@@ -5,7 +5,7 @@
 sim: genesis
 robots: [g1_without_hands]
 fix_base_link: false
-task: chairman #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
+task: chairman2
 decimation: 5
 num_envs: 15000
 headless: true

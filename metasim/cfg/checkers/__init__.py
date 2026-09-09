@@ -36,6 +36,7 @@ from .checkers import (
     _ChairManChecker,
     _ChairManCheckerSimple,
     _ChairManCheckerSimpleGRPO,
+    _ChairMan2Checker
 )
 from .detectors import (
     Relative2DSphereDetector,
@@ -55,5 +56,6 @@ __all__ = [
     "Relative3DSphereDetector",
     "RelativeBboxDetector",
     "RotationShiftChecker",
+    "_ChairMan2Checker",
     "_ChairManCheckerSimpleGRPO",
 ]
