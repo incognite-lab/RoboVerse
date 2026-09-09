@@ -1137,7 +1137,7 @@ FORCE_GRASP_REWARD_WEIGHT = 6.0
 # =============================================================================
 
 @configclass
-class ChairmanCfg(HumanoidTaskCfg):
+class Chairman2Cfg(HumanoidTaskCfg):
     """Chair task for humanoid robots - tuned only up to Stage 2."""
 
     success_bar = 0.9
@@ -1186,13 +1186,13 @@ class ChairmanCfg(HumanoidTaskCfg):
         # HumanlyDofLimitCfg(),
         # UprightPenaltyCfg(),
 
-        WalkToChairReward(),
+        #WalkToChairReward(),
         OpenGraspReward(),
         KeepChairStillPenalty(),
 
-        ReachChairReward(),
-        HandOrientationReward(),
-        StandStillPenalty(),
+        #ReachChairReward(),
+        #HandOrientationReward(),
+        #StandStillPenalty(),
 
         CloseGraspReward(),
         GraspForceReward(),

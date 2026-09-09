@@ -313,7 +313,6 @@ def test_multi_stage1_rewards_match_full_task_reward_functions():
     )
 
     reward_pairs = (
-        (ReachChairProgressReward(), MultiReachChairProgressReward()),
         (HandOrientationProgressReward(), MultiHandOrientationProgressReward()),
         (HandTargetStillnessReward(), MultiHandTargetStillnessReward()),
     )
@@ -358,7 +357,7 @@ def test_multi_stage1_rewards_prefer_target_height_and_preserve_stage2():
     def pose(z):
         return _states(left_position=(0.5, 0.2, z), right_position=(0.5, -0.2, z))
 
-    for reward_type in (MultiReachChairProgressReward, MultiHandOrientationProgressReward, MultiPreciseHandTargetReward):
+    for reward_type in (MultiHandOrientationProgressReward, MultiPreciseHandTargetReward):
         below = _evaluate(reward_type(), pose(0.95), 1)
         at_target = _evaluate(reward_type(), pose(1.0), 1)
         above = _evaluate(reward_type(), pose(1.05), 1)

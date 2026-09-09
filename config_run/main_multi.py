@@ -176,6 +176,9 @@ def main():
         scenario.task.verbose_motion_diagnostics = bool(
             config.get("verbose_motion_diagnostics", False)
         )
+        scenario.task.visualize_reach_waypoints = bool(
+            config.get("visualize_reach_waypoints", False)
+        )
 
 
     #TODO import correct StableBaseline3VecEnv

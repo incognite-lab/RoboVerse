@@ -9,6 +9,8 @@ metadata returned here.
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import torch
 
@@ -31,6 +33,9 @@ except ImportError:  # ``python config_run/main_multi.py ...``
     )
 
 
+log = logging.getLogger(__name__)
+
+
 class StableBaseline3VecEnv(_ChairmanVecEnv):
     """ChairMan VecEnv with walking commands and policy-routing metadata.
 
@@ -46,6 +51,27 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
             getattr(env.scenario.task, "verbose_motion_diagnostics", False)
         )
         super().__init__(env)
+        self._reach_waypoint_debug_objects = []
+        self._reach_waypoint_visualization_failed = False
+        self._reach_waypoint_reward = next(
+            (
+                reward_fn
+                for reward_fn in env.scenario.task.reward_functions
+                if callable(getattr(reward_fn, "path_points_from_states", None))
+            ),
+            None,
+        )
+        handler = env.env.handler
+        scene = getattr(handler, "scene_inst", None)
+        self._visualize_reach_waypoints = bool(
+            getattr(env.scenario.task, "visualize_reach_waypoints", False)
+            and not getattr(handler, "headless", True)
+            and self._reach_waypoint_reward is not None
+            and scene is not None
+            and callable(getattr(scene, "draw_debug_sphere", None))
+            and callable(getattr(scene, "draw_debug_line", None))
+            and callable(getattr(scene, "clear_debug_object", None))
+        )
         self.num_upper_body_actions = len(self.upper_body_joint_names)
         self.walk_command_slice = slice(
             self.num_upper_body_actions, self.num_upper_body_actions + 3
@@ -373,11 +399,74 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
         self.last_requested_locomotion_command_torch.index_fill_(0, env_ids, 0.0)
         self.last_locomotion_command_torch.index_fill_(0, env_ids, 0.0)
 
+    def _clear_reach_waypoint_visualization(self) -> None:
+        """Remove only our markers, preserving other Genesis debug objects."""
+        objects = getattr(self, "_reach_waypoint_debug_objects", [])
+        if not objects:
+            return
+        scene = self.env.env.handler.scene_inst
+        for debug_object in objects:
+            scene.clear_debug_object(debug_object)
+        objects.clear()
+
+    def _update_reach_waypoint_visualization(self) -> None:
+        """Draw env 0's two ordered hand paths in Genesis."""
+        if not getattr(self, "_visualize_reach_waypoints", False):
+            return
+        try:
+            with torch.no_grad():
+                states = self.env.env.handler.get_states()
+                points = self._reach_waypoint_reward.path_points_from_states(
+                    states
+                )[0].detach().cpu().numpy()
+
+            self._clear_reach_waypoint_visualization()
+            scene = self.env.env.handler.scene_inst
+            # Left: cyan -> violet. Right: yellow -> red.
+            point_colors = (
+                (
+                    (0.10, 1.00, 1.00, 0.95),
+                    (0.70, 0.20, 1.00, 0.95),
+                ),
+                (
+                    (1.00, 1.00, 0.10, 0.95),
+                    (1.00, 0.10, 0.10, 0.95),
+                ),
+            )
+            line_colors = (
+                (0.15, 0.65, 1.00, 0.65),
+                (1.00, 0.45, 0.05, 0.65),
+            )
+            num_points = points.shape[1]
+            for hand_index in range(2):
+                for point_index in range(num_points):
+                    marker = scene.draw_debug_sphere(
+                        points[hand_index, point_index],
+                        radius=0.025,
+                        color=point_colors[hand_index][point_index],
+                    )
+                    self._reach_waypoint_debug_objects.append(marker)
+                for segment_index in range(num_points - 1):
+                    segment = scene.draw_debug_line(
+                        points[hand_index, segment_index],
+                        points[hand_index, segment_index + 1],
+                        radius=0.004,
+                        color=line_colors[hand_index],
+                    )
+                    self._reach_waypoint_debug_objects.append(segment)
+        except Exception as exc:
+            # Visualization must never terminate evaluation or training.
+            if not getattr(self, "_reach_waypoint_visualization_failed", False):
+                log.warning("Could not draw ChairMan reach waypoints: %s", exc)
+                self._reach_waypoint_visualization_failed = True
+            self._visualize_reach_waypoints = False
+
     def torch_reset(self) -> torch.Tensor:
         """Reset and return a GPU observation for MultiPPOTrainer."""
         obs, _ = self.env.reset()
         self._reset_motion_state_torch()
         self.timesteps.zero_()
+        self._update_reach_waypoint_visualization()
         return self.add_extra_to_obs_torch(obs)
 
     def torch_step(
@@ -415,6 +504,7 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
             self._reset_motion_state_torch(reset_ids)
 
         observation = self.add_extra_to_obs_torch(obs)
+        self._update_reach_waypoint_visualization()
         metadata = {
             "stage_before": stage_before,
             "stage_after_event": stage_after_event,
@@ -437,6 +527,7 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
                 "ChairMan multi-policy reset selected a stage without a policy: "
                 f"{np.unique(self._stage_before_step[unexpected])}"
             )
+        self._update_reach_waypoint_visualization()
         return observation
 
     def step_async(self, actions: np.ndarray) -> None:
@@ -447,6 +538,7 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
 
     def step_wait(self):
         observation, rewards, dones, infos = super().step_wait()
+        self._update_reach_waypoint_visualization()
         stage_after = self.get_current_stages()
 
         task = self.env.env.handler.task

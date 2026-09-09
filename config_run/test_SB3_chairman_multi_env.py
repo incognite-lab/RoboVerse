@@ -25,6 +25,55 @@ class Container:
 
 
 class ChairmanMultiVecEnvTest(unittest.TestCase):
+    def test_waypoint_visualization_draws_both_two_point_paths(self):
+        wrapper = StableBaseline3VecEnv.__new__(StableBaseline3VecEnv)
+        wrapper._visualize_reach_waypoints = True
+        wrapper._reach_waypoint_visualization_failed = False
+        wrapper._reach_waypoint_debug_objects = []
+
+        expected_points = torch.arange(12, dtype=torch.float32).reshape(
+            1, 2, 2, 3
+        )
+        reward = Container()
+        reward.path_points_from_states = lambda states: expected_points
+        wrapper._reach_waypoint_reward = reward
+
+        spheres = []
+        lines = []
+        cleared = []
+        scene = Container()
+        scene.draw_debug_sphere = lambda position, **kwargs: (
+            spheres.append((np.asarray(position).copy(), kwargs))
+            or ("sphere", len(spheres))
+        )
+        scene.draw_debug_line = lambda start, end, **kwargs: (
+            lines.append(
+                (np.asarray(start).copy(), np.asarray(end).copy(), kwargs)
+            )
+            or ("line", len(lines))
+        )
+        scene.clear_debug_object = cleared.append
+
+        wrapper.env = Container()
+        wrapper.env.env = Container()
+        wrapper.env.env.handler = Container()
+        wrapper.env.env.handler.scene_inst = scene
+        wrapper.env.env.handler.get_states = lambda: Container()
+
+        wrapper._update_reach_waypoint_visualization()
+
+        self.assertEqual(len(spheres), 4)
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(len(wrapper._reach_waypoint_debug_objects), 6)
+        np.testing.assert_allclose(spheres[0][0], expected_points[0, 0, 0])
+        np.testing.assert_allclose(spheres[-1][0], expected_points[0, 1, 1])
+        np.testing.assert_allclose(lines[0][0], expected_points[0, 0, 0])
+        np.testing.assert_allclose(lines[0][1], expected_points[0, 0, 1])
+
+        wrapper._update_reach_waypoint_visualization()
+        self.assertEqual(len(cleared), 6)
+        self.assertEqual(len(wrapper._reach_waypoint_debug_objects), 6)
+
     def test_stage_policy_commands_pretrained_walking_policy(self):
         with patch.object(chairman_module, "G1MotionPolicy", FakeMotionPolicy):
             fake_env = make_fake_metasim_env()

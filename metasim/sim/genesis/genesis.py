@@ -783,6 +783,18 @@ class GenesisHandler(BaseSimHandler):
             qvel = entity.get("qvel")
             has_qvel = qvel is not None and qvel.shape[1] > 0
             if qpos is not None:
+                # Fixed-base qpos contains only joint coordinates, so it
+                # cannot restore the root pose from a reset or snapshot.
+                # The qpos/qvel setters below perform forward kinematics.
+                if obj_inst.base_link.is_fixed:
+                    obj_inst.set_pos(
+                        entity["pos"], envs_idx=env_ids, relative=False,
+                        zero_velocity=False, skip_forward=True,
+                    )
+                    obj_inst.set_quat(
+                        entity["quat"], envs_idx=env_ids, relative=False,
+                        zero_velocity=False, skip_forward=True,
+                    )
                 # qvel below performs the required forward pass, so avoid
                 # doing it twice for the same entity during every reset.
                 obj_inst.set_qpos(
