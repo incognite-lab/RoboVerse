@@ -72,7 +72,7 @@ reset_to_stage0: false
 use_snapshot_curriculum: true
 snapshot_save_probability: 0.0
 
-# Show the two ordered reach points for each hand. This is visual-only and
+# Show the hand targets used by the reach reward. This is visual-only and
 # has no collision geometry. It is automatically inactive in headless mode.
 visualize_reach_waypoints: true
 
@@ -93,10 +93,10 @@ visualize_reach_waypoints: true
 #load_model_checkpoint: 322560000
 # Optional: set a different checkpoint for each stage.
 # When true, load_model_stage_checkpoints must define stages 0 through 5.
-load_model_split_checkpoints: true
+load_model_split_checkpoints: false
 load_model_stage_checkpoints:
-  0: 1068480000
-  1: 101760000
+  0: 1322880000
+  1: 457920000
   2: 101760000
   3: 101760000
   4: 101760000

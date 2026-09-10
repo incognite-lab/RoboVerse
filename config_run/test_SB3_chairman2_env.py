@@ -102,6 +102,30 @@ class Chairman2Test(unittest.TestCase):
         np.testing.assert_allclose(wrapper._cached_leg_targets_torch[0], 123)
         np.testing.assert_allclose(wrapper._cached_leg_targets_torch[1], MotionPolicy.DEFAULT_ANGLES)
 
+    def test_hand_contacts_include_palms_and_fixed_fingers_in_either_order(self):
+        wrapper = self.make_env()
+        states = wrapper.env.env.handler.get_states()
+        robot = states.robots[wrapper.robot_name]
+        states.extras['global_link_map'] = {
+            1: (wrapper.robot_name, 'left_hand_palm_link'),
+            2: (wrapper.robot_name, 'left_hand_index_1_link'),
+            3: (wrapper.robot_name, 'right_hand_palm_link'),
+            4: ('chair', 'base_link'),
+            5: ('ground', 'plane'),
+        }
+        robot.contact = {
+            'link_a': torch.tensor([[1, 4, 3, 1, 1], [1, 4, 3, 1, 1]]),
+            'link_b': torch.tensor([[4, 2, 4, 5, 4], [4, 2, 4, 5, 4]]),
+            'valid_mask': torch.tensor([[1, 1, 1, 1, 0], [0, 0, 0, 0, 0]], dtype=torch.bool),
+            'force_b': torch.tensor([[[10., 0, 0], [0, 20., 0], [0, 0, 30.],
+                                      [100., 100., 100.], [100., 100., 100.]]] * 2),
+        }
+        forces = wrapper._fingertip_chair_forces(states, robot)
+        torch.testing.assert_close(forces, torch.tensor([[-.2, .4, 0, 0, 0, -.6], [0.] * 6]))
+        obs = torch.zeros(2, 25)
+        np.testing.assert_allclose(wrapper.add_extra_to_obs(obs.numpy()),
+                                   wrapper.add_extra_to_obs_torch(obs), atol=1e-6)
+
 
 if __name__ == '__main__':
     unittest.main()

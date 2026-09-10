@@ -23,7 +23,7 @@ model_save_path: ./config_run/output/ppo_models
 model_save_freq: 10_000_000
 tensorboard_log: ./config_run/output/ppo_models/tensorboard
 
-load_model_path: ./config_run/output/ppo_models/run_2026-08-24_17_chairman/model_850680000
+load_model_path: ./config_run/output/ppo_models/run_2026-09-09_16_chairman2/model_990495000
 # PPO parameters
 #-------------------------------------------
 net_arch_pivf: true

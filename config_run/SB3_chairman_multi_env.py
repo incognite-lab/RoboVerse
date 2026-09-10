@@ -422,7 +422,7 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
 
             self._clear_reach_waypoint_visualization()
             scene = self.env.env.handler.scene_inst
-            # Left: cyan -> violet. Right: yellow -> red.
+            # Colors also work when the reward exposes only the final targets.
             point_colors = (
                 (
                     (0.10, 1.00, 1.00, 0.95),

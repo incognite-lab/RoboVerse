@@ -58,7 +58,7 @@ stage_episode_metrics_window: 1000
 
 # Načtení všech šesti policies ze stejného běhu jako v eval_ppo_video.yaml.
 # Lze zadat i nadřazený adresář; pak se vybere nejnovější běh s manifestem.
-load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-06_19-21-06_chairmanmulti_concurrent
+load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-09_14-57-59_chairmanmulti_concurrent
 
 # false: nejnovější kompletně uložený checkpoint uvedený v manifestu;
 #        tabulka níže se ignoruje.

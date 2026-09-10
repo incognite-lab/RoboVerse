@@ -122,7 +122,8 @@ def main():
         #config_name = "chairman/eval_ppo_video"
         #config_name = "g1_ChairMan"
         #config_name = "chairman_multi/train_ppo"
-        config_name = "chairman2/train_ppo"
+        #config_name = "chairman2/train_ppo"
+        config_name = "chairman2/eval_ppo_video"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")
         # exit(1)
     elif len(sys.argv) == 2:
@@ -1913,11 +1914,19 @@ def main():
         runner = OnPolicyRunner(env, algo, runner_cfg)
         runner.learn()
 
-    elif config.get("train_or_eval") == "train_dagger":
+    elif config.get("train_or_eval") in ("train_dagger", "load_and_train_dagger"):
         VIZUALIZATION = config.get("visualization", False)
+
+        resume_dagger = config.get("train_or_eval") == "load_and_train_dagger"
+        student_checkpoint_path = config.get("load_student_path")
+        if resume_dagger and not student_checkpoint_path:
+            raise ValueError("load_and_train_dagger requires load_student_path (DAgger student checkpoint)")
+        if resume_dagger and not os.path.isfile(student_checkpoint_path):
+            raise FileNotFoundError(f"DAgger student checkpoint not found: {student_checkpoint_path}")
 
         from dagger_vp.student_net import VisionStudent
         from dagger_vp.dagger_trainer import DAggerBuffer, train_dagger_step
+        from dagger_vp.checkpoint import load_dagger_checkpoint, save_dagger_checkpoint
         from torch.utils.tensorboard import SummaryWriter
         import cv2
 
@@ -1972,6 +1981,17 @@ def main():
             lr=config.get("learning_rate", 3e-4)
         )
 
+        start_step = 0
+        beta = config.get("beta_start", 1.0)
+        if resume_dagger:
+            start_step, beta = load_dagger_checkpoint(
+                student_checkpoint_path, student_model, optimizer, device, config
+            )
+            log.info(
+                f"Resuming DAgger from {student_checkpoint_path} at step {start_step}, beta={beta}. "
+                "Replay buffer, environment and success counters start fresh."
+            )
+
         dagger_buffer_device = config.get("dagger_buffer_device", "cpu")
         dagger_buffer_pin_memory = config.get(
             "dagger_buffer_pin_memory",
@@ -1995,7 +2015,8 @@ def main():
         )
 
         total_iterations = config.get("total_timesteps", 100_000)
-        beta = config.get("beta_start", 1.0)
+        end_step = start_step + total_iterations
+        next_step = start_step
         beta_decay = config.get("beta_decay", 0.9995)
 
         store_per_step = config.get("dagger_store_per_step", 32)
@@ -2020,7 +2041,7 @@ def main():
 
         log.info("Starting DAgger Training...")
 
-        for step in range(total_iterations):
+        for step in range(start_step, end_step):
             states = metasim_env.env.handler.get_states()
 
             # Kamera: [N, H, W, C] -> [N, C, H, W]
@@ -2168,7 +2189,7 @@ def main():
                 )
 
                 log.info(
-                    f"Step {step}/{total_iterations} | "
+                    f"Step {step}/{end_step} | "
                     f"Beta: {beta:.4f} | "
                     f"Loss: {mean_loss:.6f} | "
                     f"Buffer: {buffer.size} | "
@@ -2182,6 +2203,10 @@ def main():
                 # aby ukazovaly pouze období od posledního logu.
                 recent_completed_envs = 0
                 recent_successful_envs = 0
+
+            # Save the state for the next iteration, including when ESC stops training.
+            beta = max(0.0, beta * beta_decay)
+            next_step = step + 1
 
             if VIZUALIZATION and step % 5 == 0:
                 img_vis = student_obs_uint8[0].permute(1, 2, 0).detach().cpu().numpy()
@@ -2201,13 +2226,11 @@ def main():
                     f"student_model_step_{step}.pth"
                 )
 
-                torch.save(student_model.state_dict(), current_save_path)
+                save_dagger_checkpoint(current_save_path, student_model, optimizer, next_step, beta)
                 log.info(f"Checkpoint saved to {current_save_path}")
 
-            beta = max(0.0, beta * beta_decay)
-
         final_save_path = os.path.join(save_dir, "student_model_final.pth")
-        torch.save(student_model.state_dict(), final_save_path)
+        save_dagger_checkpoint(final_save_path, student_model, optimizer, next_step, beta)
 
         final_success_rate = (
             total_successful_envs / total_completed_envs

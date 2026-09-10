@@ -1104,181 +1104,64 @@ class WaistStraightReward(HumanoidBaseReward):
 
 
 class ReachChairProgressReward(HumanoidBaseReward):
-    """Stage 1 synchronized two-point positional reaching reward.
+    """Stage 1 exponential reward for reaching both hand targets.
 
-    Both hands first approach points above and in front of the chair backrest.
-    Only when both hands are within 5 cm of their approach points does the
-    reward switch to the final chair targets.  The cumulative piecewise-linear
-    potential has slopes weighted 1x and 2x and is normalized to [0, 1].
-
-    A small signed potential-progress term distinguishes moving closer from
-    moving away.  The reward uses only hand positions, chair geometry, and its
-    per-environment positional history; hand velocity and orientation are not
-    read here. Output is bounded to [-0.25, 1].
+    Only the XYZ positions of both end effectors and both chair targets enter
+    the reward calculation.  The two Euclidean distances are averaged first,
+    then converted to a bounded reward using ``exp(-mean_distance / scale)``.
+    The output is in ``(0, 1]`` in stage 1 and exactly zero in other stages.
     """
 
-    def __init__(self, robot_name="g1_with_hands", path_offset=0.15):
+    def __init__(self, robot_name="g1_with_hands", distance_scale=0.20):
         super().__init__(robot_name)
-        if not math.isfinite(path_offset) or path_offset <= 0:
-            raise ValueError("path_offset must be finite and positive")
+        if not math.isfinite(distance_scale) or distance_scale <= 0:
+            raise ValueError("distance_scale must be finite and positive")
         self.active_stages = [1]
-        self.path_offset = float(path_offset)
-        self.switch_tolerance = 0.05
-        self.progress_scale = 0.02
-        self.total_phase_weight = 3.0
+        self.distance_scale = float(distance_scale)
         self.robot_left_hand = "left_endeffector"
         self.robot_right_hand = "endeffector"
         self.chair_target_left = "target_hand_left"
         self.chair_target_right = "target_hand_right"
-        # Shared phase: 0 -> upper approach points, 1 -> final targets.
-        self.waypoint_index = None
-        self.initial_distances = None
-        self.previous_potential = None
-
-    def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
-        if self.waypoint_index is not None:
-            self.waypoint_index[env_ids] = 0
-            self.initial_distances[env_ids] = torch.nan
-            self.previous_potential[env_ids] = torch.nan
-        if hasattr(super(), "reset"):
-            super().reset(env_ids, states)
-
-    def _path_points(self, targets, back):
-        """Return [upper/front approach, final target] for both hands."""
-        up = torch.zeros_like(targets)
-        up[:, :, 2] = self.path_offset
-        approach = targets + self.path_offset * back[:, None, :] + up
-        return torch.stack((approach, targets), dim=2)
 
     def path_points_from_states(self, states: list["EnvState"]):
-        """Return the exact two-point paths used by this reward.
-
-        The result has shape ``[num_envs, 2 hands, 2 points, xyz]``.  Keeping
-        this calculation on the reward makes debug visualization and reward
-        shaping share one geometry definition.
-        """
+        """Return final targets in the shape expected by debug visualization."""
         chair = states.objects["chair"]
         target_ids = [
             chair.body_names.index(self.chair_target_left),
             chair.body_names.index(self.chair_target_right),
         ]
-        base_id = chair.body_names.index("base_link")
-        targets = chair.body_state[:, target_ids, :3]
-        quat = torch.nn.functional.normalize(
-            chair.body_state[:, base_id, 3:7], dim=-1
-        )
-        back_xy = chair_back_direction_xy(quat)
-        back = torch.cat((back_xy, torch.zeros_like(back_xy[:, :1])), dim=-1)
-        return self._path_points(targets, back)
+        return chair.body_state[:, target_ids, :3].unsqueeze(2)
 
-    def _ensure_history(self, num_envs, device, dtype):
-        valid = (
-            self.waypoint_index is not None
-            and self.waypoint_index.shape == (num_envs,)
-            and self.waypoint_index.device == device
-        )
-        if valid:
-            return
-        self.waypoint_index = torch.zeros(
-            num_envs, dtype=torch.long, device=device
-        )
-        self.initial_distances = torch.full(
-            (num_envs, 2), torch.nan, dtype=dtype, device=device
-        )
-        self.previous_potential = torch.full(
-            (num_envs, 2), torch.nan, dtype=dtype, device=device
-        )
-
-    def _potential(self, hands, points):
-        """Compute continuous 1x/2x piecewise-linear path potential."""
-        approach = points[:, :, 0]
-        target = points[:, :, 1]
-
-        distance_approach = torch.linalg.vector_norm(
-            hands - approach, dim=-1
-        )
-        distance_target = torch.linalg.vector_norm(hands - target, dim=-1)
-        descent_length = torch.linalg.vector_norm(target - approach, dim=-1)
-
-        scale_1 = self.initial_distances.clamp_min(self.switch_tolerance)
-        approach_score = (
-            1.0 - distance_approach / scale_1
-        ).clamp(0.0, 1.0)
-        target_score = (
-            1.0 - distance_target / descent_length.clamp_min(1.0e-6)
-        ).clamp(0.0, 1.0)
-
-        potential = torch.where(
-            self.waypoint_index[:, None] == 0,
-            approach_score,
-            1.0 + 2.0 * target_score,
-        )
-        return potential / self.total_phase_weight, torch.stack(
-            (distance_approach, distance_target), dim=-1
-        )
-
-    def __call__(self, states: list["EnvState"], robot_name: str = None) -> torch.FloatTensor:
+    def __call__(
+        self, states: list["EnvState"], robot_name: str = None
+    ) -> torch.FloatTensor:
         robot = states.robots[robot_name or self.robot_name]
-        device = robot.joint_pos.device
-        num_envs = robot.joint_pos.shape[0]
+        device = robot.body_state.device
+        dtype = robot.body_state.dtype
+        num_envs = robot.body_state.shape[0]
         if self.actual_stage is None:
-            return torch.zeros(num_envs, device=device)
-        active = _stage_mask(self.actual_stage.to(device), self.active_stages)
-        self._ensure_history(num_envs, device, robot.joint_pos.dtype)
-        self.waypoint_index[~active] = 0
-        self.initial_distances[~active] = torch.nan
-        self.previous_potential[~active] = torch.nan
-        if not active.any():
-            return torch.zeros(num_envs, device=device)
+            return torch.zeros(num_envs, dtype=dtype, device=device)
+
         try:
             hand_ids = [
                 robot.body_names.index(self.robot_left_hand),
                 robot.body_names.index(self.robot_right_hand),
             ]
-            points = self.path_points_from_states(states)
+            targets = self.path_points_from_states(states).squeeze(2)
         except ValueError:
-            return torch.zeros(num_envs, device=device)
-        hands = robot.body_state[:, hand_ids, :3]
+            return torch.zeros(num_envs, dtype=dtype, device=device)
 
-        distance_to_first = torch.linalg.vector_norm(
-            hands - points[:, :, 0], dim=-1
+        hand_positions = robot.body_state[:, hand_ids, :3]
+        distances = torch.linalg.vector_norm(
+            hand_positions - targets, dim=-1
         )
-        initialize = torch.isnan(self.initial_distances) & active[:, None]
-        self.initial_distances = torch.where(
-            initialize,
-            distance_to_first.detach().clamp_min(self.switch_tolerance),
-            self.initial_distances,
-        )
+        mean_distance = distances.mean(dim=-1)
+        reward = torch.exp(-mean_distance / self.distance_scale)
 
-        # The descent phase is unlocked synchronously: one hand reaching its
-        # approach point cannot make the other hand start chasing its target.
-        _, distances = self._potential(hands, points)
-        reached_approach = (
-            (distances[:, :, 0] <= self.switch_tolerance).all(dim=-1)
-            & (self.waypoint_index == 0)
-            & active
+        active = _stage_mask(
+            self.actual_stage.to(device=device), self.active_stages
         )
-        self.waypoint_index = self.waypoint_index + reached_approach.long()
-        potential, _ = self._potential(hands, points)
-
-        previous = torch.where(
-            torch.isnan(self.previous_potential),
-            potential,
-            self.previous_potential,
-        )
-        progress = ((potential - previous) / self.progress_scale).clamp(-1.0, 1.0)
-        per_hand_reward = (potential + 0.25 * progress).clamp(-0.25, 1.0)
-        per_hand_reward = torch.where(
-            active[:, None], per_hand_reward, torch.zeros_like(per_hand_reward)
-        )
-        reward = (
-            0.35 * per_hand_reward.mean(dim=-1)
-            + 0.65 * per_hand_reward.min(dim=-1).values
-        )
-        self.previous_potential = torch.where(
-            active[:, None], potential.detach(), self.previous_potential
-        )
-        return reward * active.to(reward.dtype)
+        return reward * active.to(dtype=dtype)
 
 
 class HandOrientationProgressReward(HumanoidBaseReward):
@@ -2836,7 +2719,7 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
     eval_start_stage: int | None = None
     snapshot_save_probability: float = 1.0
     verbose_motion_diagnostics: bool = False
-    # Draw the two reach waypoints for each hand in non-headless Genesis.
+    # Draw the hand targets used by the reach reward in non-headless Genesis.
     visualize_reach_waypoints: bool = False
     num_policy_stages: int = 6
 

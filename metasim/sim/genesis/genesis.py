@@ -467,7 +467,7 @@ class GenesisHandler(BaseSimHandler):
             "global_link_map": self.global_link_map,
             "num_bodies_per_env": self.num_bodies_per_env,
         }
-
+        select_contact_envs = env_ids is not None
         if env_ids is None:
             env_ids = list(range(self.num_envs))
         object_states = {}
@@ -515,9 +515,9 @@ class GenesisHandler(BaseSimHandler):
             obj_inst = self.object_inst_dict[obj.name]
             # get_contacts returns all environments; select the same rows as
             # joint/body state, including reordered or partial reset batches.
-            raw_contact = {
-                key: value[env_ids] for key, value in obj_inst.get_contacts().items()
-            }
+            raw_contact = obj_inst.get_contacts()
+            if select_contact_envs:
+                raw_contact = {key: value[env_ids] for key, value in raw_contact.items()}
             #readable_contacts = self.get_contact(raw_contact)
             if self._previous_dof_pos_target is None or obj.name not in self._previous_dof_pos_target:
                 self._previous_dof_pos_target[obj.name] = torch.zeros_like(obj_inst.get_dofs_position(envs_idx=env_ids))
