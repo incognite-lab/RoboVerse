@@ -26,6 +26,7 @@ from rich.console import Console
 from rich.table import Table
 from stable_baselines3 import PPO
 from stable_baselines3.common.utils import update_learning_rate
+from stable_baselines3.common.torch_layers import FlattenExtractor
 from torch.utils.tensorboard import SummaryWriter
 
 
@@ -132,6 +133,39 @@ def _load_stage_model(path: str | Path, env, device: str) -> PPO:
             "_last_episode_starts": None,
         },
     )
+
+
+def transfer_actor(source: PPO, target: PPO, source_stage: int, target_stage: int,
+                   stage_columns: tuple[int, ...] | None = None) -> None:
+    """Copy an MLP actor (including exploration), preserving the target critic.
+
+    Remap the categorical stage input so the first target action matches the
+    source action for otherwise identical observations. No tensors are shared.
+    """
+    src, dst = source.policy, target.policy
+    if not all(isinstance(policy.pi_features_extractor, FlattenExtractor) for policy in (src, dst)):
+        raise ValueError("Actor inheritance requires MLP policies with FlattenExtractor")
+    names = ("mlp_extractor.policy_net.", "action_net.")
+    actor = {key: value.detach().clone() for key, value in src.state_dict().items()
+             if key.startswith(names) or key == "log_std"}
+    expected = {key: value for key, value in dst.state_dict().items()
+                if key.startswith(names) or key == "log_std"}
+    if actor.keys() != expected.keys() or any(actor[key].shape != expected[key].shape for key in actor):
+        raise ValueError("Actor inheritance requires matching source/target actor architectures")
+    if stage_columns is not None:
+        first_weight = next((key for key in actor
+                             if key.startswith("mlp_extractor.policy_net.") and key.endswith("weight")),
+                            "action_net.weight")
+        weights = actor[first_weight]
+        if len(stage_columns) <= max(source_stage, target_stage) or any(
+            column < 0 or column >= weights.shape[1] for column in stage_columns
+        ):
+            raise ValueError("Invalid stage observation columns for actor inheritance")
+        weights[:, stage_columns[target_stage]] = weights[:, stage_columns[source_stage]].clone()
+    dst.load_state_dict(actor, strict=False)
+    # The destination has no training data yet; keep its independent critic
+    # initialization and start optimizer moments from zero for the new task.
+    dst.optimizer.state.clear()
 
 
 @dataclass
@@ -368,6 +402,23 @@ class MultiPPOTrainer:
         if self.train_stage is not None:
             self.frozen[self.train_stage] = False
 
+        self.inherit_stage_actor = bool(config.get("inherit_stage_actor", True))
+        self.actor_initialization = {}
+        self.actor_initialized = np.zeros(NUM_STAGE_POLICIES, dtype=bool)
+        self.actor_initialized[0] = True
+        for stage in range(NUM_STAGE_POLICIES):
+            saved = stage_manifest.get(str(stage), {})
+            provenance = saved.get("actor_initialization")
+            if provenance is not None:
+                self.actor_initialization[stage] = provenance
+            # Never overwrite trained, frozen, or already inherited policies,
+            # including legacy bundles that predate provenance metadata.
+            self.actor_initialized[stage] |= bool(
+                provenance is not None or self.samples[stage] or self.updates[stage]
+                or self.models[stage].num_timesteps or self.frozen[stage]
+                or saved.get("frozen", False)
+            )
+
         episode_window = max(
             1, int(config.get("stage_episode_metrics_window", window))
         )
@@ -408,6 +459,62 @@ class MultiPPOTrainer:
         self._last_log_timesteps = self.global_timesteps
         self._last_log_env_steps = self.global_env_steps
         self._terminal_log_iteration = 0
+        self._freeze_streak = np.zeros(NUM_STAGE_POLICIES, dtype=np.int64)
+        self._freeze_started = np.zeros(NUM_STAGE_POLICIES, dtype=np.int64)
+        self._freeze_outcomes = {stage: deque(maxlen=window) for stage in range(NUM_STAGE_POLICIES)}
+        self._publish_curriculum_limit()
+
+    def _publish_curriculum_limit(self) -> None:
+        setter = getattr(self.env, "set_curriculum_max_stage", None)
+        if setter is None or self.train_stage is not None:
+            return
+        cap = 0
+        for stage in range(1, NUM_STAGE_POLICIES):
+            if not self.actor_initialized[stage]:
+                break
+            cap = stage
+        setter(cap)
+
+    def _initialize_stage_actor(self, stage: int) -> None:
+        if self.actor_initialized[stage]:
+            return
+        if self.train_stage is not None and stage != self.train_stage:
+            return
+        if not self.inherit_stage_actor:
+            self.actor_initialized[stage] = True
+            self._publish_curriculum_limit()
+            return
+        source = stage - 1
+        # Direct snapshot starts may bypass all predecessors. Copying another
+        # random actor in that case adds no learned behavior.
+        if not (self.samples[source] or self.updates[source] or self.frozen[source]
+                or self.models[source].num_timesteps):
+            log.warning("Stage {} starts from snapshots without a trained policy {}; "
+                        "keeping its independent actor initialization.", stage, source)
+            self.actor_initialization[stage] = {"kind": "independent", "reason": "source_has_no_data"}
+        else:
+            transfer_actor(self.models[source], self.models[stage], source, stage,
+                           getattr(self.env, "stage_observation_indices", None))
+            floor = float(self.config.get("inherit_actor_std_min", 0.10))
+            finger_floor = float(self.config.get("inherit_finger_std_min", 0.20))
+            if not 0 < floor <= finger_floor:
+                raise ValueError("Require 0 < inherit_actor_std_min <= inherit_finger_std_min")
+            with torch.no_grad():
+                log_std = self.models[stage].policy.log_std
+                log_std.clamp_(min=float(np.log(floor)))
+                if stage in (2, 4):
+                    ids = list(getattr(self.env, "finger_action_indices", ()))
+                    log_std[ids] = log_std[ids].clamp(min=float(np.log(finger_floor)))
+            self.actor_initialization[stage] = {
+                "kind": "previous_stage", "source_stage": source,
+                "source_samples": int(self.samples[source]),
+                "source_updates": int(self.updates[source]),
+                "global_timesteps": self.global_timesteps,
+            }
+            log.info("Initialized stage {} actor from policy {} before its first action; "
+                     "critic remains independent and optimizer state is fresh.", stage, source)
+        self.actor_initialized[stage] = True
+        self._publish_curriculum_limit()
 
     def _target_samples(self, stage: int) -> int:
         default = max(
@@ -483,6 +590,7 @@ class MultiPPOTrainer:
             env_ids = (stages == stage).nonzero(as_tuple=False).flatten()
             if env_ids.numel() == 0:
                 continue
+            self._initialize_stage_actor(stage)
             obs_device = observations.index_select(0, env_ids)
             model.policy.set_training_mode(False)
             deterministic = bool(
@@ -567,6 +675,7 @@ class MultiPPOTrainer:
             self.recent_outcomes[stage].append(int(success))
 
     def _collect_rollout(self, observations: torch.Tensor):
+        component_sums = {}
         rollouts = {
             stage: RaggedStageRollout(self.num_envs, self.gamma, self.gae_lambda)
             for stage in range(NUM_STAGE_POLICIES)
@@ -610,6 +719,11 @@ class MultiPPOTrainer:
                     | (local_stage_after != stage)
                 )
                 stage_rewards = rewards.index_select(0, env_ids)
+                for group in ("reward_terms", "failure_masks"):
+                    for name, values in metadata.get(group, {}).items():
+                        key = (stage, group, name)
+                        subtotal = values.index_select(0, env_ids).float().sum()
+                        component_sums[key] = component_sums.get(key, 0.0) + subtotal
                 stage_actions = raw_actions.index_select(0, env_ids)
                 clipped_actions = env_actions.index_select(0, env_ids)
                 count = env_ids.numel()
@@ -653,6 +767,7 @@ class MultiPPOTrainer:
                         self.recent_returns[stage].append(float(episode_return))
                         self.recent_lengths[stage].append(int(episode_length))
                         self.recent_outcomes[stage].append(int(success))
+                        self._freeze_outcomes[stage].append(int(success))
                     num_terminals = terminal_env_ids.numel()
                     num_successes = int(sum(terminal_successes))
                     self.attempts[stage] += num_terminals
@@ -715,6 +830,12 @@ class MultiPPOTrainer:
             dim=1,
         ).detach().cpu().numpy()
         self._last_rollout_stats = {}
+        if component_sums:
+            keys = list(component_sums)
+            sums = torch.stack([component_sums[key] for key in keys]).detach().cpu().tolist()
+            for (stage, group, name), summed in zip(keys, sums):
+                self.writer.add_scalar(f"stage_{stage}/{group}/{name}",
+                                       summed / max(1, transitions[stage]), self.global_timesteps)
         for stage in range(NUM_STAGE_POLICIES):
             transition_count = int(transitions[stage])
             element_count = int(action_elements[stage])
@@ -960,6 +1081,11 @@ class MultiPPOTrainer:
             if self.frozen[stage]:
                 self.pending[stage].clear()
                 continue
+            if self._freeze_streak[stage]:
+                # Hold this exact actor fixed while independently confirming
+                # its success rate; no need to retain validation-only batches.
+                self.pending[stage].clear()
+                continue
             target = self._target_samples(stage)
             enough = self.pending[stage].num_samples >= target
             if final:
@@ -968,6 +1094,7 @@ class MultiPPOTrainer:
                 continue
             batch = self.pending[stage].pop_all()
             metrics = self._ppo_update(stage, batch)
+            self._freeze_outcomes[stage].clear()
             self.last_train_metrics[stage] = metrics
             self.last_train_timestep[stage] = self.global_timesteps
 
@@ -994,20 +1121,28 @@ class MultiPPOTrainer:
         )
         minimum = min(minimum, self.recent_outcomes[0].maxlen or minimum)
         for stage in range(NUM_STAGE_POLICIES):
-            if self.frozen[stage] or len(self.recent_outcomes[stage]) < minimum:
+            if self.frozen[stage] or len(self._freeze_outcomes[stage]) < minimum or self.updates[stage] == 0:
                 continue
             # Freeze in curriculum order so a downstream policy is not locked
             # against an input-state distribution that its predecessors are
             # still changing.
             if stage > 0 and not bool(np.all(self.frozen[:stage])):
                 continue
-            rate = self._success_rate(stage)
+            rate = float(np.mean(self._freeze_outcomes[stage]))
+            self._freeze_outcomes[stage].clear()
             if rate >= threshold:
-                self.frozen[stage] = True
-                self.pending[stage].clear()
-                log.info(
-                    f"Stage {stage} policy frozen at rolling success {rate:.3f}"
-                )
+                if self._freeze_streak[stage] == 0:
+                    self._freeze_started[stage] = self.global_env_steps
+                self._freeze_streak[stage] += 1
+                minimum_steps = getattr(self.env, "stage_confirmation_steps", (0,) * NUM_STAGE_POLICIES)[stage]
+                if self._freeze_streak[stage] >= 2 and (
+                    self.global_env_steps - self._freeze_started[stage] >= minimum_steps
+                ):
+                    self.frozen[stage] = True
+                    self.pending[stage].clear()
+                    log.info("Stage {} frozen after fixed-policy confirmation: {:.3f}", stage, rate)
+            else:
+                self._freeze_streak[stage] = 0
 
     @staticmethod
     def _snapshot_counts() -> dict[int, int]:
@@ -1255,6 +1390,7 @@ class MultiPPOTrainer:
                     "successes": int(self.successes[stage]),
                     "rolling_success_rate": self._success_rate(stage),
                     "frozen": bool(self.frozen[stage]),
+                    "actor_initialization": self.actor_initialization.get(stage),
                 }
                 for stage in range(NUM_STAGE_POLICIES)
             },
@@ -1311,8 +1447,8 @@ class MultiPPOTrainer:
                 observations = self._collect_rollout(observations)
                 self._last_collect_seconds = time.perf_counter() - collect_started
                 train_started = time.perf_counter()
-                self._update_ready_policies()
                 self._freeze_reliable_policies()
+                self._update_ready_policies()
                 self._last_train_seconds = time.perf_counter() - train_started
                 self._log_rollout()
                 if (

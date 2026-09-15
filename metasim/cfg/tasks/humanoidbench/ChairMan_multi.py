@@ -2039,8 +2039,9 @@ class MaintainAnyGraspReward(HumanoidBaseReward):
 class Stage3HandDriftPenalty(HumanoidBaseReward):
     """Stage 3 penalty for sliding either palm away from its moving target.
 
-    The checker terminates at 10 cm drift.  The penalty starts at 4 cm and is
-    zero inside that safe region, avoiding another positive reward for waiting.
+    The penalty starts at 4 cm and saturates at 10 cm, before the checker's
+    25 cm failure envelope. It is zero inside the safe region, avoiding
+    another positive reward for waiting.
 
     Output: <0, 1>, use with a negative weight.
     """
@@ -2087,8 +2088,8 @@ class PullChairReward(HumanoidBaseReward):
     Stage 3:
     Signed reward for one uninterrupted pull from x=0.75 to x=-0.25.
 
-    Forward progress and target-speed tracking are positive. Pausing or moving
-    in the wrong direction before the target is negative. At the target the
+    Forward progress and target-speed tracking are positive. Pausing on the
+    path earns almost zero; moving in the wrong direction is negative. At the target the
     objective switches to stopping both the chair and robot.
 
     Output: <-1, 1>
@@ -2160,14 +2161,14 @@ class PullChairReward(HumanoidBaseReward):
         speed_factor = smoothstep01(remaining / self.brake_fraction)
         desired_speed = self.target_pull_speed * speed_factor
         pull_speed = -chair_vel[:, 0]
-        speed_tracking = 2.0 * torch.exp(
+        speed_tracking = torch.exp(
             -torch.square(pull_speed - desired_speed)
             / (2.0 * self.vel_sigma ** 2)
-        ) - 1.0
+        )
         required_motion_speed = torch.clamp(desired_speed, min=0.05)
-        continuity = 2.0 * smoothstep01(
+        continuity = smoothstep01(
             torch.clamp(pull_speed, min=0.0) / required_motion_speed
-        ) - 1.0
+        )
 
         lateral_error = torch.norm(chair_pos[:, 1:3] - target[1:3], dim=-1)
         path_quality = torch.clamp(
@@ -2179,9 +2180,9 @@ class PullChairReward(HumanoidBaseReward):
             max=1.0,
         )
         moving_reward = (
-            0.55 * signed_progress
+            0.65 * signed_progress
             + 0.20 * speed_tracking
-            + 0.25 * continuity
+            + 0.15 * continuity
         )
         moving_reward = (
             moving_reward * (0.50 + 0.50 * path_quality)
@@ -2193,7 +2194,7 @@ class PullChairReward(HumanoidBaseReward):
         chair_stop = torch.clamp(1.0 - chair_speed / 0.20, min=0.0, max=1.0)
 
         base_idx = robot.body_names.index("pelvis")
-        robot_speed = torch.norm(robot.body_state[:, base_idx, 7:10], dim=-1)
+        robot_speed = torch.norm(robot.body_state[:, base_idx, 7:9], dim=-1)
         robot_stop = torch.clamp(1.0 - robot_speed / 0.20, min=0.0, max=1.0)
         target_error = torch.norm(chair_pos - target, dim=-1)
         target_quality = torch.clamp(
@@ -2260,7 +2261,7 @@ class PulledChairStillnessReward(HumanoidBaseReward):
             torch.norm(chair_vel, dim=-1) / 0.20, min=0.0, max=1.0
         )
         robot_motion = torch.clamp(
-            torch.norm(robot_vel, dim=-1) / 0.20, min=0.0, max=1.0
+            torch.norm(robot_vel[:, :2], dim=-1) / 0.20, min=0.0, max=1.0
         )
         penalty = torch.maximum(
             position_violation, torch.maximum(chair_motion, robot_motion)
@@ -2679,7 +2680,7 @@ class MultiPolicyStageCompletionReward(HumanoidBaseReward):
 
 # A fall must be clearly worse than any single successful task step, without
 # creating the critic spikes caused by the previous -1000 value.
-TERMINATION_WEIGHT = -50.0
+TERMINATION_WEIGHT = -1.0
 
 # General optional penalties / rewards
 DELTA_ACTION_RATE_WEIGHT = -1.2
@@ -2696,11 +2697,12 @@ MULTI_POLICY_STAGE_COMPLETION_WEIGHT = 500.0
 STAGE0_ARM_POS_REWARD_WEIGHT = 3.0
 WALK_TO_CHAIR_REWARD_WEIGHT = 3.0
 FACE_CHAIR_REWARD_WEIGHT = 2.0
-OPEN_GRASP_REWARD_WEIGHT = 1.0
-KEEP_CHAIR_STILL_PENALTY_WEIGHT = -1.0
+OPEN_GRASP_REWARD_WEIGHT = 0.01
+KEEP_CHAIR_STILL_PENALTY_WEIGHT = -0.01
 
-# Stage 1
-STAGE1_ARM_JOINT_VELOCITY_PENALTY_WEIGHT = -0.08
+# Scalar defaults for stage-1/shared functions. Effective stage-1 weights are
+# set in STAGE1_REWARD_WEIGHTS below; keep shared defaults for other stages.
+STAGE1_ARM_JOINT_VELOCITY_PENALTY_WEIGHT = -0.05
 WAIST_STRAIGHT_REWARD_WEIGHT = 0.01
 REACH_CHAIR_REWARD_WEIGHT = 0.04
 REACH_ORIENTATION_REWARD_WEIGHT = 0.02
@@ -2708,32 +2710,66 @@ HAND_TARGET_STILLNESS_REWARD_WEIGHT = 0.01
 STAY_NEAR_ANCHOR_REWARD_WEIGHT = 0.01
 PRECISE_HAND_TARGET_REWARD_WEIGHT = 0.01
 
+# Stage 1 balances arm motion against reaching, rather than inheriting the
+# much larger general penalties. Keep shared terms unchanged in other stages.
+# Positive outputs are bounded by 1, except orientation <= 1.375 and precise
+# hands <= 1.5: total positive shaping <= 1.525 per step. At gamma=0.995 this
+# is below the 2.5 discount cost of delaying the +500 completion bonus.
+STAGE1_REWARD_WEIGHTS = {
+    "TerminationCfg": -250.0,
+    "DeltaActionRateCfg": -0.03,
+    "DoFVelocityAccelerationCfg": -0.05,
+    "LocomotionCommandPenalty": -0.05,
+    "UprightPenaltyCfg": -0.10,
+    "KeepChairStillPenalty": -0.02,
+    "Stage1ArmJointVelocityPenalty": -0.03,
+    "OpenGraspReward": 0.05,
+    "WaistStraightReward": 0.05,
+    "ReachChairProgressReward": 0.60,
+    "HandOrientationProgressReward": 0.20,
+    "HandTargetStillnessReward": 0.20,
+    "StayNearAnchorReward": 0.05,
+    "PreciseHandTargetReward": 0.20,
+}
+
 # Stage 2
 CLOSE_GRASP_REWARD_WEIGHT = 1.0
 FORCE_GRASP_REWARD_WEIGHT = 0.5
 STAGE2_HAND_RETENTION_REWARD_WEIGHT = 0.5
 # Overrides of shared terms apply only to transitions produced in stage 2.
 STAGE2_REWARD_WEIGHTS = {
-    "DeltaActionRateCfg": -0.05,
-    "DoFVelocityAccelerationCfg": -0.10,
-    "LocomotionCommandPenalty": -0.10,
-    "UprightPenaltyCfg": -0.10,
-    "WaistStraightReward": 0.05,
-    "StayNearAnchorReward": 0.05,
+    "TerminationCfg": -250.0,
+    "DeltaActionRateCfg": -0.005,
+    "DoFVelocityAccelerationCfg": -0.010,
+    "LocomotionCommandPenalty": -0.010,
+    "UprightPenaltyCfg": -0.010,
+    "WaistStraightReward": 0.005,
+    "StayNearAnchorReward": 0.005,
 }
 
 # Stage 3
-MAINTAIN_ANY_GRASP_REWARD_WEIGHT = 6.0
-STAGE3_HAND_DRIFT_PENALTY_WEIGHT = -6.0
-PULL_CHAIR_REWARD_WEIGHT = 16.0
+MAINTAIN_ANY_GRASP_REWARD_WEIGHT = 0.10
+STAGE3_HAND_DRIFT_PENALTY_WEIGHT = -0.10
+PULL_CHAIR_REWARD_WEIGHT = 0.75
 
 # Stage 4
-PULLED_CHAIR_STILLNESS_PENALTY_WEIGHT = -8.0
-RELEASE_FINGERS_REWARD_WEIGHT = 14.0
+PULLED_CHAIR_STILLNESS_PENALTY_WEIGHT = -0.10
+RELEASE_FINGERS_REWARD_WEIGHT = 1.0
 
 # Stage 5
-ARM_DOWN_REWARD_WEIGHT = 14.0
-KEEP_FINGERS_OPEN_PENALTY_WEIGHT = -3.0
+ARM_DOWN_REWARD_WEIGHT = 1.0
+KEEP_FINGERS_OPEN_PENALTY_WEIGHT = -0.05
+
+LATE_STAGE_REWARD_WEIGHTS = {
+    "TerminationCfg": -250.0,
+    "DeltaActionRateCfg": -0.01,
+    "DoFVelocityAccelerationCfg": -0.02,
+    "LocomotionCommandPenalty": -0.02,
+    "UprightPenaltyCfg": -0.04,
+}
+# At gamma=.995, postponing success costs 2.5 per step; postponing failure
+# discounts its cost by 1.25. Stages 1..5 keep positive shaping below 2.5
+# and the worst dense negative magnitude below 1.25 (covered by tests).
 
 
 # =============================================================================
@@ -2746,7 +2782,7 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
     """Chair task for humanoid robots - full staged reward shaping."""
 
     success_bar = 0.9
-    episode_length = 2500
+    episode_length = 6000
     # A successful transition continues in the same physical episode under
     # the next PPO policy.  Separately, the reached state is saved so later
     # failures/timeouts can reset directly into an already unlocked stage.
@@ -2758,12 +2794,20 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
     eval_start_stage: int | None = None
     # Single-policy training resets here, including after stage completion.
     train_stage: int | None = None
+    # Set by MultiPPOTrainer before reset; None preserves evaluation behavior.
+    curriculum_max_stage: int | None = None
+    log_reward_components: bool = True
+    reset_rewards_on_stage_change: bool = True
     snapshot_save_probability: float = 1.0
     verbose_motion_diagnostics: bool = False
     # Draw the approach and final hand targets in non-headless Genesis.
     visualize_reach_waypoints: bool = False
     num_policy_stages: int = 6
-    stage_reward_weights: dict = {2: STAGE2_REWARD_WEIGHTS}
+    stage_reward_weights: dict = {
+        1: STAGE1_REWARD_WEIGHTS, 2: STAGE2_REWARD_WEIGHTS,
+        3: LATE_STAGE_REWARD_WEIGHTS, 4: LATE_STAGE_REWARD_WEIGHTS,
+        5: LATE_STAGE_REWARD_WEIGHTS,
+    }
 
     objects = [
         ArticulationObjCfg(

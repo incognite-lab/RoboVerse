@@ -1,4 +1,5 @@
 import pickle
+import math
 import os
 import random
 from time import time
@@ -30,11 +31,11 @@ STAGE_TIMEOUTS = {
     # checker converts them to the active dt below, so changing simulation
     # decimation no longer halves/doubles the physical time available.
     0: 400,  # Dojít k židli (8 s)
-    1: 800,  # Reach + orientace + ustálení obou rukou (10 s)
+    1: 800,  # Reach + orientace + ustálení obou rukou (16 s)
     2: 400,  # Postupné zavření všech prstů a vytvoření kontaktů (8 s)
     3: 400,  # Zatažení za židli
-    4: 100,  # Zastavení židle
-    5: 100   # Svěšení rukou
+    4: 200,  # Otevření prstů při stabilním postoji (4 s)
+    5: 200   # Svěšení rukou (4 s)
 }
 STAGE_TIMEOUT_REFERENCE_DT = 0.02
 VELOCITY_THRESHOLD = 0.2
@@ -44,8 +45,8 @@ FACING_CHAIR_THRESHOLD = 0.90
 HAND_VELOCITY_THRESHOLD = 0.15
 
 # The target links are reference points near the palms, not tiny physical
-# sockets.  Seven centimetres keeps both hands inside the 10 cm Stage-2 drift
-# envelope while allowing residual whole-body sway from the walking policy.
+# sockets. Five centimetres defines the stage-1 goal; stages 2/3 have a wider
+# recovery envelope to allow whole-body sway while grasping and pulling.
 DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.05
 ORIENTATION_DISTANCE_HANDLE_THRESHOLD = 0.03
 GRASP_DRIFT_THRESHOLD = 0.25
@@ -90,6 +91,27 @@ def _held_condition(handler, name, idx, condition, required_steps):
         setattr(handler.task, name, counters)
     counters[idx] = torch.where(condition, counters[idx] + 1, torch.zeros_like(counters[idx]))
     return counters[idx] >= required_steps
+
+
+def _held_seconds(handler, name, idx, condition, seconds):
+    """Debounce recoverable events in physical time, not simulator steps."""
+    dt = (getattr(handler.scenario.sim_params, "dt", None) or 0.002) * handler.scenario.decimation
+    held = _held_condition(handler, name, idx, condition, max(1, int(math.ceil(seconds / dt))))
+    return _failure(handler, name.removesuffix("_steps"), idx, held) if "failure" in name else held
+
+
+def _failure(handler, name, idx, condition):
+    masks = getattr(handler.task, "failure_masks", None)
+    if masks is not None:
+        if name not in masks:
+            masks[name] = torch.zeros(handler.num_envs, dtype=torch.bool, device=idx.device)
+        masks[name][idx] |= condition
+    return condition
+
+
+def _curriculum_limit(handler, available):
+    cap = getattr(handler.task, "curriculum_max_stage", None)
+    return available if cap is None else min(available, int(cap))
 
 
 # =========================================================
@@ -180,7 +202,7 @@ def check_movement_chair(states: list[EnvState], handler: BaseSimHandler, idx: t
     pos_diff = torch.norm(chair_pos - initial_chair_pos, dim=-1)
     dot_product = torch.abs(torch.sum(chair_ori * initial_chair_ori, dim=-1))
 
-    return (pos_diff > POS_THRESHOLD) #| (dot_product < ORI_DOT_PRODUCT_THRESHOLD)
+    return _failure(handler, "chair_displacement", idx, pos_diff > POS_THRESHOLD)
 
 def common_chairman_checker(states: list[EnvState], handler: BaseSimHandler, idx: torch.Tensor, stage_id: int) -> torch.BoolTensor:
     """Kontroluje pád robota a nově i časový limit (timeout) pro danou stage."""
@@ -221,7 +243,7 @@ def common_chairman_checker(states: list[EnvState], handler: BaseSimHandler, idx
     is_timeout = handler.task.stage_steps[idx] > limit
 
     # Výsledek: Epizoda skončí, pokud robot spadne NEBO pokud mu vyprší čas
-    return is_fallen | is_timeout
+    return _failure(handler, "fall", idx, is_fallen) | _failure(handler, "stage_timeout", idx, is_timeout)
 
 def get_batch_grasp_status(states: list[EnvState], handler: BaseSimHandler, force_threshold: float, idx: torch.Tensor) -> torch.Tensor:
     """Kontrola kontaktů POUZE pro indexy robotů ve Stage 2."""
@@ -531,9 +553,10 @@ def stege2_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
         handler, "stage2_success_steps", idx, success_now, STAGE2_HOLD_STEPS
     )
 
-    # Losing the exact 10 cm reach pose is recoverable and therefore must not
+    # Briefly leaving the grasp envelope is recoverable and therefore must not
     # reset the episode immediately. The reach/stillness rewards guide it back.
-    terminated[idx] = term_common | success_cond | ~hands_near
+    drift_failure = _held_seconds(handler, "stage2_drift_failure_steps", idx, ~hands_near, 0.15)
+    terminated[idx] = term_common | success_cond | drift_failure
     success[idx] = success_cond & (~term_common)
     return terminated, success
 
@@ -581,20 +604,24 @@ def stege3_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     # --- 5. Kontrola zastavení robota i židle ---
     base_link_idx = states.robots[handler.robot.name].body_names.index("pelvis")
     robot_lin_vel = states.robots[handler.robot.name].body_state[idx, base_link_idx, 7:10]
-    vel_norm = torch.norm(robot_lin_vel, dim=-1)
+    vel_norm = torch.norm(robot_lin_vel[:, :2], dim=-1)
     standing_still = vel_norm < VELOCITY_THRESHOLD
     chair_lin_vel = chair.body_state[idx, chair_base_idx, 7:10]
     chair_standing_still = torch.norm(chair_lin_vel, dim=-1) < VELOCITY_THRESHOLD
 
     # --- VYHODNOCENÍ ---
     # Fail: pokud spadne, ujede mu ruka, nebo zcela ztratí kontakt prstů s židlí
-    fail_cond = term_common | drift_fail | grasp_fail
+    fail_cond = term_common | _held_seconds(
+        handler, "stage3_drift_failure_steps", idx, drift_fail, 0.15
+    ) | _held_seconds(handler, "stage3_grasp_failure_steps", idx, grasp_fail, 0.15)
 
     # Success requires a short stable hold. Without checking the chair speed,
     # stage 4 could start while the chair was still rolling and fail before its
     # policy had a chance to act.
     success_now = (
         (~fail_cond)
+        & (~drift_fail)
+        & (~grasp_fail)
         & chair_moved_enough
         & standing_still
         & chair_standing_still
@@ -636,7 +663,7 @@ def stege4_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     # --- 3. Kontrola pohybu ROBOTA (Nesmí se hýbat) ---
     base_link_idx = states.robots[handler.robot.name].body_names.index("pelvis")
     robot_lin_vel = states.robots[handler.robot.name].body_state[idx, base_link_idx, 7:10]
-    robot_vel_norm = torch.norm(robot_lin_vel, dim=-1)
+    robot_vel_norm = torch.norm(robot_lin_vel[:, :2], dim=-1)
 
     # Termination: Pokud robot neudrží stabilitu a začne padat/couvat
     robot_moved = robot_vel_norm > VELOCITY_THRESHOLD
@@ -659,10 +686,11 @@ def stege4_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
 
     # --- VYHODNOCENÍ ---
     # FAIL: Pokud robot spadne, pohne židlí, nebo sám ztratí rovnováhu a začne se hýbat
-    fail_cond = term_common | chair_moved | robot_moved
-
-    # SUCCESS: Neselhal (vše stojí na místě) A ZÁROVEŇ jsou prsty plně otevřené
-    success_cond = (~fail_cond) & fingers_open
+    motion_failure = _held_seconds(handler, "stage4_motion_failure_steps", idx,
+                                   chair_moved | robot_moved, 0.20)
+    fail_cond = term_common | _failure(handler, "chair_displacement", idx, chair_pos_diff > POS_THRESHOLD) | motion_failure
+    success_cond = _held_seconds(handler, "stage4_success_steps", idx,
+        (~fail_cond) & (~chair_moved) & (~robot_moved) & fingers_open, 0.10)
 
     # Ukončení a zápis výsledků
     terminated[idx] = fail_cond | success_cond
@@ -699,7 +727,7 @@ def stege5_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     # --- 3. Kontrola pohybu ROBOTA (Nesmí couvat ani jít vpřed) ---
     base_link_idx = states.robots[handler.robot.name].body_names.index("pelvis")
     robot_lin_vel = states.robots[handler.robot.name].body_state[idx, base_link_idx, 7:10]
-    robot_vel_norm = torch.norm(robot_lin_vel, dim=-1)
+    robot_vel_norm = torch.norm(robot_lin_vel[:, :2], dim=-1)
 
     # Termination: Robot nezastavil, potácí se
     robot_moved = robot_vel_norm > VELOCITY_THRESHOLD
@@ -729,10 +757,15 @@ def stege5_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
 
     # --- VYHODNOCENÍ ---
     # FAIL: Pokud robot spadne, posune odloženou židli, nebo nezvládne zastavit a padá do stran
-    fail_cond = term_common | chair_moved | robot_moved
-
-    # SUCCESS: Vše stojí jak má (neselhal) A ZÁROVEŇ jsou obě paže volně podél těla
-    success_cond = (~fail_cond) & arms_are_down
+    motion_failure = _held_seconds(handler, "stage5_motion_failure_steps", idx,
+                                   chair_moved | robot_moved, 0.20)
+    fail_cond = term_common | _failure(handler, "chair_displacement", idx, chair_pos_diff > POS_THRESHOLD) | motion_failure
+    finger_ids = [i for i, name in enumerate(joint_names)
+                  if any(part in name for part in ("thumb", "index", "middle"))]
+    fingers_open = torch.max(torch.abs(
+        states.robots[handler.robot.name].joint_pos[idx][:, finger_ids]), dim=-1).values < 0.15
+    success_cond = _held_seconds(handler, "stage5_success_steps", idx,
+        (~fail_cond) & (~chair_moved) & (~robot_moved) & arms_are_down & fingers_open, 0.10)
 
     # Ukončení a zápis výsledků
     terminated[idx] = fail_cond | success_cond
@@ -816,6 +849,7 @@ def _reset_chairman_legacy(
                 break
 
     selected_stages = []
+    max_available_stage = _curriculum_limit(handler, max_available_stage)
     for env_id in cpu_ids:
         if requested_stage is not None:
             stage = requested_stage
@@ -865,6 +899,9 @@ def reset_chairman(
     for counter_name in (
         "stage0_success_steps", "stage1_success_steps", "stage2_success_steps",
         "stage3_success_steps",
+        "stage2_drift_failure_steps", "stage3_drift_failure_steps",
+        "stage3_grasp_failure_steps", "stage4_motion_failure_steps",
+        "stage5_motion_failure_steps", "stage4_success_steps", "stage5_success_steps",
     ):
         counter = getattr(handler.task, counter_name, None)
         if counter is not None:
@@ -948,6 +985,7 @@ def reset_chairman(
                     break
 
         if requested_stage is None:
+            max_available_stage = _curriculum_limit(handler, max_available_stage)
             new_stages = torch.randint(
                 0, max_available_stage + 1, (reset_count,), device=handler.device
             )

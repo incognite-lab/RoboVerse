@@ -915,6 +915,7 @@ class _ChairManChecker(BaseChecker):
         # are advanced to the policy that will act on the *next* transition.
         # MetaSimVecEnv temporarily exposes this tensor to every reward.
         handler.task.reward_stage = stages.detach().clone()
+        handler.task.failure_masks = {}
 
         # --- 1. VYTVOŘENÍ MASEK ---
         mask_0 = (stages == 0)

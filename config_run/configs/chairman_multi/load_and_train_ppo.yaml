@@ -36,6 +36,11 @@ stage_rollout_samples: 131_072
 # without a physical reset. Reliable policies can then be frozen while still
 # controlling their stage during downstream training.
 freeze_learned_policies: true
+# Initialize only stages with no previous training/actor initialization from
+# the preceding policy's actor. Existing trained policies remain intact.
+inherit_stage_actor: true
+inherit_actor_std_min: 0.10
+inherit_finger_std_min: 0.20
 frozen_policy_deterministic: true
 stage_advance_success_rate: 0.90
 stage_success_window: 1000
@@ -58,7 +63,7 @@ stage_episode_metrics_window: 1000
 
 # Načtení všech šesti policies ze stejného běhu jako v eval_ppo_video.yaml.
 # Lze zadat i nadřazený adresář; pak se vybere nejnovější běh s manifestem.
-load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-09_14-57-59_chairmanmulti_concurrent
+load_model_path: ./config_run/output/ppo_models_multi/top_models
 
 # false: nejnovější kompletně uložený checkpoint uvedený v manifestu;
 #        tabulka níže se ignoruje.

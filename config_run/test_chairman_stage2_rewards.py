@@ -76,7 +76,7 @@ class Stage2RewardsTest(unittest.TestCase):
             reward.actual_stage = torch.arange(6)
             isolated = SimpleNamespace(
                 reward_functions=[reward], reward_weights=[weight],
-                stage_reward_weights=task.stage_reward_weights,
+                stage_reward_weights={2: task.stage_reward_weights[2]},
             )
             with patch.object(type(reward), "__call__", return_value=torch.ones(6)):
                 result = MetaSimVecEnv._calculate_rewards(reward_env(isolated, None))
@@ -98,7 +98,7 @@ class Stage2RewardsTest(unittest.TestCase):
             stage_reward_weights={2: STAGE2_REWARD_WEIGHTS},
         )
         result = MetaSimVecEnv._calculate_rewards(reward_env(task, states, count=3))
-        torch.testing.assert_close(result, torch.tensor([0.01, 0.05, 0.0]))
+        torch.testing.assert_close(result, torch.tensor([0.01, STAGE2_REWARD_WEIGHTS["WaistStraightReward"], 0.0]))
         self.assertIs(reward.actual_stage, routing)
         # Existing tasks with no overrides still use scalar weights.
         del task.stage_reward_weights

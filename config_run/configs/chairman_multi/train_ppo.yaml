@@ -7,8 +7,8 @@ robots: [g1_with_hands]
 fix_base_link: false
 task: chairmanmulti #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
 decimation: 5
-num_envs: 4
-headless: false
+num_envs: 15000
+headless: true
 add_table: true
 env_spacing: 4.0
 train_or_eval: train   #load_and_train #train_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
@@ -19,8 +19,8 @@ train_or_eval: train   #load_and_train #train_dagger #eval_video #eval_dagger_vi
 # Stages 1–5 vyžadují uložený snapshot; stage 0 má běžný počáteční stav.
 # Snapshot je stav simulace, nikoliv váhy policy: režim train učí novou policy.
 # false: původní trénování všech stages; train_stage se ignoruje.
-train_only: true
-train_stage: 2
+train_only: false
+train_stage: 1
 
 force: false
 
@@ -45,6 +45,14 @@ stage_rollout_samples: 131_072
 # without a physical reset. Reliable policies can then be frozen while still
 # controlling their stage during downstream training.
 freeze_learned_policies: true
+# Before the first action in a new stage, copy the preceding actor once.
+# Critic and optimizer remain independent; trained policies are never replaced.
+# Direct snapshot starts need a trained predecessor in a loaded bundle to
+# inherit learned behavior. Without one, training starts from a fresh actor.
+inherit_stage_actor: true
+# Preserve learned action means, but keep exploration in a new task alive.
+inherit_actor_std_min: 0.10
+inherit_finger_std_min: 0.20
 frozen_policy_deterministic: true
 stage_advance_success_rate: 0.90
 stage_success_window: 1000

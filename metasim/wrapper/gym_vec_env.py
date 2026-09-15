@@ -120,6 +120,8 @@ class MetaSimVecEnv(VectorEnv):
         reward_functions = self.scenario.task.reward_functions
         reward_stage = getattr(self.scenario.task, "reward_stage", None)
         stage_weights = getattr(self.scenario.task, "stage_reward_weights", {})
+        record_terms = bool(getattr(self.scenario.task, "log_reward_components", False))
+        reward_terms = {}
         original_stages = None
         if reward_stage is not None:
             # The staged checker advances actual_stage before rewards are
@@ -150,12 +152,26 @@ class MetaSimVecEnv(VectorEnv):
                                 weighted_reward,
                             )
                 tot_reward += weighted_reward
+                if record_terms:
+                    reward_terms[type(reward_fn).__name__] = weighted_reward.detach()
         finally:
             if original_stages is not None:
                 for reward_fn, actual_stage in zip(reward_functions, original_stages):
                     if hasattr(reward_fn, "actual_stage"):
                         reward_fn.actual_stage = actual_stage
-        #print(tot_reward)
+        if record_terms:
+            self.scenario.task.last_reward_terms = reward_terms
+        if getattr(self.scenario.task, "reset_rewards_on_stage_change", False):
+            events = getattr(self.scenario.task, "completed_stage_events", None)
+            if events is not None:
+                ids = (events >= 0).nonzero(as_tuple=False).flatten()
+                if ids.numel():
+                    # Reward for the old stage is already materialized; start
+                    # history-dependent shaping fresh for the entering stage.
+                    for reward_fn in reward_functions:
+                        reset = getattr(reward_fn, "reset", None)
+                        if reset is not None:
+                            reset(env_ids=ids, states=states)
         return tot_reward
 
     def _get_default_states(self, seed: int | None = None):

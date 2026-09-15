@@ -179,6 +179,27 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
             )
         return stages.detach().to(device=self.torch_device, dtype=torch.long).clone()
 
+    @property
+    def stage_observation_indices(self) -> tuple[int, ...]:
+        """One-hot stage columns, followed by the two hand-distance features."""
+        start = self.observation_space.shape[0] - self.num_stages - 2
+        return tuple(range(start, start + self.num_stages))
+
+    def set_curriculum_max_stage(self, stage: int) -> None:
+        self.env.env.handler.task.curriculum_max_stage = int(stage)
+
+    @property
+    def finger_action_indices(self) -> tuple[int, ...]:
+        return tuple(i for i, name in enumerate(self.upper_body_joint_names) if "_hand_" in name)
+
+    @property
+    def stage_confirmation_steps(self) -> tuple[int, ...]:
+        from metasim.cfg.checkers.stages_chairman import STAGE_TIMEOUTS, STAGE_TIMEOUT_REFERENCE_DT
+        scenario = self.env.env.handler.scenario
+        dt = (scenario.sim_params.dt or 0.002) * scenario.decimation
+        return tuple(int(np.ceil(STAGE_TIMEOUTS[i] * STAGE_TIMEOUT_REFERENCE_DT / dt)) + 1
+                     for i in range(self.NUM_POLICY_STAGES))
+
     def add_extra_to_obs_torch(self, obs: torch.Tensor) -> torch.Tensor:
         """Build the complete Chairman observation directly on the simulator GPU."""
         handler = self.env.env.handler
@@ -483,6 +504,7 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
         self.timesteps += (~unsuccessful).float()
 
         task = self.env.env.handler.task
+        reward_terms = getattr(task, "last_reward_terms", {})
         completed_source = getattr(task, "completed_stage_events", None)
         completed = (
             torch.full_like(stage_before, -1)
@@ -517,6 +539,8 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
             "physical_done": reset_mask,
             "task_success": success,
             "timeout": timeout,
+            "reward_terms": reward_terms,
+            "failure_masks": {**getattr(task, "failure_masks", {}), "global_timeout": timeout},
         }
         return observation, rewards, dones, metadata
 
