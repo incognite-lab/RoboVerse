@@ -1398,6 +1398,35 @@ class HandTargetStillnessReward(HumanoidBaseReward):
         return torch.clamp(total_reward, min=-1.0, max=1.0) * stage_mask.float()
 
 
+class Stage2HandRetentionReward(HumanoidBaseReward):
+    """Keep both palms near the chair targets while learning finger closure.
+
+    exp(-(max(left_distance, right_distance) / distance_scale)**2) stays
+    positive beyond the stage-1 success radius. The worse hand determines
+    the score, so one accurate hand cannot compensate for the other drifting.
+    Returns [0, 1] in stage 2 and zero elsewhere; no contact is required.
+    """
+
+    def __init__(self, robot_name="g1_with_hands", distance_scale=0.10):
+        super().__init__(robot_name)
+        if not math.isfinite(distance_scale) or distance_scale <= 0:
+            raise ValueError("distance_scale must be finite and positive")
+        self.distance_scale = float(distance_scale)
+
+    def __call__(self, states: EnvState, robot_name: str = None) -> torch.Tensor:
+        robot = states.robots[robot_name or self.robot_name]
+        if self.actual_stage is None:
+            return robot.body_state.new_zeros(robot.body_state.shape[0])
+        chair = states.objects["chair"]
+        hand_ids = [robot.body_names.index(name) for name in ("left_endeffector", "endeffector")]
+        target_ids = [chair.body_names.index(name) for name in ("target_hand_left", "target_hand_right")]
+        distances = torch.linalg.vector_norm(
+            robot.body_state[:, hand_ids, :3] - chair.body_state[:, target_ids, :3], dim=-1
+        )
+        score = torch.exp(-torch.square(distances.max(dim=-1).values / self.distance_scale))
+        return score * (self.actual_stage.to(device=score.device) == 2).to(score.dtype)
+
+
 class PreciseHandTargetReward(HumanoidBaseReward):
     """Stage 1-2 reward for holding both end effectors on their targets.
 
@@ -1417,7 +1446,7 @@ class PreciseHandTargetReward(HumanoidBaseReward):
         # zero-at-goal drift penalty instead.
         self.active_stages = (1, 2)
         self.precise_distance = 0.02
-        self.shaping_distance = 0.10
+        self.shaping_distance = 0.05
         self.precise_orientation_error = 0.02
         self.shaping_orientation_error = 0.05
         self.precise_speed = 0.10
@@ -2671,17 +2700,27 @@ OPEN_GRASP_REWARD_WEIGHT = 1.0
 KEEP_CHAIR_STILL_PENALTY_WEIGHT = -1.0
 
 # Stage 1
-STAGE1_ARM_JOINT_VELOCITY_PENALTY_WEIGHT = -0.5
-WAIST_STRAIGHT_REWARD_WEIGHT = 2.0
-REACH_CHAIR_REWARD_WEIGHT = 10.0
-REACH_ORIENTATION_REWARD_WEIGHT = 4.0
-HAND_TARGET_STILLNESS_REWARD_WEIGHT = 5.0
-STAY_NEAR_ANCHOR_REWARD_WEIGHT = 1.0
-PRECISE_HAND_TARGET_REWARD_WEIGHT = 2.0
+STAGE1_ARM_JOINT_VELOCITY_PENALTY_WEIGHT = -0.08
+WAIST_STRAIGHT_REWARD_WEIGHT = 0.01
+REACH_CHAIR_REWARD_WEIGHT = 0.04
+REACH_ORIENTATION_REWARD_WEIGHT = 0.02
+HAND_TARGET_STILLNESS_REWARD_WEIGHT = 0.01
+STAY_NEAR_ANCHOR_REWARD_WEIGHT = 0.01
+PRECISE_HAND_TARGET_REWARD_WEIGHT = 0.01
 
 # Stage 2
-CLOSE_GRASP_REWARD_WEIGHT = 2.0
-FORCE_GRASP_REWARD_WEIGHT = 2.0
+CLOSE_GRASP_REWARD_WEIGHT = 1.0
+FORCE_GRASP_REWARD_WEIGHT = 0.5
+STAGE2_HAND_RETENTION_REWARD_WEIGHT = 0.5
+# Overrides of shared terms apply only to transitions produced in stage 2.
+STAGE2_REWARD_WEIGHTS = {
+    "DeltaActionRateCfg": -0.05,
+    "DoFVelocityAccelerationCfg": -0.10,
+    "LocomotionCommandPenalty": -0.10,
+    "UprightPenaltyCfg": -0.10,
+    "WaistStraightReward": 0.05,
+    "StayNearAnchorReward": 0.05,
+}
 
 # Stage 3
 MAINTAIN_ANY_GRASP_REWARD_WEIGHT = 6.0
@@ -2717,11 +2756,14 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
     # None selects the normal curriculum.  Evaluation may set 0..5 to force
     # every reset to a deterministic stage (stages 1..5 require a snapshot).
     eval_start_stage: int | None = None
+    # Single-policy training resets here, including after stage completion.
+    train_stage: int | None = None
     snapshot_save_probability: float = 1.0
     verbose_motion_diagnostics: bool = False
-    # Draw the hand targets used by the reach reward in non-headless Genesis.
+    # Draw the approach and final hand targets in non-headless Genesis.
     visualize_reach_waypoints: bool = False
     num_policy_stages: int = 6
+    stage_reward_weights: dict = {2: STAGE2_REWARD_WEIGHTS}
 
     objects = [
         ArticulationObjCfg(
@@ -2763,6 +2805,7 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
 
         CLOSE_GRASP_REWARD_WEIGHT,
         FORCE_GRASP_REWARD_WEIGHT,
+        STAGE2_HAND_RETENTION_REWARD_WEIGHT,
 
         MAINTAIN_ANY_GRASP_REWARD_WEIGHT,
         STAGE3_HAND_DRIFT_PENALTY_WEIGHT,
@@ -2802,6 +2845,7 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
 
         CloseGraspReward(),
         GraspForceReward(),
+        Stage2HandRetentionReward(),
 
         MaintainAnyGraspReward(),
         Stage3HandDriftPenalty(),

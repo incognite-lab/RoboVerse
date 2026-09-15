@@ -256,6 +256,16 @@ class PendingStageBatches:
         self.num_samples = 0
 
 
+def single_training_stage(config: dict) -> int | None:
+    """Validate the opt-in stage restriction; ignore train_stage when disabled."""
+    if not config.get("train_only", False):
+        return None
+    stage = config.get("train_stage")
+    if isinstance(stage, bool) or not isinstance(stage, int) or not 0 <= stage < NUM_STAGE_POLICIES:
+        raise ValueError("train_only requires train_stage to be an integer from 0 to 5")
+    return stage
+
+
 class MultiPPOTrainer:
     """Train six independent PPO policies in one uninterrupted ChairMan env."""
 
@@ -275,6 +285,7 @@ class MultiPPOTrainer:
             )
         self.env = env
         self.config = config
+        self.train_stage = single_training_stage(config)
         self.num_envs = int(env.num_envs)
         env_device = getattr(env, "torch_device", None)
         self.device = str(
@@ -353,6 +364,9 @@ class MultiPPOTrainer:
             self.samples[stage] = int(saved.get("samples", 0))
             self.updates[stage] = int(saved.get("updates", 0))
             self.frozen[stage] = bool(saved.get("frozen", False))
+
+        if self.train_stage is not None:
+            self.frozen[self.train_stage] = False
 
         episode_window = max(
             1, int(config.get("stage_episode_metrics_window", window))
@@ -481,7 +495,9 @@ class MultiPPOTrainer:
                 )
             actions_t = actions_t.detach().float()
             raw_actions.index_copy_(0, env_ids, actions_t)
-            if not self.frozen[stage]:
+            if not self.frozen[stage] and (
+                self.train_stage is None or stage == self.train_stage
+            ):
                 records[stage] = (
                     env_ids,
                     obs_device.detach(),
@@ -938,6 +954,9 @@ class MultiPPOTrainer:
 
     def _update_ready_policies(self, *, final: bool = False) -> None:
         for stage in range(NUM_STAGE_POLICIES):
+            if self.train_stage is not None and stage != self.train_stage:
+                self.pending[stage].clear()
+                continue
             if self.frozen[stage]:
                 self.pending[stage].clear()
                 continue
@@ -957,6 +976,8 @@ class MultiPPOTrainer:
         return float(np.mean(outcomes)) if outcomes else 0.0
 
     def _freeze_reliable_policies(self) -> None:
+        if self.train_stage is not None:
+            return
         if not self.config.get("freeze_learned_policies", False):
             return
         threshold = float(

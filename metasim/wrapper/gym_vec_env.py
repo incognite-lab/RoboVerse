@@ -119,6 +119,7 @@ class MetaSimVecEnv(VectorEnv):
 
         reward_functions = self.scenario.task.reward_functions
         reward_stage = getattr(self.scenario.task, "reward_stage", None)
+        stage_weights = getattr(self.scenario.task, "stage_reward_weights", {})
         original_stages = None
         if reward_stage is not None:
             # The staged checker advances actual_stage before rewards are
@@ -135,7 +136,20 @@ class MetaSimVecEnv(VectorEnv):
         try:
             for reward_fn, weight in zip(reward_functions, self.scenario.task.reward_weights):
                 reward_fn_ret = reward_fn(states, self.scenario.robots[0].name)
-                tot_reward += weight * reward_fn_ret
+                weighted_reward = weight * reward_fn_ret
+                # Use the action-owning stage, including on successful exits.
+                # Tasks without overrides retain their original scalar weights.
+                stages = reward_stage if reward_stage is not None else getattr(reward_fn, "actual_stage", None)
+                if stages is not None:
+                    for stage, overrides in stage_weights.items():
+                        override = overrides.get(type(reward_fn).__name__)
+                        if override is not None:
+                            weighted_reward = torch.where(
+                                stages.to(device=reward_fn_ret.device) == int(stage),
+                                override * reward_fn_ret,
+                                weighted_reward,
+                            )
+                tot_reward += weighted_reward
         finally:
             if original_stages is not None:
                 for reward_fn, actual_stage in zip(reward_functions, original_stages):

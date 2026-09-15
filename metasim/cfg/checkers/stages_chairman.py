@@ -30,7 +30,7 @@ STAGE_TIMEOUTS = {
     # checker converts them to the active dt below, so changing simulation
     # decimation no longer halves/doubles the physical time available.
     0: 400,  # Dojít k židli (8 s)
-    1: 400,  # Reach + orientace + ustálení obou rukou (10 s)
+    1: 800,  # Reach + orientace + ustálení obou rukou (10 s)
     2: 400,  # Postupné zavření všech prstů a vytvoření kontaktů (8 s)
     3: 400,  # Zatažení za židli
     4: 100,  # Zastavení židle
@@ -46,14 +46,14 @@ HAND_VELOCITY_THRESHOLD = 0.15
 # The target links are reference points near the palms, not tiny physical
 # sockets.  Seven centimetres keeps both hands inside the 10 cm Stage-2 drift
 # envelope while allowing residual whole-body sway from the walking policy.
-DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.07
+DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.05
 ORIENTATION_DISTANCE_HANDLE_THRESHOLD = 0.03
-GRASP_DRIFT_THRESHOLD = 0.1
+GRASP_DRIFT_THRESHOLD = 0.25
 GRASP_FORCE_THRESHOLD = 0.5
 GRASP_MIN_TIPS_PER_HAND = 2
 GRASP_MIN_CLOSURE = 0.55
 STAGE0_HOLD_STEPS = 10
-STAGE1_HOLD_STEPS = 5
+STAGE1_HOLD_STEPS = 2
 STAGE2_HOLD_STEPS = 10
 STAGE3_HOLD_STEPS = 5
 
@@ -533,7 +533,7 @@ def stege2_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
 
     # Losing the exact 10 cm reach pose is recoverable and therefore must not
     # reset the episode immediately. The reach/stillness rewards guide it back.
-    terminated[idx] = term_common | success_cond
+    terminated[idx] = term_common | success_cond | ~hands_near
     success[idx] = success_cond & (~term_common)
     return terminated, success
 
@@ -822,6 +822,11 @@ def _reset_chairman_legacy(
         else:
             stage = 0 if reset_to_stage0 else random.randint(0, max_available_stage)
         state = load_snapshot_chairman(stage) if stage > 0 else None
+        if state is None and stage > 0 and getattr(handler.task, "train_stage", None) is not None:
+            raise RuntimeError(
+                f"Cannot restore training snapshot for stage {stage}; "
+                "check snapshot availability and FORCE_START_FROM_STAGE0."
+            )
         if state is None:
             stage = 0
             state = stage0_state
@@ -881,19 +886,23 @@ def reset_chairman(
 
     use_snapshot_curriculum = bool(getattr(handler.task, "use_snapshot_curriculum", True))
     requested_stage = getattr(handler.task, "eval_start_stage", None)
+    training_stage = getattr(handler.task, "train_stage", None)
+    if training_stage is not None:
+        requested_stage = training_stage
+    stage_option = "train_stage" if training_stage is not None else "eval_start_stage"
     if requested_stage is not None:
         if isinstance(requested_stage, bool) or not isinstance(requested_stage, int):
             raise ValueError(
-                f"eval_start_stage must be an integer from 0 to 5, got {requested_stage!r}"
+                f"{stage_option} must be an integer from 0 to 5, got {requested_stage!r}"
             )
         if not 0 <= requested_stage <= 5:
             raise ValueError(
-                f"eval_start_stage must be between 0 and 5, got {requested_stage}"
+                f"{stage_option} must be between 0 and 5, got {requested_stage}"
             )
         if requested_stage > 0 and not RAM_SNAPSHOT_BUFFER[requested_stage]:
             stage_dir = SNAPSHOT_DIR / f"stage_{requested_stage}"
             raise RuntimeError(
-                f"Cannot start evaluation from stage {requested_stage}: no snapshot is available. "
+                f"Cannot start from stage {requested_stage} ({stage_option}): no snapshot is available. "
                 f"Expected snapshots in {stage_dir}."
             )
 

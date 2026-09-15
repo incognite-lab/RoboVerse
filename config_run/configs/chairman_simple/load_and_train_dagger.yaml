@@ -1,0 +1,98 @@
+#genesis config stand
+
+# Environment settings
+#-------------------------------------------
+sim: genesis
+robots: [g1_slider_simple]
+fix_base_link: true
+task: chairmansimplegaussian #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
+decimation: 5
+num_envs: 100
+headless: true
+add_table: true
+env_spacing: 4.0
+train_or_eval: load_and_train_dagger
+
+# Gaussian-splat camera with a small standalone Genesis floor for alignment.
+# Keep render_sim_geometry=false for now: Nyx renders the splat plus this
+# controlled standalone geometry, not the full MetaSim robot/ground scene yet.
+cameras:
+   camera1:
+     type: NyxGaussianSplatCameraCfg
+     params:
+       name: camera0
+       width: 128
+       height: 128
+       fov: 70.0
+       clipping_range: [0.1, 100.0]
+       pos: [0.0, 0.0, 0.8]
+       look_at: [1.0, 0.0, 0.35]
+       mount_to: g1_slider_simple
+       mount_link: head_link
+       mount_pos: [0.05, 0.0, 0.37]
+       mount_quat: [0.5, 0.5, -0.5, -0.5]
+       gaussian_splat_path: ./config_run/splat/splat_2.ply
+       gaussian_position: [0.0, 0.0, 1.5]
+       gaussian_rotation_xyzw: [0.0, 0.0, -0.70710678, 0.70710678]
+       gaussian_scale: [3.0, 3.0, 3.0]
+       spp: 8
+       render_mode: FastPathTracer
+       tone_mapper: "Off"
+       render_sim_geometry: true
+       standalone_floor: false
+       standalone_floor_pos: [0.0, 0.0, -0.03]
+       standalone_floor_size: [20.0, 20.0, 0.04]
+       standalone_floor_color: [0.55, 0.55, 0.55, 1.0]
+       standalone_light_dir: [-0.4, -0.5, -1.0]
+       standalone_light_intensity: 5.0
+       standalone_metasim_objects: false
+       standalone_metasim_robot: false
+       gaussian_z_up: true
+       open_nyx_window: false
+       debug_image_stats: false
+       debug_show: false
+       debug_show_all_envs: false
+       debug_calibrate: false
+       debug_detach_from_mount: false
+       debug_control_target: camera
+       debug_translation_step: 0.05
+       debug_rotation_step_deg: 5.0
+
+# Train or Eval settings
+#-------------------------------------------
+force: false
+
+
+
+# PPO training settings
+#-------------------------------------------
+total_timesteps: 5_000
+model_save_path: ./config_run/output/dagger/dagger_1
+model_save_freq: 500
+tensorboard_log: ./config_run/output/dagger/tensorboard_dagger
+
+
+# DAgger settings
+#-------------------------------------------
+# 200 envů, z každého kroku náhodně uložíme 100 snímků.
+# 100 * 5000 = 500 000 vzorků; při RGB uint8 3x128x128 zabere
+# buffer přibližně 22.9 GiB VRAM. Zbytek 48GB GPU zůstá pro Nyx,
+# Genesis a tréninkové tensory.
+dagger_store_per_step: 50
+dagger_train_every: 20
+dagger_updates_per_train: 10
+dagger_batch_size: 1024
+dagger_buffer_steps: 2000
+dagger_buffer_device: cuda
+dagger_buffer_pin_memory: false
+beta_start: 1.0
+# Po 5000 krocích klesne beta přibližně na 0.05.
+beta_decay: 0.9994
+visualization: false
+
+# Managed by run_chairman_training_pipeline.py
+load_model_path: "./config_run/output/training_pipeline/run_2026-08-24_15-51-41/ppo/top_model.zip"
+
+# Student checkpoint from eval_dagger_video.yaml; load_model_path above is the PPO expert.
+load_student_path: ./config_run/output/dagger/dagger_1/student_model_step_110000.pth
+# total_timesteps specifies additional DAgger iterations after this checkpoint.

@@ -72,7 +72,7 @@ reset_to_stage0: false
 use_snapshot_curriculum: true
 snapshot_save_probability: 0.0
 
-# Show the hand targets used by the reach reward. This is visual-only and
+# Show the approach and final hand targets used by the reward. This is visual-only and
 # has no collision geometry. It is automatically inactive in headless mode.
 visualize_reach_waypoints: true
 
@@ -90,20 +90,20 @@ visualize_reach_waypoints: true
 
 # Optional: force all stage policies to load stage_X/model_<value>.zip.
 # Leave unset to use the checkpoint referenced by multi_policy_manifest.json.
-#load_model_checkpoint: 322560000
+#load_model_checkpoint: 2289600000
 # Optional: set a different checkpoint for each stage.
 # When true, load_model_stage_checkpoints must define stages 0 through 5.
 load_model_split_checkpoints: false
 load_model_stage_checkpoints:
-  0: 1322880000
-  1: 457920000
-  2: 101760000
-  3: 101760000
-  4: 101760000
-  5: 101760000
+  0: 5255370000
+  1: 2238720000
+  2: 5255370000
+  3: 5255370000
+  4: 5255370000
+  5: 5255370000
 # Can point either to one concrete run_*_chairmanmulti_concurrent directory or
 # to its parent. With a parent directory the newest valid run is selected.
-load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-08_13-51-34_chairmanmulti_concurrent
+load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-14_14-19-52_chairmanmulti_concurrent
 video_save_path: ./config_run/output/eval_videos/chairman_ppo_multi.mp4
 eval_max_steps: 2000
 

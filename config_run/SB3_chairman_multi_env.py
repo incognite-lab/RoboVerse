@@ -422,7 +422,7 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
 
             self._clear_reach_waypoint_visualization()
             scene = self.env.env.handler.scene_inst
-            # Colors also work when the reward exposes only the final targets.
+            # Left: cyan -> violet. Right: yellow -> red.
             point_colors = (
                 (
                     (0.10, 1.00, 1.00, 0.95),
@@ -497,6 +497,10 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
         ).clone()
         dones |= success
         reset_mask = unsuccessful | timeout | success
+        train_stage = getattr(task, "train_stage", None)
+        if train_stage is not None:
+            reset_mask |= (completed == train_stage) | (stage_after_event != train_stage)
+            dones |= reset_mask
         reset_ids = reset_mask.nonzero(as_tuple=False).flatten()
         if reset_ids.numel():
             self.timesteps.index_fill_(0, reset_ids, 0.0)
@@ -510,7 +514,7 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
             "stage_after_event": stage_after_event,
             "stage_after": self.get_current_stages_torch(),
             "completed_stage": completed,
-            "physical_done": unsuccessful | timeout | success,
+            "physical_done": reset_mask,
             "task_success": success,
             "timeout": timeout,
         }

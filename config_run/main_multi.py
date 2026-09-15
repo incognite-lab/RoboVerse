@@ -173,6 +173,10 @@ def main():
             config.get("snapshot_save_probability", 1.0)
         )
         scenario.task.eval_start_stage = config.get("eval_start_stage")
+        if config.get("train_or_eval") in ("train", "load_and_train"):
+            from multi_ppo_trainer import single_training_stage
+
+            scenario.task.train_stage = single_training_stage(config)
         scenario.task.verbose_motion_diagnostics = bool(
             config.get("verbose_motion_diagnostics", False)
         )

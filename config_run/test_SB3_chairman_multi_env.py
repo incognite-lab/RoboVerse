@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import torch
@@ -254,6 +254,37 @@ class ChairmanMultiVecEnvTest(unittest.TestCase):
         torch.testing.assert_close(reward.actual_stage, torch.zeros(2, dtype=torch.long))
         torch.testing.assert_close(reward.completed_stages, torch.zeros(2, dtype=torch.long))
 
+    def test_training_reset_restores_stage_without_earlier_snapshots(self):
+        handler = Container()
+        handler.num_envs = 2
+        handler.device = torch.device("cpu")
+        handler.robot = Container()
+        handler.robot.name = "g1_with_hands"
+        handler.task = Container()
+        handler.task.train_stage = 2
+        handler.task.eval_start_stage = 1
+        handler.task.reset_to_stage0 = True
+        handler.task.use_snapshot_curriculum = False
+        reward = Container()
+        reward.actual_stage = torch.zeros(2, dtype=torch.long)
+        reward.completed_stages = torch.zeros(2, dtype=torch.long)
+        reward.reset = Mock()
+        handler.task.reward_functions = [reward]
+        handler.get_states = Mock(return_value=Container())
+        handler.pack_state_batch = lambda states: {"robot": {"qpos": torch.tensor(states, dtype=torch.float32).reshape(-1, 1)}}
+        handler.set_packed_state_batch = Mock()
+        buffers = {1: [], 2: [42.0], 3: [], 4: [], 5: []}
+        with (
+            patch.object(stages_module, "BUFFER_INITIALIZED", True),
+            patch.object(stages_module, "RAM_SNAPSHOT_BUFFER", buffers),
+            patch.object(stages_module, "stage0_init", return_value=0.0),
+        ):
+            for _ in range(2):
+                stages_module.reset_chairman(handler, env_ids=torch.tensor([0, 1]))
+                torch.testing.assert_close(reward.actual_stage, torch.tensor([2, 2]))
+                packed = handler.set_packed_state_batch.call_args.args[0]
+                torch.testing.assert_close(packed["robot"]["qpos"], torch.full((2, 1), 42.0))
+
     def test_requested_eval_stage_requires_snapshot(self):
         handler = Container()
         handler.num_envs = 1
@@ -277,6 +308,53 @@ class ChairmanMultiVecEnvTest(unittest.TestCase):
             self.assertRaisesRegex(RuntimeError, "no snapshot is available"),
         ):
             stages_module.reset_chairman(handler, env_ids=[0])
+
+        handler.task.train_stage = 2
+        with (
+            patch.object(stages_module, "BUFFER_INITIALIZED", True),
+            patch.object(stages_module, "RAM_SNAPSHOT_BUFFER", empty_buffers),
+            self.assertRaisesRegex(RuntimeError, "stage 2.*train_stage.*no snapshot"),
+        ):
+            stages_module.reset_chairman(handler, env_ids=[0])
+
+    def test_single_stage_torch_step_resets_success_failure_and_timeout(self):
+        for selected in (None, 2):
+            with self.subTest(train_stage=selected):
+                wrapper = StableBaseline3VecEnv.__new__(StableBaseline3VecEnv)
+                wrapper.num_envs = 4
+                wrapper.torch_device = torch.device("cpu")
+                wrapper.timesteps = torch.zeros(4)
+                task = Container()
+                task.train_stage = selected
+                task.completed_stage_events = torch.tensor([2, -1, -1, -1])
+                task.just_finished = torch.zeros(4, dtype=torch.bool)
+                wrapper.env = Mock()
+                wrapper.env.env.handler.task = task
+                observation = torch.zeros((4, 3))
+                wrapper.env.step.return_value = (
+                    observation, torch.ones(4),
+                    torch.tensor([False, True, False, False]),
+                    torch.tensor([False, False, True, False]), {},
+                )
+                def reset(*, env_ids):
+                    task.completed_stage_events.fill_(-1)
+                    return observation, {}
+                wrapper.env.reset.side_effect = reset
+                wrapper.get_current_stages_torch = Mock(side_effect=[
+                    torch.tensor([2, 2, 2, 2]), torch.tensor([3, 2, 2, 2]),
+                    torch.tensor([2 if selected is not None else 3, 2, 2, 2]),
+                ])
+                wrapper._compose_robot_targets_torch = lambda actions: actions
+                wrapper.add_extra_to_obs_torch = lambda obs: obs
+                wrapper._reset_motion_state_torch = Mock()
+                wrapper._update_reach_waypoint_visualization = Mock()
+                _, _, dones, metadata = wrapper.torch_step(torch.zeros((4, 2)))
+                expected_ids = torch.tensor([0, 1, 2] if selected is not None else [1, 2])
+                torch.testing.assert_close(wrapper.env.reset.call_args.kwargs["env_ids"], expected_ids)
+                torch.testing.assert_close(dones, torch.tensor([selected is not None, True, True, False]))
+                torch.testing.assert_close(metadata["physical_done"], dones)
+                self.assertEqual(metadata["completed_stage"][0].item(), 2)
+                self.assertEqual(metadata["stage_after_event"][0].item(), 3)
 
 
 if __name__ == "__main__":

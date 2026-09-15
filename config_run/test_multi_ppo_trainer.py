@@ -17,6 +17,7 @@ try:
         RaggedStageRollout,
         StageStep,
         policy_stages_with_training_data,
+        single_training_stage,
     )
 except ImportError:
     from multi_ppo_trainer import (
@@ -25,6 +26,7 @@ except ImportError:
         RaggedStageRollout,
         StageStep,
         policy_stages_with_training_data,
+        single_training_stage,
     )
 
 
@@ -122,6 +124,40 @@ class FakeStageVecEnv(VecEnv):
 
 
 class MultiPPOTrainerTest(unittest.TestCase):
+    def test_single_stage_config_validation(self):
+        self.assertIsNone(single_training_stage({"train_only": False, "train_stage": "ignored"}))
+        for stage in (0, 2, 5):
+            self.assertEqual(single_training_stage({"train_only": True, "train_stage": stage}), stage)
+        for stage in (None, -1, 6, True, 2.5, "2"):
+            with self.subTest(stage=stage), self.assertRaises(ValueError):
+                single_training_stage({"train_only": True, "train_stage": stage})
+
+    def test_single_stage_updates_only_selected_policy(self):
+        # Deliberately visit every stage: even unexpected rows must not train
+        # another policy. Physical reset behavior is tested in the wrapper.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "task": "chairmanmulti", "train_only": True, "train_stage": 2,
+                "total_timesteps": 48, "n_steps": 4, "batch_size": 4,
+                "n_epochs": 1, "stage_rollout_samples": 4, "net_arch": [8],
+                "model_save_path": tmpdir, "terminal_tables": False,
+                "freeze_learned_policies": True, "stage_min_episodes": 1,
+                "stage_success_window": 1, "stage_advance_success_rate": 0.0,
+                "model_save_freq": 0,
+            }
+            trainer = MultiPPOTrainer(FakeStageVecEnv(), config)
+            before = {
+                stage: {key: value.clone() for key, value in model.policy.state_dict().items()}
+                for stage, model in trainer.models.items()
+            }
+            trainer.learn()
+            self.assertFalse(trainer.frozen[2])
+            for stage, model in trainer.models.items():
+                changed = any(not torch.equal(before[stage][key], value)
+                              for key, value in model.policy.state_dict().items())
+                self.assertEqual(changed, stage == 2)
+                self.assertEqual(trainer.updates[stage] > 0, stage == 2)
+
     def test_inference_router_selects_policy_by_stage(self):
         class FakeModel:
             def __init__(self, stage):
