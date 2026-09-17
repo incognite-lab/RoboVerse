@@ -73,7 +73,7 @@ class FakeStageVecEnv(VecEnv):
         completed = self.stage_steps >= 2
         self.stages[completed] += 1
         self.stage_steps[completed] = 0
-        dones = self.stages == 6
+        dones = self.stages == getattr(self, "NUM_POLICY_STAGES", 6)
         infos = []
         for env_id in range(self.num_envs):
             event = int(before[env_id]) if completed[env_id] else -1

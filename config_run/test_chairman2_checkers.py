@@ -1,147 +1,136 @@
-"""CPU checks for stage transitions, failures and per-environment anchors."""
+"""Five-stage success, contact geometry and per-row timing regressions."""
+import math
 from types import SimpleNamespace
-
 import unittest
+from unittest.mock import patch
 import torch
-
+from metasim.utils import chairman2_geometry as g
 from metasim.cfg.checkers import stages_chairman2 as c
+from metasim.cfg.checkers import _ChairMan2Checker
 
 
-def scene():
-    names = list(c.STAGE0_JOINT_TARGETS)
-    bodies = ["pelvis", "left_shoulder_roll_link", "right_shoulder_roll_link",
-              "left_hand_palm_link", "right_hand_palm_link"]
-    robot = SimpleNamespace(joint_names=names, joint_pos=torch.zeros(2, len(names)),
-                            body_names=bodies, body_state=torch.zeros(2, len(bodies), 13))
-    robot.body_state[:, :, 2] = 1.0
-    robot.body_state[:, :, 3] = 1.0
-    chair = SimpleNamespace(body_names=["base_link", "target_hand_left", "target_hand_right"],
-                            body_state=torch.zeros(2, 3, 13))
-    chair.body_state[:, :, 3] = 1.0
-    chair.body_state[:, 1:, 2] = 0.8
-    states = SimpleNamespace(robots={"robot": robot}, objects={"chair": chair})
-    handler = SimpleNamespace(robot=SimpleNamespace(name="robot"), task=SimpleNamespace(),
-                              num_envs=2, scenario=SimpleNamespace(
-                                  sim_params=SimpleNamespace(dt=0.002), decimation=10))
-    return states, handler, torch.tensor([True, True])
+def scene(n=2):
+    names = ['pelvis', 'torso_link'] + [s+'_'+link for s in ('left','right')
+             for link in ('shoulder_roll_link','elbow_link','wrist_roll_link','hand_palm_link')]
+    robot = SimpleNamespace(body_names=names, body_state=torch.zeros(n,len(names),13),
+        joint_names=list(g.STAGE0_JOINT_TARGETS), joint_pos=torch.zeros(n,10), joint_vel=torch.zeros(n,10), contact=None)
+    robot.body_state[:,:,3] = 1
+    robot.body_state[:,:,2] = 1
+    robot.body_state[:,0,1] = g.APPROACH_DISTANCE
+    robot.body_state[:,1,1] = g.APPROACH_DISTANCE
+    robot.body_state[:,:2,3:7] = torch.tensor([2**-.5,0,0,-2**-.5])
+    chair = SimpleNamespace(body_names=['base_link','target_hand_left','target_hand_right'], body_state=torch.zeros(n,3,13))
+    chair.body_state[:,:,3] = 1
+    chair.body_state[:,1:,:3] = torch.tensor([[.15,.29,.96],[-.15,.29,.96]])
+    for hand,side in enumerate(('left','right')):
+        index=names.index(side+'_hand_palm_link')
+        robot.body_state[:,index,3:7] = torch.tensor([2**-.5, (1 if hand==0 else -1)*2**-.5,0,0])
+        q=robot.body_state[:,index,3:7]
+        offset=torch.tensor([.05, -.02 if hand==0 else .02,0])
+        robot.body_state[:,index,:3] = chair.body_state[:,hand+1,:3]-g.rotate(q,offset)
+        shoulder=names.index(side+'_shoulder_roll_link'); elbow=names.index(side+'_elbow_link'); wrist=names.index(side+'_wrist_roll_link')
+        robot.body_state[:,shoulder,:3]=torch.tensor([0.,0.,1.2])
+        robot.body_state[:,elbow,:3]=torch.tensor([.2,0.,1.2])
+        robot.body_state[:,wrist,:3]=torch.tensor([.4,0.,1.2])
+    states=SimpleNamespace(robots={'g1_without_hands':robot},objects={'chair':chair},extras={'global_link_map':{
+        1:('g1_without_hands','left_hand_palm_link'),2:('g1_without_hands','right_hand_palm_link'),3:('chair','base_link')}})
+    handler=SimpleNamespace(robot=SimpleNamespace(name='g1_without_hands'),num_envs=n,device='cpu',
+        scenario=SimpleNamespace(sim_params=SimpleNamespace(dt=.002),decimation=5), task=SimpleNamespace(), get_states=lambda:states)
+    return states,handler
 
 
-def set_pose(states, targets):
-    states.robots["robot"].joint_pos[:] = torch.tensor(list(targets.values()))
+def contact(states):
+    robot=states.robots['g1_without_hands']; n=robot.joint_pos.shape[0]
+    robot.contact={'link_a':torch.tensor([[1,3]]).expand(n,-1), 'link_b':torch.tensor([[3,2]]).expand(n,-1),
+        'valid_mask':torch.ones(n,2,dtype=torch.bool), 'force_b':torch.tensor([[[0.,0.,2.],[0.,0.,-2.]]]).expand(n,-1,-1),
+        'position':states.objects['chair'].body_state[:,1:,:3].clone()}
 
 
-def check_every_joint_and_robot_drift(stage, targets):
-    states, handler, mask = scene()
-    checker = getattr(c, f"stege{stage}_chacker")
-    set_pose(states, targets)
-    states.robots["robot"].joint_pos[0, -1] += 0.3
-    terminated, success = checker(states, handler, mask)
-    assert success.tolist() == [False, True]
-    assert terminated.tolist() == [False, True]
-    states.robots["robot"].body_state[0, 0, 0] += 0.51
-    set_pose(states, targets)
-    terminated, success = checker(states, handler, mask)
-    assert terminated[0] and not success[0]
+class Chairman2CheckerTest(unittest.TestCase):
+    def test_contact_requires_force_both_hands_and_backrest_region(self):
+        states,h=scene(); m=g.measure(states,h.robot.name,h.task)
+        self.assertFalse(m['contact'].any())
+        contact(states); m=g.measure(states,h.robot.name,h.task)
+        self.assertTrue(c.success_conditions(m)[:,2].all())
+        states.robots[h.robot.name].contact['position'][0,0,2]-=.4
+        states.robots[h.robot.name].contact['valid_mask'][1,1]=False
+        m=g.measure(states,h.robot.name,h.task)
+        self.assertFalse(c.success_conditions(m)[:,2].any())
+        self.assertTrue(m['any_contact'][0].all())
+
+    def test_wrong_palm_or_bent_elbow_cannot_be_compensated(self):
+        states,h=scene(); contact(states); robot=states.robots[h.robot.name]
+        robot.body_state[0,robot.body_names.index('left_hand_palm_link'),3:7]=torch.tensor([1.,0,0,0])
+        robot.body_state[1,robot.body_names.index('right_wrist_roll_link'),:3]=torch.tensor([.2,.2,1.2])
+        m=g.measure(states,h.robot.name,h.task)
+        self.assertGreater(m['palm_angle'][0,0],g.PALM_ANGLE_TOLERANCE)
+        self.assertGreater(m['elbow_angle'][1,1],g.ELBOW_ANGLE_TOLERANCE)
+        self.assertFalse(c.success_conditions(m)[:,2].any())
+
+    def test_walk_requires_pose_and_torso_heading_and_hold(self):
+        states,h=scene(); robot=states.robots[h.robot.name]
+        robot.joint_pos[:]=torch.tensor(list(g.STAGE0_JOINT_TARGETS.values()))
+        robot.joint_pos[1,-1]+=.3
+        stage=torch.zeros(2,dtype=torch.long)
+        for _ in range(24):
+            fail,success=c.evaluate_stages(states,h,stage)
+            self.assertFalse(success.any())
+        fail,success=c.evaluate_stages(states,h,stage)
+        self.assertEqual(success.tolist(),[True,False])
+        robot.body_state[0,robot.body_names.index('torso_link'),3:7]=torch.tensor([1.,0,0,0])
+        _,success=c.evaluate_stages(states,h,stage)
+        self.assertFalse(success.any())
+
+    def test_pull_requires_contact_and_stopping_and_fixed_anchor(self):
+        states,h=scene(); contact(states)
+        stage=torch.full((2,),3,dtype=torch.long)
+        c.evaluate_stages(states,h,stage)
+        states.objects['chair'].body_state[:,:,:2]+=torch.tensor([0.,g.PULL_DISTANCE])
+        states.robots[h.robot.name].body_state[:,:,:2]+=torch.tensor([0.,g.PULL_DISTANCE])
+        states.robots[h.robot.name].contact['position'][:,:,:2]+=torch.tensor([0.,g.PULL_DISTANCE])
+        for _ in range(40): fail,success=c.evaluate_stages(states,h,stage)
+        self.assertTrue(success.all())
+        states.objects['chair'].body_state[0,0,7]=.2
+        states.robots[h.robot.name].contact['valid_mask'][1]=False
+        fail,success=c.evaluate_stages(states,h,stage)
+        self.assertFalse(success.any()); self.assertFalse(fail.any())
+        for _ in range(10): fail,_=c.evaluate_stages(states,h,stage)
+        self.assertTrue(fail[1]); self.assertFalse(fail[0])
+
+    def test_release_requires_both_hands_clear_and_failure_wins(self):
+        states,h=scene(); robot=states.robots[h.robot.name]
+        for side in ('left','right'):
+            robot.body_state[:,robot.body_names.index(side+'_hand_palm_link'),2]+=.12
+        stage=torch.full((2,),4,dtype=torch.long)
+        for _ in range(25): fail,success=c.evaluate_stages(states,h,stage)
+        self.assertTrue(success.all())
+        contact(states)
+        self.assertFalse(c.evaluate_stages(states,h,stage)[1].any())
+        robot.contact=None
+        robot.body_state[0,robot.body_names.index('left_shoulder_roll_link'),2]=-.5
+        fail,success=c.evaluate_stages(states,h,stage)
+        self.assertTrue(fail[0]); self.assertFalse(success[0])
+
+    def test_checker_attributes_transition_to_source_policy(self):
+        states,h=scene(); r=SimpleNamespace(actual_stage=torch.zeros(2,dtype=torch.long),completed_stages=torch.zeros(2,dtype=torch.long),metrics=None)
+        h.task.reward_functions=[r]; h.task.use_snapshot_curriculum=False
+        states.robots[h.robot.name].joint_pos[:]=torch.tensor(list(g.STAGE0_JOINT_TARGETS.values()))
+        checker=_ChairMan2Checker()
+        for _ in range(25): checker.check(h)
+        self.assertEqual(r.actual_stage.tolist(),[1,1])
+        self.assertEqual(h.task.reward_stage.tolist(),[0,0])
+        self.assertEqual(h.task.completed_stage_events.tolist(),[0,0])
+        self.assertFalse(h.task.just_finished.any())
+        checker.check(h)
+        self.assertEqual(h.task.completed_stage_events.tolist(),[-1,-1])
+
+    def test_hold_duration_scales_with_control_dt(self):
+        for decimation in (5,10):
+            states,h=scene(); contact(states); h.scenario.decimation=decimation
+            count=math.ceil(.25/(.002*decimation))
+            stage=torch.full((2,),2,dtype=torch.long)
+            for _ in range(count-1): self.assertFalse(c.evaluate_stages(states,h,stage)[1].any())
+            self.assertTrue(c.evaluate_stages(states,h,stage)[1].all())
 
 
-def test_stage2_chair_drift_and_fall_override_pose():
-    states, handler, mask = scene()
-    c.stege2_chacker(states, handler, mask)
-    set_pose(states, c.STAGE2_JOINT_TARGETS)
-    states.objects["chair"].body_state[0, 0, 0] += 0.06
-    states.robots["robot"].body_state[1, 1:3, 2] = 0.2
-    terminated, success = c.stege2_chacker(states, handler, mask)
-    assert terminated.all() and not success.any()
-
-
-def test_stage_entry_reanchors_only_active_environments():
-    states, handler, mask = scene()
-    c.stege0_chacker(states, handler, mask)
-    states.robots["robot"].body_state[0, 0, 0] = 3.0
-    set_pose(states, c.STAGE2_JOINT_TARGETS)
-    _, success = c.stege2_chacker(states, handler, torch.tensor([True, False]))
-    assert success.tolist() == [True, False]
-    assert handler.task.chairman_robot_anchor[:, 0].tolist() == [3.0, 0.0]
-    # reset_chairman invalidates recorded_stage, including same-stage resets.
-    handler.task.recorded_stage[0] = -1
-    states.robots["robot"].body_state[0, 0, 0] = -3.0
-    _, success = c.stege2_chacker(states, handler, torch.tensor([True, False]))
-    assert success[0]
-
-
-def test_palms_use_chair_frame_and_both_hands():
-    states, handler, mask = scene()
-    # local +Y is world -X after a 90 degree yaw.
-    states.objects["chair"].body_state[:, 0, 3:7] = torch.tensor([2**-0.5, 0, 0, 2**-0.5])
-    palms = states.robots["robot"].body_state[:, 3:5, :3]
-    palms[:] = states.objects["chair"].body_state[:, 1:, :3]
-    palms[:, :, 0] -= c.PALM_FRONT_OFFSET
-    palms[1, 1, 0] += 0.2
-    _, success = c.stege3_chacker(states, handler, mask)
-    assert success.tolist() == [True, False]
-
-
-def test_pull_requires_direction_distance_and_both_speeds():
-    states, handler, mask = scene()
-    c.stege4_chacker(states, handler, mask)
-    chair = states.objects["chair"].body_state
-    chair[:, 0, 1] = 1.0
-    chair[0, 0, 7] = 0.3
-    states.robots["robot"].body_state[1, 0, 7] = 0.3
-    for _ in range(c.STAGE4_HOLD_STEPS):
-        assert not c.stege4_chacker(states, handler, mask)[1].any()
-    chair[:, 0, 7] = 0
-    states.robots["robot"].body_state[:, 0, 7] = 0
-    chair[1, 0, 1] = -1.0
-    for _ in range(c.STAGE4_HOLD_STEPS):
-        _, success = c.stege4_chacker(states, handler, mask)
-    assert success.tolist() == [True, False]
-
-
-def test_lift_is_above_chair_not_arms_at_sides():
-    states, handler, mask = scene()
-    palms = states.robots["robot"].body_state[:, 3:5, :3]
-    palms[:] = states.objects["chair"].body_state[:, 1:, :3]
-    palms[:, :, 2] += c.PALM_LIFT_HEIGHT + 0.01
-    palms[1, 1, 2] = 0.5
-    _, success = c.stege5_chacker(states, handler, mask)
-    assert success.tolist() == [True, False]
-
-
-def test_walk_stops_facing_chair_and_timeout():
-    states, handler, mask = scene()
-    robot = states.robots["robot"].body_state
-    robot[:, 0, 1] = c.CHAIR_FINAL_DISTANCE
-    robot[:, 0, 3:7] = torch.tensor([2**-0.5, 0, 0, -2**-0.5])
-    robot[1, 0, 7] = 0.3
-    for _ in range(c.STAGE1_HOLD_STEPS):
-        _, success = c.stege1_chacker(states, handler, mask)
-    assert success.tolist() == [True, False]
-    handler.task.stage_steps[:] = 10000
-    terminated, success = c.stege1_chacker(states, handler, mask)
-    assert terminated.all() and not success.any()
-
-
-def test_empty_mask_does_not_initialize_stage_state():
-    states, handler, mask = scene()
-    for stage in range(6):
-        terminated, success = getattr(c, f"stege{stage}_chacker")(states, handler, ~mask)
-        assert not terminated.any() and not success.any()
-    assert not hasattr(handler.task, "recorded_stage")
-
-
-def test_stage0_joint_pose():
-    check_every_joint_and_robot_drift(0, c.STAGE0_JOINT_TARGETS)
-
-
-def test_stage2_joint_pose():
-    check_every_joint_and_robot_drift(2, c.STAGE2_JOINT_TARGETS)
-
-
-if __name__ == "__main__":
-    suite = unittest.TestSuite(
-        unittest.FunctionTestCase(value)
-        for name, value in list(globals().items()) if name.startswith("test_")
-    )
-    result = unittest.TextTestRunner(verbosity=2).run(suite)
-    raise SystemExit(not result.wasSuccessful())
+if __name__=='__main__': unittest.main()

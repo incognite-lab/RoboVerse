@@ -1165,7 +1165,7 @@ class _ChairManCheckerSimple(BaseChecker):
 
 
 class _ChairMan2Checker(BaseChecker):
-    """Run all six Chairman2 stages and publish events/anchors for rewards."""
+    """Run all five Chairman2 stages and publish events/anchors for rewards."""
     def handles_state_reset(self) -> bool:
         return True
 
@@ -1178,24 +1178,20 @@ class _ChairMan2Checker(BaseChecker):
         task.reward_stage = stages.detach().clone()
         # Rewards are evaluated after transitions; reward_stage keeps shaping
         # assigned to the policy that performed this action (gym_vec_env).
-        failed = (stages < 0) | (stages > 5)
-        succeeded = torch.zeros_like(failed)
         task.completed_stage_events = torch.full_like(stages, -1)
         task.reward_functions[0].completed_stages.zero_()
-        checkers = (checks.stege0_chacker, checks.stege1_chacker,
-                    checks.stege2_chacker, checks.stege3_chacker,
-                    checks.stege4_chacker, checks.stege5_chacker)
-        for stage, checker in enumerate(checkers):
-            terminated, success = checker(states, handler, stages == stage)
-            failed |= terminated & ~success
-            succeeded |= success
+        failed, succeeded = checks.evaluate_stages(states, handler, stages)
         task.completed_stage_events[succeeded] = stages[succeeded]
-        task.just_finished = succeeded & (stages == 5)
+        task.just_finished = succeeded & (stages == checks.NUM_STAGES - 1)
         task.stage_success = task.just_finished.clone()
         stages[succeeded] += 1
         task.reward_functions[0].completed_stages[succeeded] = 1
 
         for reward in task.reward_functions:
+            if hasattr(reward, "control_dt"):
+                reward.control_dt = (handler.scenario.sim_params.dt or 0.002) * handler.scenario.decimation
+            if hasattr(reward, "metrics"):
+                reward.metrics = task.chairman2_metrics
             if hasattr(reward, "termination_events"):
                 reward.termination_events = failed
             if hasattr(reward, "robot_anchor"):
@@ -1209,9 +1205,19 @@ class _ChairMan2Checker(BaseChecker):
         if bool(getattr(task, "use_snapshot_curriculum", True)) and probability > 0:
             save = succeeded & ~task.just_finished
             if probability < 1:
-                save &= torch.rand(stages.shape, device=stages.device) < probability
+                sampled = torch.rand(stages.shape, device=stages.device) < probability
+                # Always retain the first entry into a newly reached stage.
+                for target_stage in range(1, checks.NUM_STAGES):
+                    if not checks.RAM_SNAPSHOT_BUFFER[target_stage]:
+                        candidates = (save & (stages == target_stage)).nonzero(as_tuple=True)[0]
+                        if candidates.numel():
+                            sampled[candidates[0]] = True
+                save &= sampled
             ids = save.nonzero(as_tuple=True)[0]
             checks.save_snapshots_chairman(handler, ids, stages[ids])
+        entering = (succeeded & ~task.just_finished).nonzero(as_tuple=True)[0]
+        if entering.numel():
+            checks.begin_stage(states, handler, entering, stages)
         return failed
 
     def reset(self, handler: BaseSimHandler, env_ids: list[int] | None = None):

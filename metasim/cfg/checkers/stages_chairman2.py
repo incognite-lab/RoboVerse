@@ -19,65 +19,108 @@ try:
 except ImportError:
     pass
 
-# All distances are metres, velocities m/s and joint angles radians.
-STAGE_TIMEOUTS = {0: 300, 1: 400, 2: 300, 3: 300, 4: 400, 5: 300}
+# Shared criteria also drive reward shaping; all thresholds use SI units.
+from metasim.utils import chairman2_geometry as geometry
+from metasim.utils.chairman2_geometry import STAGE0_JOINT_TARGETS, STAGE1_JOINT_TARGETS
+NUM_STAGES = geometry.NUM_STAGES
 STAGE_TIMEOUT_REFERENCE_DT = 0.02
-VELOCITY_THRESHOLD = 0.2
-HEIGHT_THRESHOLD = 0.4
-FACING_CHAIR_THRESHOLD = 0.90
-ROBOT_DRIFT_THRESHOLD = 0.5
-CHAIR_DRIFT_THRESHOLD = 0.05
-CHAIR_PULL_DISTANCE_THRESHOLD = 1.0
-CHAIR_PULL_TOLERANCE = 0.10
-PALM_FRONT_OFFSET = 0.10
-PALM_POSITION_TOLERANCE = 0.05
-PALM_LIFT_HEIGHT = 0.10
-PALM_LIFT_XY_TOLERANCE = 0.15
-STAGE1_HOLD_STEPS = 5
-STAGE4_HOLD_STEPS = 5
-
-# Editable example poses for G1. Every listed joint must meet its tolerance;
-# legs are deliberately omitted so that the walking controller can balance.
-STAGE0_JOINT_TARGETS = {
-    "left_shoulder_pitch_joint": 1.51,
-    "left_shoulder_roll_joint": 0.93,
-    "left_shoulder_yaw_joint": 1.15,
-    "left_elbow_joint": -0.59,
-    "left_wrist_roll_joint": 0.0,
-    "right_shoulder_pitch_joint": 1.51,
-    "right_shoulder_roll_joint": -0.93,
-    "right_shoulder_yaw_joint": -1.15,
-    "right_elbow_joint": -0.59,
-    "right_wrist_roll_joint": 0.0,
-
-}
-STAGE2_JOINT_TARGETS = {
-    "left_shoulder_pitch_joint": -1.66,
-    "left_shoulder_roll_joint": 0.23,
-    "left_shoulder_yaw_joint": 0.0,
-    "left_elbow_joint": 1.45,
-    "left_wrist_roll_joint": 1.35,
-    "right_shoulder_pitch_joint": -1.66,
-    "right_shoulder_roll_joint": -0.23,
-    "right_shoulder_yaw_joint": 0.0,
-    "right_elbow_joint": 1.45,
-    "right_wrist_roll_joint": -1.35,
-}
-JOINT_POSITION_TOLERANCE = 0.2
-# Optional overrides, e.g. {"left_elbow_joint": 0.10}.
-STAGE0_JOINT_TOLERANCES = {}
-STAGE2_JOINT_TOLERANCES = {}
+STAGE_TIMEOUTS = {0: 750, 1: 300, 2: 400, 3: 1000, 4: 300}
+HOLD_SECONDS = (0.25, 0.25, 0.25, 0.40, 0.25)
+CONTACT_GRACE_SECONDS = 0.10
 
 
-def _held_condition(handler, name, idx, condition, required_steps):
-    """Require a checker condition for consecutive control steps."""
-    num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
-    counters = getattr(handler.task, name, None)
-    if counters is None or counters.shape[0] != num_envs:
-        counters = torch.zeros(num_envs, dtype=torch.long, device=idx.device)
-        setattr(handler.task, name, counters)
-    counters[idx] = torch.where(condition, counters[idx] + 1, torch.zeros_like(counters[idx]))
-    return counters[idx] >= required_steps
+def _capture_stage_reference(states, handler, idx):
+    robot = states.robots[handler.robot.name]
+    base = robot.body_state[idx, robot.body_names.index('pelvis')]
+    chair = states.objects['chair']
+    chair_body = chair.body_state[idx, chair.body_names.index('base_link')]
+    n = robot.joint_pos.shape[0]
+    direction = chair_back_direction_xy(chair_body[:, 3:7])
+    for name, value in (('chairman_robot_anchor', base[:, :2]),
+                        ('chairman_chair_anchor', chair_body[:, :3]),
+                        ('chairman_pull_direction', direction),
+                        ('chairman_chair_heading', direction)):
+        if not hasattr(handler.task, name):
+            setattr(handler.task, name, value.new_zeros((n, value.shape[1])))
+        getattr(handler.task, name)[idx] = value
+
+
+def begin_stage(states, handler, ids, stages):
+    """Anchor a new stage before its first action, including partial resets."""
+    task = handler.task
+    _capture_stage_reference(states, handler, ids)
+    for name in ('stage_steps', 'success_hold_steps', 'contact_loss_steps'):
+        if not hasattr(task, name):
+            setattr(task, name, torch.zeros_like(stages))
+        getattr(task, name)[ids] = 0
+    if not hasattr(task, 'recorded_stage'):
+        task.recorded_stage = torch.full_like(stages, -1)
+    task.recorded_stage[ids] = stages[ids]
+
+
+def success_conditions(m):
+    """Instantaneous conjunctions; the checker additionally requires a hold."""
+    still = (m['robot_speed'] <= geometry.STILL_SPEED) & (m['robot_yaw_speed'] <= geometry.STILL_YAW_SPEED)
+    chair_still = (m['chair_speed'] <= geometry.STILL_SPEED) & (m['chair_yaw_speed'] <= geometry.STILL_YAW_SPEED)
+    facing = m['heading'] <= geometry.HEADING_TOLERANCE
+    anchored = (m['robot_drift'] <= geometry.ROBOT_DRIFT_TOLERANCE) & (m['chair_drift'] <= geometry.CHAIR_DRIFT_TOLERANCE)
+    chair_unturned = m['chair_yaw'] <= geometry.HEADING_TOLERANCE
+    hands_ready = (m['palm_angle'] <= geometry.PALM_ANGLE_TOLERANCE).all(-1) & (m['elbow_angle'] <= geometry.ELBOW_ANGLE_TOLERANCE).all(-1)
+    contact = m['contact'].all(-1) & (m['contact_force'] <= geometry.CONTACT_FORCE_MAX).all(-1)
+    quiet_hands = m['hand_slip'].amax(-1) <= 0.08
+    return torch.stack((
+        (m['approach_error'] <= geometry.POSITION_TOLERANCE) & (m['pose0'] <= geometry.JOINT_TOLERANCE).all(-1)
+            & facing & still & chair_still & (m['chair_drift'] <= geometry.CHAIR_DRIFT_TOLERANCE) & chair_unturned,
+        (m['pose1'] <= geometry.JOINT_TOLERANCE).all(-1) & anchored & still & chair_still & facing
+            & chair_unturned & (m['arm_speed'] <= 0.20),
+        hands_ready & contact & anchored & still & chair_still & facing & quiet_hands & chair_unturned,
+        (m['pull_error'] <= geometry.PULL_TOLERANCE) & (m['lateral'] <= geometry.PULL_TOLERANCE)
+            & hands_ready & contact & still & chair_still & facing & chair_unturned & quiet_hands,
+        (m['lift_height'] >= 0.10).all(-1) & (m['lift_xy'] <= 0.10).all(-1) & ~m['any_contact'].any(-1)
+            & anchored & still & chair_still & facing & chair_unturned & quiet_hands,
+    ), dim=-1)
+
+
+def evaluate_stages(states, handler, stages):
+    """One physical measurement pass, per-row timers and independent anchors."""
+    import math
+    task = handler.task
+    n, device = stages.shape[0], stages.device
+    if not hasattr(task, 'stage_steps'):
+        task.stage_steps = torch.zeros(n, dtype=torch.long, device=device)
+        task.recorded_stage = torch.full_like(stages, -1)
+    for name in ('success_hold_steps', 'contact_loss_steps'):
+        if not hasattr(task, name):
+            setattr(task, name, torch.zeros_like(stages))
+    changed = task.recorded_stage != stages
+    ids = changed.nonzero(as_tuple=True)[0]
+    if ids.numel():
+        _capture_stage_reference(states, handler, ids)
+        task.stage_steps[ids] = 0
+        task.success_hold_steps[ids] = 0
+        task.contact_loss_steps[ids] = 0
+    task.recorded_stage.copy_(stages)
+    task.stage_steps += 1
+    dt = (handler.scenario.sim_params.dt or 0.002) * handler.scenario.decimation
+    m = geometry.measure(states, handler.robot.name, task)
+    task.chairman2_metrics = m
+    safe_stage = stages.clamp(0, NUM_STAGES-1)
+    limits = stages.new_tensor([max(1, math.ceil(STAGE_TIMEOUTS[s]*STAGE_TIMEOUT_REFERENCE_DT/dt)) for s in range(NUM_STAGES)])
+    failed = (stages < 0) | (stages >= NUM_STAGES) | ~m['finite'] | (task.stage_steps > limits[safe_stage])
+    failed |= (neck_height_tensor(states, handler.robot.name) < 0.4) | (m['upright'] < 0.5)
+    stationary_stage = (stages == 1) | (stages == 2) | (stages == 4)
+    # Tolerance errors receive shaping; large deviations terminate the attempt.
+    failed |= stationary_stage & (m['robot_drift'] > 0.25)
+    failed |= (stages != 3) & (m['chair_drift'] > 0.15)
+    failed |= (stages == 3) & ((m['lateral'] > 0.25) | (m['chair_yaw'] > math.radians(25)))
+    lost = (stages == 3) & ~m['contact'].all(-1)
+    task.contact_loss_steps = torch.where(lost, task.contact_loss_steps+1, torch.zeros_like(stages))
+    failed |= (stages == 3) & (task.contact_loss_steps > max(1, math.ceil(CONTACT_GRACE_SECONDS/dt)))
+    reached = success_conditions(m).gather(1, safe_stage[:, None]).squeeze(1) & ~failed
+    task.success_hold_steps = torch.where(reached, task.success_hold_steps+1, torch.zeros_like(stages))
+    holds = stages.new_tensor([max(1, math.ceil(seconds/dt)) for seconds in HOLD_SECONDS])
+    succeeded = (task.success_hold_steps >= holds[safe_stage]) & ~failed
+    return failed, succeeded
 
 
 # =========================================================
@@ -91,12 +134,12 @@ ENABLE_DISK_SNAPSHOT_LOAD = True
 ENABLE_DISK_SNAPSHOT_SAVE = True
 
 # These stage meanings differ from stages_chairman; never reuse its snapshots.
-SNAPSHOT_DIR = Path("config_run/snapshots_chairman2/")
+SNAPSHOT_DIR = Path("config_run/snapshots_chairman2_five_stage_v1/")
 MAX_SNAPSHOTS = 100
 # Pokud True, všechny envy vždy startují od stage 0
 # a snapshot curriculum se zcela ignoruje.
 FORCE_START_FROM_STAGE0 = False
-RAM_SNAPSHOT_BUFFER = {1: [], 2: [], 3: [], 4: [], 5: []}
+RAM_SNAPSHOT_BUFFER = {stage: [] for stage in range(1, NUM_STAGES)}
 BUFFER_INITIALIZED = False
 SNAPSHOT_BUFFER_VERSION = 0
 UNSAVED_COUNT = 0
@@ -111,7 +154,7 @@ def init_ram_buffer():
         return
 
     # Vždy začneme s čistým RAM bufferem
-    RAM_SNAPSHOT_BUFFER = {1: [], 2: [], 3: [], 4: [], 5: []}
+    RAM_SNAPSHOT_BUFFER = {stage: [] for stage in range(1, NUM_STAGES)}
 
     if not ENABLE_DISK_SNAPSHOT_LOAD:
         BUFFER_INITIALIZED = True
@@ -120,7 +163,7 @@ def init_ram_buffer():
         return
 
     print("Inicializuji RAM Snapshot Buffer z disku...")
-    for stage in range(1, 6):
+    for stage in range(1, NUM_STAGES):
         stage_dir = SNAPSHOT_DIR / f"stage_{stage}"
         if stage_dir.exists():
             files = list(stage_dir.glob("*.pkl"))
@@ -134,8 +177,8 @@ def init_ram_buffer():
 
     BUFFER_INITIALIZED = True
     SNAPSHOT_BUFFER_VERSION += 1
-    counts = [len(RAM_SNAPSHOT_BUFFER[s]) for s in range(1, 6)]
-    print(f"RAM Buffer načten. Počty snapshotů pro stages 1-5: {counts}")
+    counts = [len(RAM_SNAPSHOT_BUFFER[s]) for s in range(1, NUM_STAGES)]
+    print(f"RAM Buffer načten. Počty snapshotů pro stages 1-4: {counts}")
 
 
 def _sync_to_disk_worker(stage, snapshot_data, snapshot_idx):
@@ -152,237 +195,6 @@ def _sync_to_disk_worker(stage, snapshot_data, snapshot_idx):
     except Exception:
         pass
 
-
-# ---------------------------------------------------------
-# VEKTORIZOVANÉ POMOCNÉ FUNKCE (S PŘED-MASKOVÁNÍM)
-# ---------------------------------------------------------
-
-def _body(states, handler, idx):
-    robot = states.robots[handler.robot.name]
-    chair = states.objects["chair"]
-    return (robot.body_state[idx, robot.body_names.index("pelvis")],
-            chair.body_state[idx, chair.body_names.index("base_link")])
-
-
-def _capture_stage_reference(states, handler, idx):
-    """Record independent anchors for each environment on stage entry/reset."""
-    robot, chair = _body(states, handler, idx)
-    n = states.robots[handler.robot.name].joint_pos.shape[0]
-    for name, value in (("chairman_robot_anchor", robot[:, :2]),
-                        ("chairman_chair_anchor", chair[:, :3]),
-                        ("chairman_pull_direction", chair_back_direction_xy(chair[:, 3:7]))):
-        if not hasattr(handler.task, name):
-            setattr(handler.task, name, value.new_zeros((n, value.shape[1])))
-        getattr(handler.task, name)[idx] = value
-
-
-def check_movement_chair(states, handler, idx):
-    _, chair = _body(states, handler, idx)
-    return torch.linalg.vector_norm(
-        chair[:, :3] - handler.task.chairman_chair_anchor[idx], dim=-1
-    ) > CHAIR_DRIFT_THRESHOLD
-
-
-def _robot_moved(states, handler, idx):
-    robot, _ = _body(states, handler, idx)
-    return torch.linalg.vector_norm(
-        robot[:, :2] - handler.task.chairman_robot_anchor[idx], dim=-1
-    ) > ROBOT_DRIFT_THRESHOLD
-
-
-def _joint_pose_matches(states, handler, idx, targets, tolerances):
-    if not targets:
-        raise ValueError("A joint pose must contain at least one target joint")
-    robot = states.robots[handler.robot.name]
-    names = list(robot.joint_names)
-    missing = set(targets) - set(names)
-    if missing:
-        raise ValueError(f"Target joints missing from robot: {sorted(missing)}")
-    desired = robot.joint_pos.new_tensor(list(targets.values()))
-    tolerance = robot.joint_pos.new_tensor([
-        tolerances.get(name, JOINT_POSITION_TOLERANCE) for name in targets
-    ])
-    if not torch.isfinite(desired).all() or not torch.isfinite(tolerance).all() or (tolerance < 0).any():
-        raise ValueError("Joint targets and tolerances must be finite; tolerances must be nonnegative")
-    actual = robot.joint_pos[idx][:, [names.index(name) for name in targets]]
-    return (torch.abs(actual - desired) <= tolerance).all(dim=-1)
-
-
-def _palm_targets(states, handler, idx):
-    robot = states.robots[handler.robot.name]
-    chair = states.objects["chair"]
-    palms = torch.stack([
-        robot.body_state[idx, robot.body_names.index(f"{side}_hand_palm_link"), :3]
-        for side in ("left", "right")
-    ], dim=1)
-    targets = torch.stack([
-        chair.body_state[idx, chair.body_names.index(f"target_hand_{side}"), :3]
-        for side in ("left", "right")
-    ], dim=1)
-    return palms, targets
-
-
-def common_chairman_checker(states: list[EnvState], handler: BaseSimHandler, idx: torch.Tensor, stage_id: int) -> torch.BoolTensor:
-    """Kontroluje pád robota a nově i časový limit (timeout) pro danou stage."""
-    num_envs = states.robots[handler.robot.name].joint_pos.shape[0]
-    device = idx.device
-
-    # Inicializace paměti pro kroky (proběhne jen při prvním průchodu)
-    if not hasattr(handler.task, "stage_steps"):
-        handler.task.stage_steps = torch.zeros(num_envs, dtype=torch.long, device=device)
-        # -1 znamená, že prostředí ještě nemá zapsanou žádnou stage
-        handler.task.recorded_stage = torch.full((num_envs,), -1, dtype=torch.long, device=device)
-
-    # Zjistíme, jestli některé prostředí nepřešlo do nové stage od posledního kroku
-    changed_mask = handler.task.recorded_stage[idx] != stage_id
-
-    # Pokud ano, VYNULUJEME mu počítadlo času (dostává nový čas na novou stage)
-    reset_idx = idx[changed_mask]
-    if len(reset_idx) > 0:
-        handler.task.stage_steps[reset_idx] = 0
-        _capture_stage_reference(states, handler, reset_idx)
-        for name in ("stage1_success_steps", "stage4_success_steps"):
-            counter = getattr(handler.task, name, None)
-            if counter is not None:
-                counter[reset_idx] = 0
-
-    # Zapíšeme si aktuální stage
-    handler.task.recorded_stage[idx] = stage_id
-
-    # Inkrementujeme odpracovaný krok (o 1)
-    handler.task.stage_steps[idx] += 1
-
-    # --- 1. PODMÍNKA PÁDU ---
-    is_fallen = neck_height_tensor(states, handler.robot.name)[idx] < HEIGHT_THRESHOLD
-
-    # --- 2. PODMÍNKA TIMEOUTU ---
-    reference_steps = STAGE_TIMEOUTS.get(stage_id, 9999)
-    physics_dt = getattr(handler.scenario.sim_params, "dt", None) or 0.002
-    task_dt = float(physics_dt) * int(handler.scenario.decimation)
-    limit = max(
-        1,
-        int(round(reference_steps * STAGE_TIMEOUT_REFERENCE_DT / task_dt)),
-    )
-    is_timeout = handler.task.stage_steps[idx] > limit
-
-    # Výsledek: Epizoda skončí, pokud robot spadne NEBO pokud mu vyprší čas
-    return is_fallen | is_timeout
-
-def _check_stage(states, handler, mask, stage_id):
-    """Return full-size (terminated, success) masks; failures take precedence."""
-    terminated = torch.zeros_like(mask)
-    success = torch.zeros_like(mask)
-    idx = mask.nonzero(as_tuple=True)[0]
-    if idx.numel() == 0:
-        return terminated, success
-
-    fail = common_chairman_checker(states, handler, idx, stage_id)
-    robot, chair = _body(states, handler, idx)
-    if stage_id in (0, 2, 3):
-        fail |= _robot_moved(states, handler, idx)
-    if stage_id in (1, 2):
-        fail |= check_movement_chair(states, handler, idx)
-
-    if stage_id in (0, 2):
-        targets = STAGE0_JOINT_TARGETS if stage_id == 0 else STAGE2_JOINT_TARGETS
-        tolerances = STAGE0_JOINT_TOLERANCES if stage_id == 0 else STAGE2_JOINT_TOLERANCES
-        reached = _joint_pose_matches(states, handler, idx, targets, tolerances)
-    elif stage_id == 1:
-        reached = _walking_success(states, handler, idx, fail)
-    elif stage_id == 3:
-        # Offset towards the robot (chair local +Y), independent of world yaw.
-        palms, targets = _palm_targets(states, handler, idx)
-        targets[:, :, :2] += PALM_FRONT_OFFSET * chair_back_direction_xy(chair[:, 3:7])[:, None, :]
-        reached = (torch.linalg.vector_norm(palms - targets, dim=-1) <= PALM_POSITION_TOLERANCE).all(dim=-1)
-    elif stage_id == 4:
-        displacement = chair[:, :2] - handler.task.chairman_chair_anchor[idx, :2]
-        direction = handler.task.chairman_pull_direction[idx]
-        distance = (displacement * direction).sum(dim=-1)
-        lateral = torch.linalg.vector_norm(displacement - distance[:, None] * direction, dim=-1)
-        reached = (
-            ((distance - CHAIR_PULL_DISTANCE_THRESHOLD).abs() <= CHAIR_PULL_TOLERANCE)
-            & (lateral <= CHAIR_PULL_TOLERANCE)
-            & (torch.linalg.vector_norm(robot[:, 7:10], dim=-1) < VELOCITY_THRESHOLD)
-            & (torch.linalg.vector_norm(chair[:, 7:10], dim=-1) < VELOCITY_THRESHOLD)
-        )
-        reached = _held_condition(handler, "stage4_success_steps", idx,
-                                  reached & ~fail, STAGE4_HOLD_STEPS)
-    else:  # Stage 5: both palms above their backrest targets.
-        palms, targets = _palm_targets(states, handler, idx)
-        reached = (
-            (palms[:, :, 2] >= targets[:, :, 2] + PALM_LIFT_HEIGHT)
-            & (torch.linalg.vector_norm(palms[:, :, :2] - targets[:, :, :2], dim=-1)
-               <= PALM_LIFT_XY_TOLERANCE)
-        ).all(dim=-1)
-
-    success[idx] = reached & ~fail
-    terminated[idx] = fail | reached
-    return terminated, success
-
-
-def _walking_success(states, handler, idx, term_common):
-    # Stejný finální bod jako ve WalkToChairProgressReward: 0.75 m za
-    # opěradlem, nezávisle na natočení židle ve světě.
-    robot_state = states.robots[handler.robot.name]
-    base_link_idx = robot_state.body_names.index("pelvis")
-    robot_base_state = robot_state.body_state[idx, base_link_idx]
-    robot_pos = robot_base_state[:, :3]
-    robot_quat = robot_base_state[:, 3:7]
-    chair_base_idx = states.objects["chair"].body_names.index("base_link")
-    chair_state = states.objects["chair"].body_state[idx, chair_base_idx]
-    chair_pos = chair_state[:, :3]
-    chair_back_dir = chair_back_direction_xy(chair_state[:, 3:7])
-    final_target = chair_pos[:, :2] + CHAIR_FINAL_DISTANCE * chair_back_dir
-    final_position_error = torch.norm(robot_pos[:, :2] - final_target, dim=-1)
-
-    to_chair = chair_pos[:, :2] - robot_pos[:, :2]
-    to_chair = to_chair / torch.clamp(torch.norm(to_chair, dim=-1, keepdim=True), min=1.0e-6)
-    robot_forward = forward_direction_xy(robot_quat)
-    facing_chair = torch.sum(robot_forward * to_chair, dim=-1)
-
-    # --- NOVÉ: Výpočet rychlosti robota ---
-    # root_state obsahuje: pos(0:3), quat(3:7), lin_vel(7:10), ang_vel(10:13)
-    robot_lin_vel_xy = robot_base_state[:, 7:9]
-    # Úspěch chůze posuzujeme v rovině podlahy. Vertikální kmit pánve při
-    # balancování není pohyb směrem od cíle a nemá blokovat přechod do stage 1.
-    vel_norm = torch.norm(robot_lin_vel_xy, dim=-1)
-
-    # Úspěch: robot je u finálního bodu, stojí a je čelem k židli.
-    success_now = (
-        (final_position_error <= CHAIR_FINAL_TOLERANCE)
-        & (vel_norm < VELOCITY_THRESHOLD)
-        & (facing_chair >= FACING_CHAIR_THRESHOLD)
-    )
-    success_now &= ~term_common
-    success_cond = _held_condition(
-        handler, "stage1_success_steps", idx, success_now, STAGE1_HOLD_STEPS
-    )
-    return success_cond
-
-
-def stege0_chacker(states: EnvState, handler: BaseSimHandler, mask: torch.BoolTensor) -> tuple[torch.BoolTensor, torch.BoolTensor]:
-    """Stage 0: walking arm pose in place."""
-    return _check_stage(states, handler, mask, 0)
-
-def stege1_chacker(states: EnvState, handler: BaseSimHandler, mask: torch.BoolTensor) -> tuple[torch.BoolTensor, torch.BoolTensor]:
-    """Stage 1: walk to the chair and stop."""
-    return _check_stage(states, handler, mask, 1)
-
-def stege2_chacker(states: EnvState, handler: BaseSimHandler, mask: torch.BoolTensor) -> tuple[torch.BoolTensor, torch.BoolTensor]:
-    """Stage 2: forward arm pose in place."""
-    return _check_stage(states, handler, mask, 2)
-
-def stege3_chacker(states: EnvState, handler: BaseSimHandler, mask: torch.BoolTensor) -> tuple[torch.BoolTensor, torch.BoolTensor]:
-    """Stage 3: palms 10 cm in front of the backrest, in place."""
-    return _check_stage(states, handler, mask, 3)
-
-def stege4_chacker(states: EnvState, handler: BaseSimHandler, mask: torch.BoolTensor) -> tuple[torch.BoolTensor, torch.BoolTensor]:
-    """Stage 4: pull the chair back one metre and stop both bodies."""
-    return _check_stage(states, handler, mask, 4)
-
-def stege5_chacker(states: EnvState, handler: BaseSimHandler, mask: torch.BoolTensor) -> tuple[torch.BoolTensor, torch.BoolTensor]:
-    """Stage 5: lift both palms above the backrest."""
-    return _check_stage(states, handler, mask, 5)
 
 def _repeat_packed_state(packed, count: int):
     """Create a writable reset batch from a cached one-row GPU template."""
@@ -416,7 +228,12 @@ def _snapshot_tensor_banks(handler: BaseSimHandler, max_stage: int):
     """Lazily convert loaded snapshot dictionaries to reusable GPU tensors."""
     cache = getattr(handler, "_chairman_snapshot_tensor_cache", None)
     if cache is not None and cache[0] == SNAPSHOT_BUFFER_VERSION:
-        return cache[1]
+        banks = cache[1]
+        # Curriculum can unlock more stages without changing the reservoir.
+        for stage in range(1, max_stage + 1):
+            if stage not in banks and RAM_SNAPSHOT_BUFFER[stage]:
+                banks[stage] = handler.pack_state_batch(RAM_SNAPSHOT_BUFFER[stage])
+        return banks
 
     banks = {
         stage: handler.pack_state_batch(RAM_SNAPSHOT_BUFFER[stage])
@@ -453,11 +270,15 @@ def _reset_chairman_legacy(
     states = [stage0_state] * handler.num_envs
     max_available_stage = 0
     if not reset_to_stage0:
-        for stage in range(1, 6):
+        for stage in range(1, NUM_STAGES):
             if RAM_SNAPSHOT_BUFFER[stage]:
                 max_available_stage = stage
             else:
                 break
+
+    cap = getattr(handler.task, "curriculum_max_stage", None)
+    if cap is not None:
+        max_available_stage = min(max_available_stage, int(cap))
 
     selected_stages = []
     for env_id in cpu_ids:
@@ -502,7 +323,7 @@ def reset_chairman(
         return
 
     for counter_name in (
-        "stage0_success_steps", "stage1_success_steps", "stage2_success_steps",
+        "success_hold_steps", "contact_loss_steps", "stage2_success_steps",
         "stage3_success_steps", "stage4_success_steps",
     ):
         counter = getattr(handler.task, counter_name, None)
@@ -525,19 +346,23 @@ def reset_chairman(
 
     use_snapshot_curriculum = bool(getattr(handler.task, "use_snapshot_curriculum", True))
     requested_stage = getattr(handler.task, "eval_start_stage", None)
+    training_stage = getattr(handler.task, "train_stage", None)
+    if training_stage is not None:
+        requested_stage = training_stage
+    stage_option = "train_stage" if training_stage is not None else "eval_start_stage"
     if requested_stage is not None:
         if isinstance(requested_stage, bool) or not isinstance(requested_stage, int):
             raise ValueError(
-                f"eval_start_stage must be an integer from 0 to 5, got {requested_stage!r}"
+                f"{stage_option} must be an integer from 0 to 4, got {requested_stage!r}"
             )
-        if not 0 <= requested_stage <= 5:
+        if not 0 <= requested_stage < NUM_STAGES:
             raise ValueError(
-                f"eval_start_stage must be between 0 and 5, got {requested_stage}"
+                f"{stage_option} must be between 0 and 4, got {requested_stage}"
             )
         if requested_stage > 0 and not RAM_SNAPSHOT_BUFFER[requested_stage]:
             stage_dir = SNAPSHOT_DIR / f"stage_{requested_stage}"
             raise RuntimeError(
-                f"Cannot start evaluation from stage {requested_stage}: no snapshot is available. "
+                f"Cannot start from stage {requested_stage} ({stage_option}): no snapshot is available. "
                 f"Expected snapshots in {stage_dir}."
             )
 
@@ -560,8 +385,7 @@ def reset_chairman(
             reset_to_stage0,
             requested_stage,
         )
-        if hasattr(handler.task, "recorded_stage"):
-            handler.task.recorded_stage.index_fill_(0, env_ids, -1)
+        begin_stage(states, handler, env_ids, current_stages)
         for reward_fn in reward_functions:
             if hasattr(reward_fn, "reset"):
                 reward_fn.reset(env_ids=env_ids, states=states)
@@ -576,13 +400,16 @@ def reset_chairman(
             max_available_stage = requested_stage
         else:
             max_available_stage = 0
-            for stage in range(1, 6):
+            for stage in range(1, NUM_STAGES):
                 if RAM_SNAPSHOT_BUFFER[stage]:
                     max_available_stage = stage
                 else:
                     break
 
         if requested_stage is None:
+            cap = getattr(handler.task, "curriculum_max_stage", None)
+            if cap is not None:
+                max_available_stage = min(max_available_stage, int(cap))
             new_stages = torch.randint(
                 0, max_available_stage + 1, (reset_count,), device=handler.device
             )
@@ -610,6 +437,7 @@ def reset_chairman(
 
     handler.set_packed_state_batch(reset_batch, env_ids=env_ids)
     states = handler.get_states()
+    begin_stage(states, handler, env_ids, current_stages)
     for reward_fn in reward_functions:
         if hasattr(reward_fn, "reset"):
             reward_fn.reset(env_ids=env_ids, states=states)
@@ -648,11 +476,24 @@ def _update_snapshot_tensor_cache(handler, stage: int, index: int, snapshot_data
         return
 
     banks = cache[1]
-    packed_row = handler.pack_state_batch([snapshot_data])
     bank = banks.get(stage)
     if bank is None:
-        banks[stage] = packed_row
+        # A stage omitted by the curriculum may already have many CPU rows.
+        # Do not create a one-row bank with a reservoir index larger than zero.
+        banks[stage] = handler.pack_state_batch(RAM_SNAPSHOT_BUFFER[stage])
     else:
+        packed_row = handler.pack_state_batch([snapshot_data])
+        expected_size = len(RAM_SNAPSHOT_BUFFER[stage])
+        sizes = {value.shape[0] for entity in bank.values() for value in entity.values()}
+        append = sizes == {expected_size - 1} and index == expected_size - 1
+        replace = sizes == {expected_size} and 0 <= index < expected_size
+        same_fields = bank.keys() == packed_row.keys() and all(
+            bank[name].keys() == entity.keys() for name, entity in packed_row.items()
+        )
+        if not same_fields or not (append or replace):
+            banks[stage] = handler.pack_state_batch(RAM_SNAPSHOT_BUFFER[stage])
+            handler._chairman_snapshot_tensor_cache = (SNAPSHOT_BUFFER_VERSION, banks)
+            return
         for obj_name, row_entity in packed_row.items():
             if obj_name not in bank:
                 bank[obj_name] = row_entity

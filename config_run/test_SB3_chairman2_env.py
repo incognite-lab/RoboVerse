@@ -46,7 +46,7 @@ class Chairman2Test(unittest.TestCase):
         wrapper = self.make_env()
         self.assertEqual(wrapper.action_space.shape, (13,))
         self.assertEqual(len(wrapper.robot_joint_names), 25)
-        self.assertEqual(wrapper.num_stages, 6)
+        self.assertEqual(wrapper.num_stages, 5)
         self.assertEqual(wrapper.action_names[-3:], ('walk_vx', 'walk_vy', 'walk_yaw_rate'))
         self.assertFalse(any('waist' in n or 'hand_' in n or 'wrist_pitch' in n or 'wrist_yaw' in n
                              for n in wrapper.upper_body_joint_names))

@@ -24,6 +24,8 @@ except ImportError:
 
 
 class StableBaseline3VecEnv(WalkingEnv):
+    NUM_POLICY_STAGES = 5
+    from metasim.utils.chairman2_geometry import APPROACH_DISTANCE as FINAL_APPROACH_DISTANCE
     HAND_CONTACT_FORCE_SCALE = 50.0
     MAIN_ROBOT_LINK_NAMES = (
         "pelvis", "torso_link",
@@ -34,6 +36,15 @@ class StableBaseline3VecEnv(WalkingEnv):
         "right_shoulder_yaw_link", "right_elbow_link", "right_wrist_roll_link",
         "right_hand_palm_link",
     )
+
+    @property
+    def stage_confirmation_steps(self) -> tuple[int, ...]:
+        from metasim.cfg.checkers.stages_chairman2 import STAGE_TIMEOUTS, STAGE_TIMEOUT_REFERENCE_DT
+
+        scenario = self.env.env.handler.scenario
+        dt = (scenario.sim_params.dt or 0.002) * scenario.decimation
+        return tuple(int(np.ceil(STAGE_TIMEOUTS[i] * STAGE_TIMEOUT_REFERENCE_DT / dt)) + 1
+                     for i in range(self.NUM_POLICY_STAGES))
 
     def _policy_joint_limits(self, robot_cfg):
         # Configs may still list the fingers and locked wrist joints. Read the
@@ -74,7 +85,7 @@ class StableBaseline3VecEnv(WalkingEnv):
         self.num_stages = self.NUM_POLICY_STAGES
         # Base joint observations follow the simulator's actual DOF list.
         obs_dim = (self.observation_space.shape[0] - old_stages + self.num_stages
-                   - len(self.robot_joint_names) + len(self.sim_joint_names))
+                   - len(self.robot_joint_names) + len(self.sim_joint_names) + 8)
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(obs_dim,), dtype=np.float32)
         cfg = env.scenario.robots[0]
         controlled = set(self.leg_joint_names) | set(self.upper_body_joint_names)
@@ -91,6 +102,43 @@ class StableBaseline3VecEnv(WalkingEnv):
         robot = env.env.handler.get_states().robots[self.robot_name]
         self.left_endffector = robot.body_names.index("left_hand_palm_link")
         self.right_endffector = robot.body_names.index("right_hand_palm_link")
+
+    def _task_context(self):
+        from metasim.utils.chair_navigation import chair_back_direction_xy, world_vector_to_body_xy
+        from metasim.utils.chairman2_geometry import PULL_DISTANCE
+        handler = self.env.env.handler
+        states = handler.get_states()
+        robot, chair = states.robots[self.robot_name], states.objects['chair']
+        base = robot.body_state[:, robot.body_names.index('pelvis')]
+        cb = chair.body_state[:, chair.body_names.index('base_link')]
+        task = handler.task
+        stages = self.get_current_stages_torch()
+        recorded = getattr(task, 'recorded_stage', torch.full_like(stages, -1))
+        entering = recorded != stages
+        ra = getattr(task, 'chairman_robot_anchor', base[:, :2])
+        ca = getattr(task, 'chairman_chair_anchor', cb[:, :3])
+        direction = getattr(task, 'chairman_pull_direction', chair_back_direction_xy(cb[:, 3:7]))
+        # Before the first checker call of a new stage the anchor is its entry state.
+        rd = torch.where(entering[:, None], 0., base[:, :2]-ra)
+        cd = torch.where(entering[:, None], 0., cb[:, :2]-ca[:, :2])
+        direction = torch.where(entering[:, None], chair_back_direction_xy(cb[:, 3:7]), direction)
+        elapsed = getattr(task, 'stage_steps', torch.zeros_like(stages)).float()
+        elapsed = torch.where(entering, 0., elapsed)
+        scenario = self.env.scenario
+        dt = (scenario.sim_params.dt or 0.002)*scenario.decimation
+        return torch.cat((world_vector_to_body_xy(rd, base[:, 3:7]),
+                          world_vector_to_body_xy(cd, base[:, 3:7]),
+                          world_vector_to_body_xy(direction, base[:, 3:7]),
+                          (PULL_DISTANCE-(cd*direction).sum(-1))[:, None],
+                          (elapsed*dt/20.)[:, None]), dim=1)
+
+    def add_extra_to_obs(self, obs):
+        context = self._task_context().cpu().numpy()
+        return super().add_extra_to_obs(np.concatenate((obs, context), axis=1))
+
+    def add_extra_to_obs_torch(self, obs):
+        obs = torch.as_tensor(obs, dtype=torch.float32, device=self.torch_device)
+        return super().add_extra_to_obs_torch(torch.cat((obs, self._task_context()), dim=1))
 
     def _compose_robot_targets(self, actions):
         targets = super()._compose_robot_targets(actions)

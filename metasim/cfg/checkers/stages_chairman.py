@@ -47,7 +47,7 @@ HAND_VELOCITY_THRESHOLD = 0.15
 # The target links are reference points near the palms, not tiny physical
 # sockets. Five centimetres defines the stage-1 goal; stages 2/3 have a wider
 # recovery envelope to allow whole-body sway while grasping and pulling.
-DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.05
+DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.07
 ORIENTATION_DISTANCE_HANDLE_THRESHOLD = 0.03
 GRASP_DRIFT_THRESHOLD = 0.25
 GRASP_FORCE_THRESHOLD = 0.5
@@ -805,7 +805,12 @@ def _snapshot_tensor_banks(handler: BaseSimHandler, max_stage: int):
     """Lazily convert loaded snapshot dictionaries to reusable GPU tensors."""
     cache = getattr(handler, "_chairman_snapshot_tensor_cache", None)
     if cache is not None and cache[0] == SNAPSHOT_BUFFER_VERSION:
-        return cache[1]
+        banks = cache[1]
+        # Curriculum can unlock more stages without changing the reservoir.
+        for stage in range(1, max_stage + 1):
+            if stage not in banks and RAM_SNAPSHOT_BUFFER[stage]:
+                banks[stage] = handler.pack_state_batch(RAM_SNAPSHOT_BUFFER[stage])
+        return banks
 
     banks = {
         stage: handler.pack_state_batch(RAM_SNAPSHOT_BUFFER[stage])
@@ -1051,11 +1056,24 @@ def _update_snapshot_tensor_cache(handler, stage: int, index: int, snapshot_data
         return
 
     banks = cache[1]
-    packed_row = handler.pack_state_batch([snapshot_data])
     bank = banks.get(stage)
     if bank is None:
-        banks[stage] = packed_row
+        # A stage omitted by the curriculum may already have many CPU rows.
+        # Do not create a one-row bank with a reservoir index larger than zero.
+        banks[stage] = handler.pack_state_batch(RAM_SNAPSHOT_BUFFER[stage])
     else:
+        packed_row = handler.pack_state_batch([snapshot_data])
+        expected_size = len(RAM_SNAPSHOT_BUFFER[stage])
+        sizes = {value.shape[0] for entity in bank.values() for value in entity.values()}
+        append = sizes == {expected_size - 1} and index == expected_size - 1
+        replace = sizes == {expected_size} and 0 <= index < expected_size
+        same_fields = bank.keys() == packed_row.keys() and all(
+            bank[name].keys() == entity.keys() for name, entity in packed_row.items()
+        )
+        if not same_fields or not (append or replace):
+            banks[stage] = handler.pack_state_batch(RAM_SNAPSHOT_BUFFER[stage])
+            handler._chairman_snapshot_tensor_cache = (SNAPSHOT_BUFFER_VERSION, banks)
+            return
         for obj_name, row_entity in packed_row.items():
             if obj_name not in bank:
                 bank[obj_name] = row_entity

@@ -57,14 +57,23 @@ def _human_duration(seconds: float) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
+def _task_version(env):
+    scenario = getattr(getattr(env, 'env', None), 'scenario', None)
+    return getattr(getattr(scenario, 'task', None), 'task_version', None)
+
+
+def _policy_count(config):
+    return int(config.get("num_stage_policies", 5 if config.get("task") == "chairman2" else NUM_STAGE_POLICIES))
+
+
 def _stage_value(config: dict, name: str, stage: int, default):
     value = config.get(name, default)
     if isinstance(value, dict):
         return value.get(stage, value.get(str(stage), default))
     if isinstance(value, (list, tuple)):
-        if len(value) != NUM_STAGE_POLICIES:
+        if len(value) != _policy_count(config):
             raise ValueError(
-                f"{name} must contain {NUM_STAGE_POLICIES} values, got {len(value)}"
+                f"{name} must contain {_policy_count(config)} values, got {len(value)}"
             )
         return value[stage]
     return value
@@ -295,13 +304,13 @@ def single_training_stage(config: dict) -> int | None:
     if not config.get("train_only", False):
         return None
     stage = config.get("train_stage")
-    if isinstance(stage, bool) or not isinstance(stage, int) or not 0 <= stage < NUM_STAGE_POLICIES:
-        raise ValueError("train_only requires train_stage to be an integer from 0 to 5")
+    if isinstance(stage, bool) or not isinstance(stage, int) or not 0 <= stage < _policy_count(config):
+        raise ValueError(f"train_only requires train_stage to be an integer from 0 to {_policy_count(config)-1}")
     return stage
 
 
 class MultiPPOTrainer:
-    """Train six independent PPO policies in one uninterrupted ChairMan env."""
+    """Train one independent PPO policy per task stage in a shared environment."""
 
     def __init__(
         self,
@@ -318,7 +327,12 @@ class MultiPPOTrainer:
                 "MultiPPOTrainer requires config_run.SB3_chairman_multi_env"
             )
         self.env = env
+        self.num_stage_policies = int(getattr(env, 'NUM_POLICY_STAGES', _policy_count(config)))
+        config = dict(config, num_stage_policies=self.num_stage_policies)
         self.config = config
+        self.stage_names = (('walk to chair', 'extend arms', 'place hands', 'pull chair', 'lift hands')
+                            if config.get('task') == 'chairman2' else STAGE_NAMES)
+        self.task_version = _task_version(env)
         self.train_stage = single_training_stage(config)
         self.num_envs = int(env.num_envs)
         env_device = getattr(env, "torch_device", None)
@@ -363,10 +377,12 @@ class MultiPPOTrainer:
                 checkpoint=resume_checkpoint,
                 stage_checkpoints=resume_stage_checkpoints,
                 split_checkpoints=resume_split_checkpoints,
+                expected_num_stages=self.num_stage_policies,
+                expected_task_version=self.task_version,
             )
             self.models = {
                 stage: _load_stage_model(paths[stage], env, self.device)
-                for stage in range(NUM_STAGE_POLICIES)
+                for stage in range(self.num_stage_policies)
             }
             self.global_timesteps = int(manifest.get("global_timesteps", 0))
             self.global_env_steps = int(manifest.get("global_env_steps", 0))
@@ -374,24 +390,24 @@ class MultiPPOTrainer:
             manifest = {}
             self.models = {
                 stage: _new_stage_model(env, config, stage, self.device)
-                for stage in range(NUM_STAGE_POLICIES)
+                for stage in range(self.num_stage_policies)
             }
 
         self.pending = {
-            stage: PendingStageBatches() for stage in range(NUM_STAGE_POLICIES)
+            stage: PendingStageBatches() for stage in range(self.num_stage_policies)
         }
         window = max(1, int(config.get("stage_success_window", 1000)))
         self.recent_outcomes = {
-            stage: deque(maxlen=window) for stage in range(NUM_STAGE_POLICIES)
+            stage: deque(maxlen=window) for stage in range(self.num_stage_policies)
         }
-        self.attempts = np.zeros(NUM_STAGE_POLICIES, dtype=np.int64)
-        self.successes = np.zeros(NUM_STAGE_POLICIES, dtype=np.int64)
-        self.samples = np.zeros(NUM_STAGE_POLICIES, dtype=np.int64)
-        self.updates = np.zeros(NUM_STAGE_POLICIES, dtype=np.int64)
-        self.frozen = np.zeros(NUM_STAGE_POLICIES, dtype=bool)
+        self.attempts = np.zeros(self.num_stage_policies, dtype=np.int64)
+        self.successes = np.zeros(self.num_stage_policies, dtype=np.int64)
+        self.samples = np.zeros(self.num_stage_policies, dtype=np.int64)
+        self.updates = np.zeros(self.num_stage_policies, dtype=np.int64)
+        self.frozen = np.zeros(self.num_stage_policies, dtype=bool)
 
         stage_manifest = manifest.get("stages", {})
-        for stage in range(NUM_STAGE_POLICIES):
+        for stage in range(self.num_stage_policies):
             saved = stage_manifest.get(str(stage), {})
             self.attempts[stage] = int(saved.get("attempts", 0))
             self.successes[stage] = int(saved.get("successes", 0))
@@ -404,9 +420,9 @@ class MultiPPOTrainer:
 
         self.inherit_stage_actor = bool(config.get("inherit_stage_actor", True))
         self.actor_initialization = {}
-        self.actor_initialized = np.zeros(NUM_STAGE_POLICIES, dtype=bool)
+        self.actor_initialized = np.zeros(self.num_stage_policies, dtype=bool)
         self.actor_initialized[0] = True
-        for stage in range(NUM_STAGE_POLICIES):
+        for stage in range(self.num_stage_policies):
             saved = stage_manifest.get(str(stage), {})
             provenance = saved.get("actor_initialization")
             if provenance is not None:
@@ -424,19 +440,19 @@ class MultiPPOTrainer:
         )
         self.recent_returns = {
             stage: deque(maxlen=episode_window)
-            for stage in range(NUM_STAGE_POLICIES)
+            for stage in range(self.num_stage_policies)
         }
         self.recent_lengths = {
             stage: deque(maxlen=episode_window)
-            for stage in range(NUM_STAGE_POLICIES)
+            for stage in range(self.num_stage_policies)
         }
         self._episode_returns = torch.zeros(
-            (NUM_STAGE_POLICIES, self.num_envs),
+            (self.num_stage_policies, self.num_envs),
             dtype=torch.float32,
             device=self.torch_device,
         )
         self._episode_lengths = torch.zeros(
-            (NUM_STAGE_POLICIES, self.num_envs),
+            (self.num_stage_policies, self.num_envs),
             dtype=torch.long,
             device=self.torch_device,
         )
@@ -448,7 +464,7 @@ class MultiPPOTrainer:
         )
         self.last_train_metrics: dict[int, dict[str, float]] = {}
         self.last_train_timestep = np.full(
-            NUM_STAGE_POLICIES, -1, dtype=np.int64
+            self.num_stage_policies, -1, dtype=np.int64
         )
         self._last_rollout_stats: dict[int, dict[str, float]] = {}
         self._last_logged_samples = self.samples.copy()
@@ -459,9 +475,9 @@ class MultiPPOTrainer:
         self._last_log_timesteps = self.global_timesteps
         self._last_log_env_steps = self.global_env_steps
         self._terminal_log_iteration = 0
-        self._freeze_streak = np.zeros(NUM_STAGE_POLICIES, dtype=np.int64)
-        self._freeze_started = np.zeros(NUM_STAGE_POLICIES, dtype=np.int64)
-        self._freeze_outcomes = {stage: deque(maxlen=window) for stage in range(NUM_STAGE_POLICIES)}
+        self._freeze_streak = np.zeros(self.num_stage_policies, dtype=np.int64)
+        self._freeze_started = np.zeros(self.num_stage_policies, dtype=np.int64)
+        self._freeze_outcomes = {stage: deque(maxlen=window) for stage in range(self.num_stage_policies)}
         self._publish_curriculum_limit()
 
     def _publish_curriculum_limit(self) -> None:
@@ -469,7 +485,7 @@ class MultiPPOTrainer:
         if setter is None or self.train_stage is not None:
             return
         cap = 0
-        for stage in range(1, NUM_STAGE_POLICIES):
+        for stage in range(1, self.num_stage_policies):
             if not self.actor_initialized[stage]:
                 break
             cap = stage
@@ -519,7 +535,7 @@ class MultiPPOTrainer:
     def _target_samples(self, stage: int) -> int:
         default = max(
             self.batch_size,
-            self.rollout_steps * max(1, self.num_envs // NUM_STAGE_POLICIES),
+            self.rollout_steps * max(1, self.num_envs // self.num_stage_policies),
         )
         return max(
             2,
@@ -678,22 +694,22 @@ class MultiPPOTrainer:
         component_sums = {}
         rollouts = {
             stage: RaggedStageRollout(self.num_envs, self.gamma, self.gae_lambda)
-            for stage in range(NUM_STAGE_POLICIES)
+            for stage in range(self.num_stage_policies)
         }
-        transitions = np.zeros(NUM_STAGE_POLICIES, dtype=np.int64)
+        transitions = np.zeros(self.num_stage_policies, dtype=np.int64)
         reward_sum = torch.zeros(
-            NUM_STAGE_POLICIES, dtype=torch.float32, device=self.torch_device
+            self.num_stage_policies, dtype=torch.float32, device=self.torch_device
         )
         reward_sq_sum = torch.zeros_like(reward_sum)
         action_sum = torch.zeros_like(reward_sum)
         action_sq_sum = torch.zeros_like(reward_sum)
         action_abs_sum = torch.zeros_like(reward_sum)
-        action_elements = np.zeros(NUM_STAGE_POLICIES, dtype=np.int64)
+        action_elements = np.zeros(self.num_stage_policies, dtype=np.int64)
         clipped_elements = torch.zeros(
-            NUM_STAGE_POLICIES, dtype=torch.long, device=self.torch_device
+            self.num_stage_policies, dtype=torch.long, device=self.torch_device
         )
         command_abs_sum = torch.zeros_like(reward_sum)
-        command_elements = np.zeros(NUM_STAGE_POLICIES, dtype=np.int64)
+        command_elements = np.zeros(self.num_stage_policies, dtype=np.int64)
         terminals_count = torch.zeros_like(clipped_elements)
         successes_count = torch.zeros_like(clipped_elements)
 
@@ -706,7 +722,7 @@ class MultiPPOTrainer:
             stages_after_event = metadata["stage_after_event"]
             completed = metadata["completed_stage"]
 
-            for stage in range(NUM_STAGE_POLICIES):
+            for stage in range(self.num_stage_policies):
                 env_ids = (stages_before == stage).nonzero(as_tuple=False).flatten()
                 if env_ids.numel() == 0:
                     continue
@@ -836,7 +852,7 @@ class MultiPPOTrainer:
             for (stage, group, name), summed in zip(keys, sums):
                 self.writer.add_scalar(f"stage_{stage}/{group}/{name}",
                                        summed / max(1, transitions[stage]), self.global_timesteps)
-        for stage in range(NUM_STAGE_POLICIES):
+        for stage in range(self.num_stage_policies):
             transition_count = int(transitions[stage])
             element_count = int(action_elements[stage])
             reward_mean = (
@@ -1074,7 +1090,7 @@ class MultiPPOTrainer:
         return metrics
 
     def _update_ready_policies(self, *, final: bool = False) -> None:
-        for stage in range(NUM_STAGE_POLICIES):
+        for stage in range(self.num_stage_policies):
             if self.train_stage is not None and stage != self.train_stage:
                 self.pending[stage].clear()
                 continue
@@ -1120,7 +1136,7 @@ class MultiPPOTrainer:
             )
         )
         minimum = min(minimum, self.recent_outcomes[0].maxlen or minimum)
-        for stage in range(NUM_STAGE_POLICIES):
+        for stage in range(self.num_stage_policies):
             if self.frozen[stage] or len(self._freeze_outcomes[stage]) < minimum or self.updates[stage] == 0:
                 continue
             # Freeze in curriculum order so a downstream policy is not locked
@@ -1134,7 +1150,7 @@ class MultiPPOTrainer:
                 if self._freeze_streak[stage] == 0:
                     self._freeze_started[stage] = self.global_env_steps
                 self._freeze_streak[stage] += 1
-                minimum_steps = getattr(self.env, "stage_confirmation_steps", (0,) * NUM_STAGE_POLICIES)[stage]
+                minimum_steps = getattr(self.env, "stage_confirmation_steps", (0,) * self.num_stage_policies)[stage]
                 if self._freeze_streak[stage] >= 2 and (
                     self.global_env_steps - self._freeze_started[stage] >= minimum_steps
                 ):
@@ -1144,18 +1160,20 @@ class MultiPPOTrainer:
             else:
                 self._freeze_streak[stage] = 0
 
-    @staticmethod
-    def _snapshot_counts() -> dict[int, int]:
+    def _snapshot_counts(self) -> dict[int, int]:
         """Read current in-memory curriculum occupancy without owning it."""
         try:
-            from metasim.cfg.checkers import stages_chairman
+            if self.config.get('task') == 'chairman2':
+                from metasim.cfg.checkers import stages_chairman2 as stages_chairman
+            else:
+                from metasim.cfg.checkers import stages_chairman
 
             return {
                 stage: len(stages_chairman.RAM_SNAPSHOT_BUFFER.get(stage, []))
-                for stage in range(1, NUM_STAGE_POLICIES)
+                for stage in range(1, self.num_stage_policies)
             }
         except (ImportError, AttributeError, TypeError):
-            return {stage: 0 for stage in range(1, NUM_STAGE_POLICIES)}
+            return {stage: 0 for stage in range(1, self.num_stage_policies)}
 
     def _policy_status(
         self,
@@ -1195,7 +1213,7 @@ class MultiPPOTrainer:
             return
 
         active_stages = []
-        for stage in range(NUM_STAGE_POLICIES):
+        for stage in range(self.num_stage_policies):
             current = int(np.sum(occupancy == stage))
             updated_now = self.last_train_timestep[stage] == self.global_timesteps
             if (
@@ -1214,7 +1232,7 @@ class MultiPPOTrainer:
                 stage, current, int(sample_delta[stage])
             )
             title = (
-                f"PPO POLICY {stage} · {STAGE_NAMES[stage]} · {status}"
+                f"PPO POLICY {stage} · {self.stage_names[stage]} · {status}"
             )
             table = Table(
                 title=title,
@@ -1321,7 +1339,7 @@ class MultiPPOTrainer:
         for name, value in global_scalars.items():
             self.writer.add_scalar(name, value, self.global_timesteps)
 
-        for stage in range(NUM_STAGE_POLICIES):
+        for stage in range(self.num_stage_policies):
             rate = self._success_rate(stage)
             current = int(np.sum(occupancy == stage))
             attempts = int(self.attempts[stage])
@@ -1378,7 +1396,8 @@ class MultiPPOTrainer:
             "format_version": 2,
             "trainer": "concurrent_ragged_multi_ppo",
             "task": self.config.get("task"),
-            "num_stage_policies": NUM_STAGE_POLICIES,
+            "task_version": self.task_version,
+            "num_stage_policies": self.num_stage_policies,
             "global_timesteps": self.global_timesteps,
             "global_env_steps": self.global_env_steps,
             "stages": {
@@ -1392,7 +1411,7 @@ class MultiPPOTrainer:
                     "frozen": bool(self.frozen[stage]),
                     "actor_initialization": self.actor_initialization.get(stage),
                 }
-                for stage in range(NUM_STAGE_POLICIES)
+                for stage in range(self.num_stage_policies)
             },
         }
 
@@ -1428,7 +1447,7 @@ class MultiPPOTrainer:
             self.global_timesteps,
         )
         log.info(
-            f"Starting concurrent ChairMan Multi-PPO with {NUM_STAGE_POLICIES} "
+            f"Starting concurrent ChairMan Multi-PPO with {self.num_stage_policies} "
             f"policies, {self.num_envs} envs and {self.total_timesteps} timesteps"
         )
         log.info(
@@ -1477,6 +1496,7 @@ def _stage_checkpoint_label(
     checkpoint: str | int | None,
     stage_checkpoints,
     split_checkpoints: bool,
+    num_stages: int = NUM_STAGE_POLICIES,
 ) -> str | None:
     if not split_checkpoints:
         return None if checkpoint in (None, "") else str(checkpoint)
@@ -1486,9 +1506,9 @@ def _stage_checkpoint_label(
             "load_model_split_checkpoints is true, but load_model_stage_checkpoints is empty"
         )
     if isinstance(stage_checkpoints, (list, tuple)):
-        if len(stage_checkpoints) != NUM_STAGE_POLICIES:
+        if len(stage_checkpoints) != num_stages:
             raise ValueError(
-                f"load_model_stage_checkpoints must contain {NUM_STAGE_POLICIES} values"
+                f"load_model_stage_checkpoints must contain {num_stages} values"
             )
         value = stage_checkpoints[stage]
     elif isinstance(stage_checkpoints, dict):
@@ -1506,6 +1526,8 @@ def resolve_policy_bundle(
     checkpoint: str | int | None = None,
     stage_checkpoints=None,
     split_checkpoints: bool = False,
+    expected_num_stages: int | None = None,
+    expected_task_version: str | None = None,
 ):
     root = Path(bundle_path).expanduser()
     if root.is_file() and root.name == MANIFEST_NAME:
@@ -1521,17 +1543,21 @@ def resolve_policy_bundle(
     if not manifest_path.is_file():
         raise FileNotFoundError(f"Multi-policy manifest not found below {root}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if int(manifest.get("num_stage_policies", -1)) != NUM_STAGE_POLICIES:
-        raise ValueError("The bundle does not contain six ChairMan policies")
+    num_stages = int(manifest.get("num_stage_policies", -1))
+    if num_stages <= 0 or (expected_num_stages is not None and num_stages != expected_num_stages):
+        raise ValueError(f"Bundle has {num_stages} policies; expected {expected_num_stages}")
+    if expected_task_version is not None and manifest.get('task_version') != expected_task_version:
+        raise ValueError('Bundle task version does not match the current stage definitions')
 
     paths: dict[int, str] = {}
     selected_checkpoints: dict[int, str] = {}
-    for stage in range(NUM_STAGE_POLICIES):
+    for stage in range(num_stages):
         checkpoint_label = _stage_checkpoint_label(
             stage,
             checkpoint=checkpoint,
             stage_checkpoints=stage_checkpoints,
             split_checkpoints=split_checkpoints,
+            num_stages=num_stages,
         )
         if checkpoint_label is None:
             relative = manifest.get("stages", {}).get(str(stage), {}).get("model")
@@ -1561,7 +1587,7 @@ def policy_stages_with_training_data(manifest: dict) -> set[int]:
     trained: set[int] = set()
     for stage, stage_data in manifest.get("stages", {}).items():
         stage_id = int(stage)
-        if not 0 <= stage_id < NUM_STAGE_POLICIES:
+        if not 0 <= stage_id < int(manifest.get("num_stage_policies", NUM_STAGE_POLICIES)):
             continue
         samples = stage_data.get("samples")
         updates = stage_data.get("updates")
@@ -1578,8 +1604,9 @@ class MultiPolicyRouter:
     """Inference-only batch router shared by PPO evaluation and DAgger."""
 
     def __init__(self, models: dict[int, PPO], action_space):
-        if set(models) != set(range(NUM_STAGE_POLICIES)):
-            raise ValueError("The router requires policies for stages 0 through 5")
+        self.num_stage_policies = len(models)
+        if not models or set(models) != set(range(self.num_stage_policies)):
+            raise ValueError("The router requires consecutive stage policies starting at zero")
         self.models = models
         self.action_space = action_space
 
@@ -1598,7 +1625,7 @@ class MultiPolicyRouter:
                     observations[mask], deterministic=deterministic
                 )
                 actions[mask] = predicted
-        invalid = (stages < 0) | (stages >= NUM_STAGE_POLICIES)
+        invalid = (stages < 0) | (stages >= self.num_stage_policies)
         if invalid.any():
             raise ValueError(f"Unexpected stages {np.unique(stages[invalid])}")
         return np.clip(actions, self.action_space.low, self.action_space.high)
@@ -1617,6 +1644,8 @@ def load_policy_router(
         checkpoint=checkpoint,
         stage_checkpoints=stage_checkpoints,
         split_checkpoints=split_checkpoints,
+        expected_num_stages=getattr(env, "NUM_POLICY_STAGES", NUM_STAGE_POLICIES),
+        expected_task_version=_task_version(env),
     )
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     models = {

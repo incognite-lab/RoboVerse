@@ -873,25 +873,17 @@ class FaceChairReward(HumanoidBaseReward):
     """
     Stage 0 reward for keeping the robot facing the chair.
 
-    The main term rewards pelvis forward-axis alignment with the chair.  A
-    signed progress term rewards reducing the heading error and penalizes
-    turning farther away.
+    Reward torso forward-axis alignment with the chair in the XY plane.
+    Every increase in angular error reduces the reward: +1 at zero error,
+    zero at 20 degrees, and negative beyond that. No progress bonus or
+    angular tolerance can mask a misaligned torso.
 
     Output: <-1, 1>
     """
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.active_stages = [0]
-        self.progress_scale = 0.03
-        self.good_alignment = 0.92
-        self.prev_heading_error = None
-
-    def reset(self, env_ids: torch.Tensor, states: list["EnvState"]):
-        if self.prev_heading_error is not None:
-            self.prev_heading_error[env_ids] = torch.nan
-
-        if hasattr(super(), "reset"):
-            super().reset(env_ids, states)
+        self.zero_reward_angle = math.radians(20.0)
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -907,7 +899,7 @@ class FaceChairReward(HumanoidBaseReward):
             return torch.zeros(num_envs, device=device)
 
         try:
-            base_idx = robot.body_names.index("pelvis")
+            base_idx = robot.body_names.index("torso_link")
             chair_base_idx = chair.body_names.index("base_link")
         except ValueError:
             return torch.zeros(num_envs, device=device)
@@ -922,33 +914,15 @@ class FaceChairReward(HumanoidBaseReward):
         forward_dir = forward_direction_xy(base_quat)
 
         alignment = torch.sum(forward_dir * chair_dir, dim=-1)
-        heading_error = 1.0 - alignment
-
-        if (
-            self.prev_heading_error is None
-            or self.prev_heading_error.shape != heading_error.shape
-            or self.prev_heading_error.device != device
-        ):
-            self.prev_heading_error = heading_error.detach().clone()
-            heading_progress = torch.zeros_like(heading_error)
-        else:
-            previous = torch.where(
-                torch.isnan(self.prev_heading_error), heading_error, self.prev_heading_error
-            )
-            heading_progress = torch.clamp(
-                (previous - heading_error) / self.progress_scale,
-                min=-1.0,
-                max=1.0,
-            )
-            self.prev_heading_error = torch.where(
-                stage_mask, heading_error.detach(), self.prev_heading_error
-            )
-
-        alignment_reward = 2.0 * smoothstep01(
-            (alignment - 0.0) / (self.good_alignment - 0.0)
+        cross = forward_dir[:, 0] * chair_dir[:, 1] - forward_dir[:, 1] * chair_dir[:, 0]
+        heading_error = torch.atan2(torch.abs(cross), alignment)
+        alignment_reward = 2.0 * torch.exp(
+            -math.log(2.0) * heading_error / self.zero_reward_angle
         ) - 1.0
-        total_reward = 0.70 * alignment_reward + 0.30 * heading_progress
-        return total_reward * stage_mask.float()
+        # A coincident target or vertical forward axis has no planar heading.
+        valid_heading = (chair_dist > 1.0e-6) & (torch.norm(forward_dir, dim=-1) > 1.0e-6)
+        alignment_reward = torch.where(valid_heading, alignment_reward, -torch.ones_like(alignment_reward))
+        return alignment_reward * stage_mask.float()
 
 
 # =============================================================================
@@ -2702,7 +2676,7 @@ KEEP_CHAIR_STILL_PENALTY_WEIGHT = -0.01
 
 # Scalar defaults for stage-1/shared functions. Effective stage-1 weights are
 # set in STAGE1_REWARD_WEIGHTS below; keep shared defaults for other stages.
-STAGE1_ARM_JOINT_VELOCITY_PENALTY_WEIGHT = -0.05
+STAGE1_ARM_JOINT_VELOCITY_PENALTY_WEIGHT = -0.07
 WAIST_STRAIGHT_REWARD_WEIGHT = 0.01
 REACH_CHAIR_REWARD_WEIGHT = 0.04
 REACH_ORIENTATION_REWARD_WEIGHT = 0.02
@@ -2719,16 +2693,16 @@ STAGE1_REWARD_WEIGHTS = {
     "TerminationCfg": -250.0,
     "DeltaActionRateCfg": -0.03,
     "DoFVelocityAccelerationCfg": -0.05,
-    "LocomotionCommandPenalty": -0.05,
+    "LocomotionCommandPenalty": -0.1,
     "UprightPenaltyCfg": -0.10,
-    "KeepChairStillPenalty": -0.02,
-    "Stage1ArmJointVelocityPenalty": -0.03,
+    "KeepChairStillPenalty": -0.1,
+    "Stage1ArmJointVelocityPenalty": -0.170,
     "OpenGraspReward": 0.05,
     "WaistStraightReward": 0.05,
     "ReachChairProgressReward": 0.60,
     "HandOrientationProgressReward": 0.20,
     "HandTargetStillnessReward": 0.20,
-    "StayNearAnchorReward": 0.05,
+    "StayNearAnchorReward": 0.09,
     "PreciseHandTargetReward": 0.20,
 }
 

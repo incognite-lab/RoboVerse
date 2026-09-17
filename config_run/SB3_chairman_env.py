@@ -478,7 +478,7 @@ class StableBaseline3VecEnv(VecEnv):
 
         chair_back_world = chair_back_direction_xy(chair_quat)
         staging_pos_xy = chair_pos[:, :2] + CHAIR_STAGING_DISTANCE * chair_back_world
-        final_pos_xy = chair_pos[:, :2] + CHAIR_FINAL_DISTANCE * chair_back_world
+        final_pos_xy = chair_pos[:, :2] + getattr(self, "FINAL_APPROACH_DISTANCE", CHAIR_FINAL_DISTANCE) * chair_back_world
         staging_vec_world = staging_pos_xy - pelvis_pos[:, :2]
         final_vec_world = final_pos_xy - pelvis_pos[:, :2]
         dist_to_final = torch.norm(final_vec_world, dim=-1, keepdim=True)

@@ -1,6 +1,6 @@
 """Main training/evaluation entry point with concurrent ChairMan Multi-PPO.
 
-For ``task: chairmanmulti`` the train and load-and-train modes use six
+For ``task: chairmanmulti`` or ``task: chairman2`` the train and load-and-train modes use task-specific
 independent PPO policies routed per environment row by its current stage. All
 other task/mode branches retain the behavior of ``main.py``.
 """
@@ -159,7 +159,7 @@ def main():
     scenario.env_spacing = config.get("env_spacing", 2.0)
     scenario.robots[0].fix_base_link = config.get("fix_base_link", False)
     scenario.task.decimation = config.get("decimation", 1)
-    if config.get("task") == "chairmanmulti":
+    if config.get("task") in ("chairmanmulti", "chairman2"):
         # A successful stage transition does not reset the simulator. Physical
         # resets after failure/timeout may, however, reuse snapshots of stages
         # that have already been reached.
@@ -215,6 +215,12 @@ def main():
             if scenario.robots[0].name != "g1_with_hands":
                 scenario.robots[0].urdf_path = "roboverse_data/robots/g1/urdf/g1_mygym_with_world.urdf"
             scenario.robots[0].fix_base_link = False
+    elif config.get("task") == "chairman2":
+        from SB3_chairman2_env import StableBaseline3VecEnv
+        if scenario.robots[0].name != "g1_without_hands":
+            raise ValueError("chairman2 requires robots: [g1_without_hands]")
+        if scenario.robots[0].fix_base_link:
+            raise ValueError("chairman2 requires fix_base_link: false")
     elif config.get("task") == "chairmanmulti":
         from SB3_chairman_multi_env import StableBaseline3VecEnv
         if scenario.robots[0].name != "g1_with_hands":
@@ -296,7 +302,7 @@ def main():
         metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
         env = StableBaseline3VecEnv(metasim_env)
 
-        if config.get("task") == "chairmanmulti":
+        if config.get("task") in ("chairmanmulti", "chairman2"):
             from multi_ppo_trainer import MultiPPOTrainer
 
             trainer = MultiPPOTrainer(env, config)
@@ -1603,7 +1609,7 @@ def main():
         multi_router = None
         multi_manifest = None
         trained_multi_stages = set()
-        if config.get("task") == "chairmanmulti":
+        if config.get("task") in ("chairmanmulti", "chairman2"):
             from multi_ppo_trainer import (
                 load_policy_router,
                 policy_stages_with_training_data,
@@ -1672,7 +1678,7 @@ def main():
                     .actual_stage
                 )
 
-                if config.get("task") == "chairmanmulti":
+                if config.get("task") in ("chairmanmulti", "chairman2"):
                     stages_before_step = env.get_current_stages()
                 elif actual_stage is None:
                     stages_before_step = np.zeros(env.num_envs, dtype=np.int64)
@@ -1932,7 +1938,7 @@ def main():
         metasim_env = MetaSimVecEnv(scenario, task_name=config.get("task"), num_envs=config.get("num_envs", 1), sim=config.get("sim"))
         env = StableBaseline3VecEnv(metasim_env)
 
-        if config.get("task") == "chairmanmulti":
+        if config.get("task") in ("chairmanmulti", "chairman2"):
             from multi_ppo_trainer import MultiPPOTrainer
 
             trainer = MultiPPOTrainer(
