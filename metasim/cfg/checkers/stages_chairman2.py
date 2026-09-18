@@ -1,5 +1,7 @@
+"""Chairman2 checkers grouped by stage, followed by snapshot/reset support."""
 from __future__ import annotations
 
+import math
 import pickle
 import random
 from pathlib import Path
@@ -9,10 +11,7 @@ import threading
 from metasim.utils.humanoid_robot_util import neck_height_tensor
 from metasim.types import EnvState
 from metasim.utils.chair_navigation import (
-    CHAIR_FINAL_DISTANCE,
-    CHAIR_FINAL_TOLERANCE,
     chair_back_direction_xy,
-    forward_direction_xy,
 )
 try:
     from metasim.sim import BaseSimHandler
@@ -58,68 +57,303 @@ def begin_stage(states, handler, ids, stages):
     task.recorded_stage[ids] = stages[ids]
 
 
-def success_conditions(m):
-    """Instantaneous conjunctions; the checker additionally requires a hold."""
-    still = (m['robot_speed'] <= geometry.STILL_SPEED) & (m['robot_yaw_speed'] <= geometry.STILL_YAW_SPEED)
-    chair_still = (m['chair_speed'] <= geometry.STILL_SPEED) & (m['chair_yaw_speed'] <= geometry.STILL_YAW_SPEED)
+# =========================================================
+# COMMON CHECKS: FALL, TIMEOUT, STAGE ENTRY AND STABLE HOLD
+# =========================================================
+
+def common_chairman_checker(states, handler, mask, stage_id, metrics=None):
+    """Advance only active rows; return measurements and common failures."""
+    task = handler.task
+    stages = torch.full_like(mask, stage_id, dtype=torch.long)
+    ids = mask.nonzero(as_tuple=True)[0]
+    if not hasattr(task, 'recorded_stage'):
+        begin_stage(states, handler, ids, stages)
+    else:
+        changed_ids = ids[task.recorded_stage[ids] != stage_id]
+        if changed_ids.numel():
+            begin_stage(states, handler, changed_ids, stages)
+    task.stage_steps[ids] += 1
+    dt = (handler.scenario.sim_params.dt or 0.002) * handler.scenario.decimation
+    m = metrics if metrics is not None else geometry.measure(states, handler.robot.name, task)
+    limit = max(1, math.ceil(STAGE_TIMEOUTS[stage_id] * STAGE_TIMEOUT_REFERENCE_DT / dt))
+    failed = (~m['finite'] | (task.stage_steps > limit)
+              | (neck_height_tensor(states, handler.robot.name) < 0.4)
+              | (m['upright'] < 0.5))
+    return ids, m, failed, dt
+
+
+def _stage_result(handler, mask, stage_id, failed, reached, dt):
+    """Failure takes precedence; success needs a consecutive physical-time hold."""
+    ids = mask.nonzero(as_tuple=True)[0]
+    task = handler.task
+    valid = reached[ids] & ~failed[ids]
+    task.success_hold_steps[ids] = torch.where(
+        valid, task.success_hold_steps[ids] + 1, torch.zeros_like(ids))
+    required = max(1, math.ceil(HOLD_SECONDS[stage_id] / dt))
+    success = mask & (task.success_hold_steps >= required) & ~failed
+    terminated = (mask & failed) | success
+    return terminated, success
+
+
+# =========================================================
+# STAGE 0: WALK TO CHAIR WITH ARMS READY
+# =========================================================
+
+def stage0_success(m):
+    """Instantaneous stage 0 requirements; all conditions must hold."""
+    still = (
+        (m['robot_speed'] <= geometry.STILL_SPEED)
+        & (m['robot_yaw_speed'] <= geometry.STILL_YAW_SPEED)
+    )
+    chair_still = (
+        (m['chair_speed'] <= geometry.STILL_SPEED)
+        & (m['chair_yaw_speed'] <= geometry.STILL_YAW_SPEED)
+    )
     facing = m['heading'] <= geometry.HEADING_TOLERANCE
-    anchored = (m['robot_drift'] <= geometry.ROBOT_DRIFT_TOLERANCE) & (m['chair_drift'] <= geometry.CHAIR_DRIFT_TOLERANCE)
     chair_unturned = m['chair_yaw'] <= geometry.HEADING_TOLERANCE
-    hands_ready = (m['palm_angle'] <= geometry.PALM_ANGLE_TOLERANCE).all(-1) & (m['elbow_angle'] <= geometry.ELBOW_ANGLE_TOLERANCE).all(-1)
-    contact = m['contact'].all(-1) & (m['contact_force'] <= geometry.CONTACT_FORCE_MAX).all(-1)
+    return (
+        (m['approach_error'] <= geometry.POSITION_TOLERANCE)
+        & ((m['pose0'] <= geometry.JOINT_TOLERANCE).all(-1))
+        & (facing)
+        & (still)
+        & (chair_still)
+        & (m['chair_drift'] <= geometry.CHAIR_DRIFT_TOLERANCE)
+        & (chair_unturned)
+    )
+
+
+def stege0_chacker(states, handler, mask, *, metrics=None):
+    """Stage 0: walk to chair with arms ready. Return (terminated, success)."""
+    if not mask.any():
+        return torch.zeros_like(mask), torch.zeros_like(mask)
+    ids, m, failed, dt = common_chairman_checker(states, handler, mask, 0, metrics)
+    failed |= m['chair_drift'] > 0.15
+    handler.task.contact_loss_steps[ids] = 0
+    reached = stage0_success(m)
+    return _stage_result(handler, mask, 0, failed, reached, dt)
+
+
+# =========================================================
+# STAGE 1: EXTEND ARMS IN PLACE
+# =========================================================
+
+def stage1_success(m):
+    """Instantaneous stage 1 requirements; all conditions must hold."""
+    still = (
+        (m['robot_speed'] <= geometry.STILL_SPEED)
+        & (m['robot_yaw_speed'] <= geometry.STILL_YAW_SPEED)
+    )
+    chair_still = (
+        (m['chair_speed'] <= geometry.STILL_SPEED)
+        & (m['chair_yaw_speed'] <= geometry.STILL_YAW_SPEED)
+    )
+    facing = m['heading'] <= geometry.HEADING_TOLERANCE
+    anchored = (
+        (m['robot_drift'] <= geometry.ROBOT_DRIFT_TOLERANCE)
+        & (m['chair_drift'] <= geometry.CHAIR_DRIFT_TOLERANCE)
+    )
+    chair_unturned = m['chair_yaw'] <= geometry.HEADING_TOLERANCE
+    return (
+        ((m['pose1'] <= geometry.JOINT_TOLERANCE).all(-1))
+        & (anchored)
+        & (still)
+        & (chair_still)
+        & (facing)
+        & (chair_unturned)
+        & (m['arm_speed'] <= 0.2)
+    )
+
+
+def stege1_chacker(states, handler, mask, *, metrics=None):
+    """Stage 1: extend arms in place. Return (terminated, success)."""
+    if not mask.any():
+        return torch.zeros_like(mask), torch.zeros_like(mask)
+    ids, m, failed, dt = common_chairman_checker(states, handler, mask, 1, metrics)
+    failed |= m['robot_drift'] > 0.25
+    failed |= m['chair_drift'] > 0.15
+    handler.task.contact_loss_steps[ids] = 0
+    reached = stage1_success(m)
+    return _stage_result(handler, mask, 1, failed, reached, dt)
+
+
+# =========================================================
+# STAGE 2: PLACE HANDS ON THE BACKREST
+# =========================================================
+
+def stage2_success(m):
+    """Instantaneous stage 2 requirements; all conditions must hold."""
+    still = (
+        (m['robot_speed'] <= geometry.STILL_SPEED)
+        & (m['robot_yaw_speed'] <= geometry.STILL_YAW_SPEED)
+    )
+    chair_still = (
+        (m['chair_speed'] <= geometry.STILL_SPEED)
+        & (m['chair_yaw_speed'] <= geometry.STILL_YAW_SPEED)
+    )
+    facing = m['heading'] <= geometry.HEADING_TOLERANCE
+    anchored = (
+        (m['robot_drift'] <= geometry.ROBOT_DRIFT_TOLERANCE)
+        & (m['chair_drift'] <= geometry.CHAIR_DRIFT_TOLERANCE)
+    )
+    chair_unturned = m['chair_yaw'] <= geometry.HEADING_TOLERANCE
+    hands_ready = (
+        ((m['palm_angle'] <= geometry.PALM_ANGLE_TOLERANCE).all(-1))
+        & ((m['elbow_angle'] <= geometry.ELBOW_ANGLE_TOLERANCE).all(-1))
+    )
+    contact = (
+        (m['contact'].all(-1))
+        & ((m['contact_force'] <= geometry.CONTACT_FORCE_MAX).all(-1))
+    )
     quiet_hands = m['hand_slip'].amax(-1) <= 0.08
-    return torch.stack((
-        (m['approach_error'] <= geometry.POSITION_TOLERANCE) & (m['pose0'] <= geometry.JOINT_TOLERANCE).all(-1)
-            & facing & still & chair_still & (m['chair_drift'] <= geometry.CHAIR_DRIFT_TOLERANCE) & chair_unturned,
-        (m['pose1'] <= geometry.JOINT_TOLERANCE).all(-1) & anchored & still & chair_still & facing
-            & chair_unturned & (m['arm_speed'] <= 0.20),
-        hands_ready & contact & anchored & still & chair_still & facing & quiet_hands & chair_unturned,
-        (m['pull_error'] <= geometry.PULL_TOLERANCE) & (m['lateral'] <= geometry.PULL_TOLERANCE)
-            & hands_ready & contact & still & chair_still & facing & chair_unturned & quiet_hands,
-        (m['lift_height'] >= 0.10).all(-1) & (m['lift_xy'] <= 0.10).all(-1) & ~m['any_contact'].any(-1)
-            & anchored & still & chair_still & facing & chair_unturned & quiet_hands,
-    ), dim=-1)
+    return (
+        (hands_ready)
+        & (contact)
+        & (anchored)
+        & (still)
+        & (chair_still)
+        & (facing)
+        & (quiet_hands)
+        & (chair_unturned)
+    )
+
+
+def stege2_chacker(states, handler, mask, *, metrics=None):
+    """Stage 2: place hands on the backrest. Return (terminated, success)."""
+    if not mask.any():
+        return torch.zeros_like(mask), torch.zeros_like(mask)
+    ids, m, failed, dt = common_chairman_checker(states, handler, mask, 2, metrics)
+    failed |= m['robot_drift'] > 0.25
+    failed |= m['chair_drift'] > 0.15
+    handler.task.contact_loss_steps[ids] = 0
+    reached = stage2_success(m)
+    return _stage_result(handler, mask, 2, failed, reached, dt)
+
+
+# =========================================================
+# STAGE 3: PULL CHAIR AND STOP
+# =========================================================
+
+def stage3_success(m):
+    """Instantaneous stage 3 requirements; all conditions must hold."""
+    still = (
+        (m['robot_speed'] <= geometry.STILL_SPEED)
+        & (m['robot_yaw_speed'] <= geometry.STILL_YAW_SPEED)
+    )
+    chair_still = (
+        (m['chair_speed'] <= geometry.STILL_SPEED)
+        & (m['chair_yaw_speed'] <= geometry.STILL_YAW_SPEED)
+    )
+    facing = m['heading'] <= geometry.HEADING_TOLERANCE
+    chair_unturned = m['chair_yaw'] <= geometry.HEADING_TOLERANCE
+    hands_ready = (
+        ((m['palm_angle'] <= geometry.PALM_ANGLE_TOLERANCE).all(-1))
+        & ((m['elbow_angle'] <= geometry.ELBOW_ANGLE_TOLERANCE).all(-1))
+    )
+    contact = (
+        (m['contact'].all(-1))
+        & ((m['contact_force'] <= geometry.CONTACT_FORCE_MAX).all(-1))
+    )
+    quiet_hands = m['hand_slip'].amax(-1) <= 0.08
+    return (
+        (m['pull_error'] <= geometry.PULL_TOLERANCE)
+        & (m['lateral'] <= geometry.PULL_TOLERANCE)
+        & (hands_ready)
+        & (contact)
+        & (still)
+        & (chair_still)
+        & (facing)
+        & (chair_unturned)
+        & (quiet_hands)
+    )
+
+
+def stege3_chacker(states, handler, mask, *, metrics=None):
+    """Stage 3: pull chair and stop. Return (terminated, success)."""
+    if not mask.any():
+        return torch.zeros_like(mask), torch.zeros_like(mask)
+    ids, m, failed, dt = common_chairman_checker(states, handler, mask, 3, metrics)
+    failed |= (m['lateral'] > 0.25) | (m['chair_yaw'] > math.radians(25))
+    lost = ~m['contact'][ids].all(-1)
+    handler.task.contact_loss_steps[ids] = torch.where(
+        lost, handler.task.contact_loss_steps[ids] + 1, torch.zeros_like(ids))
+    failed |= handler.task.contact_loss_steps > max(1, math.ceil(CONTACT_GRACE_SECONDS / dt))
+    reached = stage3_success(m)
+    return _stage_result(handler, mask, 3, failed, reached, dt)
+
+
+# =========================================================
+# STAGE 4: RELEASE AND LIFT HANDS
+# =========================================================
+
+def stage4_success(m):
+    """Instantaneous stage 4 requirements; all conditions must hold."""
+    still = (
+        (m['robot_speed'] <= geometry.STILL_SPEED)
+        & (m['robot_yaw_speed'] <= geometry.STILL_YAW_SPEED)
+    )
+    chair_still = (
+        (m['chair_speed'] <= geometry.STILL_SPEED)
+        & (m['chair_yaw_speed'] <= geometry.STILL_YAW_SPEED)
+    )
+    facing = m['heading'] <= geometry.HEADING_TOLERANCE
+    anchored = (
+        (m['robot_drift'] <= geometry.ROBOT_DRIFT_TOLERANCE)
+        & (m['chair_drift'] <= geometry.CHAIR_DRIFT_TOLERANCE)
+    )
+    chair_unturned = m['chair_yaw'] <= geometry.HEADING_TOLERANCE
+    quiet_hands = m['hand_slip'].amax(-1) <= 0.08
+    return (
+        ((m['lift_height'] >= 0.1).all(-1))
+        & ((m['lift_xy'] <= 0.1).all(-1))
+        & (~m['any_contact'].any(-1))
+        & (anchored)
+        & (still)
+        & (chair_still)
+        & (facing)
+        & (chair_unturned)
+        & (quiet_hands)
+    )
+
+
+def stege4_chacker(states, handler, mask, *, metrics=None):
+    """Stage 4: release and lift hands. Return (terminated, success)."""
+    if not mask.any():
+        return torch.zeros_like(mask), torch.zeros_like(mask)
+    ids, m, failed, dt = common_chairman_checker(states, handler, mask, 4, metrics)
+    failed |= m['robot_drift'] > 0.25
+    failed |= m['chair_drift'] > 0.15
+    handler.task.contact_loss_steps[ids] = 0
+    reached = stage4_success(m)
+    return _stage_result(handler, mask, 4, failed, reached, dt)
+
+
+# =========================================================
+# BATCH DISPATCH (ONE GEOMETRY PASS, ONE TIMER UPDATE PER ENV)
+# =========================================================
+
+def success_conditions(m):
+    """Diagnostic matrix of instantaneous requirements for stages 0..4."""
+    return torch.stack((stage0_success(m), stage1_success(m), stage2_success(m),
+                        stage3_success(m), stage4_success(m)), dim=-1)
 
 
 def evaluate_stages(states, handler, stages):
-    """One physical measurement pass, per-row timers and independent anchors."""
-    import math
     task = handler.task
-    n, device = stages.shape[0], stages.device
-    if not hasattr(task, 'stage_steps'):
-        task.stage_steps = torch.zeros(n, dtype=torch.long, device=device)
-        task.recorded_stage = torch.full_like(stages, -1)
-    for name in ('success_hold_steps', 'contact_loss_steps'):
-        if not hasattr(task, name):
-            setattr(task, name, torch.zeros_like(stages))
-    changed = task.recorded_stage != stages
+    changed = torch.ones_like(stages, dtype=torch.bool)
+    if hasattr(task, 'recorded_stage'):
+        changed = task.recorded_stage != stages
     ids = changed.nonzero(as_tuple=True)[0]
     if ids.numel():
-        _capture_stage_reference(states, handler, ids)
-        task.stage_steps[ids] = 0
-        task.success_hold_steps[ids] = 0
-        task.contact_loss_steps[ids] = 0
-    task.recorded_stage.copy_(stages)
-    task.stage_steps += 1
-    dt = (handler.scenario.sim_params.dt or 0.002) * handler.scenario.decimation
-    m = geometry.measure(states, handler.robot.name, task)
-    task.chairman2_metrics = m
-    safe_stage = stages.clamp(0, NUM_STAGES-1)
-    limits = stages.new_tensor([max(1, math.ceil(STAGE_TIMEOUTS[s]*STAGE_TIMEOUT_REFERENCE_DT/dt)) for s in range(NUM_STAGES)])
-    failed = (stages < 0) | (stages >= NUM_STAGES) | ~m['finite'] | (task.stage_steps > limits[safe_stage])
-    failed |= (neck_height_tensor(states, handler.robot.name) < 0.4) | (m['upright'] < 0.5)
-    stationary_stage = (stages == 1) | (stages == 2) | (stages == 4)
-    # Tolerance errors receive shaping; large deviations terminate the attempt.
-    failed |= stationary_stage & (m['robot_drift'] > 0.25)
-    failed |= (stages != 3) & (m['chair_drift'] > 0.15)
-    failed |= (stages == 3) & ((m['lateral'] > 0.25) | (m['chair_yaw'] > math.radians(25)))
-    lost = (stages == 3) & ~m['contact'].all(-1)
-    task.contact_loss_steps = torch.where(lost, task.contact_loss_steps+1, torch.zeros_like(stages))
-    failed |= (stages == 3) & (task.contact_loss_steps > max(1, math.ceil(CONTACT_GRACE_SECONDS/dt)))
-    reached = success_conditions(m).gather(1, safe_stage[:, None]).squeeze(1) & ~failed
-    task.success_hold_steps = torch.where(reached, task.success_hold_steps+1, torch.zeros_like(stages))
-    holds = stages.new_tensor([max(1, math.ceil(seconds/dt)) for seconds in HOLD_SECONDS])
-    succeeded = (task.success_hold_steps >= holds[safe_stage]) & ~failed
+        begin_stage(states, handler, ids, stages)
+    metrics = geometry.measure(states, handler.robot.name, task)
+    task.chairman2_metrics = metrics
+    failed = (stages < 0) | (stages >= NUM_STAGES)
+    succeeded = torch.zeros_like(failed)
+    for stage, checker in enumerate((stege0_chacker, stege1_chacker, stege2_chacker,
+                                      stege3_chacker, stege4_chacker)):
+        terminated, success = checker(states, handler, stages == stage, metrics=metrics)
+        failed |= terminated & ~success
+        succeeded |= success
     return failed, succeeded
 
 

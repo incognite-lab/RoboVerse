@@ -68,7 +68,7 @@ force: false
 # stages 1-5 require at least one snapshot in snapshots_chair/stage_X.
 # The reset fails with a clear error when the requested snapshot is missing.
 # The selected bundle reports training data only for policy 2.
-eval_start_stage: 2
+eval_start_stage: 0
 reset_to_stage0: false
 use_snapshot_curriculum: false
 snapshot_save_probability: 0.0
@@ -91,21 +91,21 @@ visualize_reach_waypoints: true
 
 # Optional: force all stage policies to load stage_X/model_<value>.zip.
 # Leave unset to use the checkpoint referenced by multi_policy_manifest.json.
-#load_model_checkpoint: 2289600000
+#load_model_checkpoint: 1170240000
 # Optional: set a different checkpoint for each stage.
 # When true, load_model_stage_checkpoints must define stages 0 through 5.
 load_model_split_checkpoints: false
 load_model_stage_checkpoints:
-  0: 5255370000
-  1: 305280000
-  2: 254400000
-  3: 254400000
-  4: 254400000
-  5: 254400000
+  0: 50880000
+  1: 1272000000
+  2: 1272000000
+  3: 1272000000
+  4: 1272000000
+  5: 1272000000
 # Can point either to one concrete run_*_chairmanmulti_concurrent directory or
 # to its parent. With a parent directory the newest valid run is selected.
-load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-16_12-44-29_chairmanmulti_concurrent
-video_save_path: ./config_run/output/eval_videos/chairman_ppo_multi_0.mp4
+load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-17_17-18-28_chairmanmulti_concurrent
+video_save_path: ./config_run/output/eval_videos/chairman_ppo_multi_1.mp4
 eval_max_steps: 2000
 
 # Evaluation stops cleanly as soon as the robot reaches a policy that the

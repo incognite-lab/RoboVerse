@@ -34,12 +34,14 @@ STAGE0_JOINT_TARGETS = {
     'left_shoulder_yaw_joint': 1.15, 'left_elbow_joint': -0.59, 'left_wrist_roll_joint': 0.0,
     'right_shoulder_pitch_joint': 1.51, 'right_shoulder_roll_joint': -0.93,
     'right_shoulder_yaw_joint': -1.15, 'right_elbow_joint': -0.59, 'right_wrist_roll_joint': 0.0,
+    "waist_yaw_joint": 0.0, "waist_roll_joint": 0.0, "waist_pitch_joint": 0.0,
 }
 STAGE1_JOINT_TARGETS = {
     'left_shoulder_pitch_joint': -1.66, 'left_shoulder_roll_joint': 0.23,
     'left_shoulder_yaw_joint': 0.0, 'left_elbow_joint': 1.45, 'left_wrist_roll_joint': 1.35,
     'right_shoulder_pitch_joint': -1.66, 'right_shoulder_roll_joint': -0.23,
     'right_shoulder_yaw_joint': 0.0, 'right_elbow_joint': 1.45, 'right_wrist_roll_joint': -1.35,
+    "waist_yaw_joint": 0.0, "waist_roll_joint": 0.0, "waist_pitch_joint": 0.0,
 }
 
 

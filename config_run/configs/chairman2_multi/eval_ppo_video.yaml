@@ -89,7 +89,7 @@ visualize_reach_waypoints: true
 load_model_split_checkpoints: false
 # Can point either to one concrete run_*_chairman2_concurrent directory or
 # to its parent. With a parent directory the newest valid run is selected.
-load_model_path: ./config_run/output/ppo_models_chairman2_five_stage_v1/REPLACE_WITH_RUN_DIRECTORY
+load_model_path: ./config_run/output/ppo_models_chairman2_multi/run_2026-09-17_17-02-07_chairman2_concurrent
 video_save_path: ./config_run/output/eval_videos/chairman2_ppo_multi_0.mp4
 eval_max_steps: 2000
 

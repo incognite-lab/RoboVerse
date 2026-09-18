@@ -13,9 +13,8 @@ add_table: true
 env_spacing: 4.0
 train_or_eval: eval_dagger  #load_and_train #train_dagger #eval_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
 
-# Gaussian-splat camera with a small standalone Genesis floor for alignment.
-# Keep render_sim_geometry=false for now: Nyx renders the splat plus this
-# controlled standalone geometry, not the full MetaSim robot/ground scene yet.
+# Nyx room + articulated G1 splats. Physics remains URDF-based.
+# Robot splats currently require a slow visual-scene reload for each environment.
 cameras:
    camera1:
      type: NyxGaussianSplatCameraCfg
@@ -39,6 +38,7 @@ cameras:
        render_mode: FastPathTracer
        tone_mapper: "Off"
        render_sim_geometry: true
+       robot_gaussian_splat_dir: ./roboverse_data/robots/g1/g1_splat
        standalone_floor: false
        standalone_floor_pos: [0.0, 0.0, -0.03]
        standalone_floor_size: [20.0, 20.0, 0.04]

@@ -36,6 +36,7 @@ cameras:
        render_mode: FastPathTracer
        tone_mapper: "Off"
        render_sim_geometry: true
+       robot_gaussian_splat_dir: ./roboverse_data/robots/g1/g1_splat
        standalone_floor: false
        standalone_floor_pos: [0.0, 0.0, -0.03]
        standalone_floor_size: [20.0, 20.0, 0.04]

@@ -12,8 +12,10 @@ from metasim.cfg.checkers import _ChairMan2Checker
 def scene(n=2):
     names = ['pelvis', 'torso_link'] + [s+'_'+link for s in ('left','right')
              for link in ('shoulder_roll_link','elbow_link','wrist_roll_link','hand_palm_link')]
+    joint_names = list(g.STAGE0_JOINT_TARGETS)
     robot = SimpleNamespace(body_names=names, body_state=torch.zeros(n,len(names),13),
-        joint_names=list(g.STAGE0_JOINT_TARGETS), joint_pos=torch.zeros(n,10), joint_vel=torch.zeros(n,10), contact=None)
+        joint_names=joint_names, joint_pos=torch.zeros(n,len(joint_names)),
+        joint_vel=torch.zeros(n,len(joint_names)), contact=None)
     robot.body_state[:,:,3] = 1
     robot.body_state[:,:,2] = 1
     robot.body_state[:,0,1] = g.APPROACH_DISTANCE
@@ -47,6 +49,24 @@ def contact(states):
 
 
 class Chairman2CheckerTest(unittest.TestCase):
+    def test_direct_stage_checker_only_advances_masked_rows(self):
+        states, h = scene()
+        states.robots[h.robot.name].joint_pos[:] = torch.tensor(list(g.STAGE0_JOINT_TARGETS.values()))
+        mask = torch.tensor([True, False])
+        for _ in range(25):
+            terminated, succeeded = c.stege0_chacker(states, h, mask)
+        self.assertEqual(succeeded.tolist(), [True, False])
+        self.assertEqual(terminated.tolist(), [True, False])
+        self.assertEqual(h.task.stage_steps.tolist(), [25, 0])
+
+    def test_batch_dispatch_measures_geometry_once(self):
+        states, h = scene()
+        stages = torch.tensor([0, 1])
+        with patch.object(g, 'measure', wraps=g.measure) as measure:
+            c.evaluate_stages(states, h, stages)
+        self.assertEqual(measure.call_count, 1)
+        self.assertEqual(h.task.stage_steps.tolist(), [1, 1])
+
     def test_contact_requires_force_both_hands_and_backrest_region(self):
         states,h=scene(); m=g.measure(states,h.robot.name,h.task)
         self.assertFalse(m['contact'].any())

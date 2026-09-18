@@ -7,11 +7,11 @@ robots: [g1_with_hands]
 fix_base_link: false
 task: chairmanmulti #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
 decimation: 5
-num_envs: 15000
+num_envs: 9000
 headless: true
 add_table: true
 env_spacing: 4.0
-train_or_eval: train   #load_and_train #train_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
+train_or_eval: load_and_train   #load_and_train #train_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
 
 # true: trénuje se pouze policy train_stage (0–5), bez automatického zmražení.
 # Každý reset i dokončení stage obnoví její snapshot z
@@ -75,7 +75,7 @@ stage_episode_metrics_window: 1000
 
 # Used only with train_or_eval: load_and_train; must point to a complete
 # concurrent multi-policy run directory containing stage_0 ... stage_5.
-load_model_path:
+load_model_path: ./config_run/output/ppo_models_multi/config_run/output/ppo_models_multi/run_2026-09-17_17-18-28_chairmanmulti_concurrent
 # PPO parameters
 #-------------------------------------------
 net_arch_pivf: true

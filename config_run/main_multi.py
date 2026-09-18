@@ -173,6 +173,9 @@ def main():
             config.get("snapshot_save_probability", 1.0)
         )
         scenario.task.eval_start_stage = config.get("eval_start_stage")
+        scenario.task.log_termination_reasons = bool(config.get(
+            "log_termination_reasons", config.get("train_or_eval") in ("eval", "eval_video")
+        ))
         if config.get("train_or_eval") in ("train", "load_and_train"):
             from multi_ppo_trainer import single_training_stage
 

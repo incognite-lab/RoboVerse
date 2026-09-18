@@ -45,7 +45,9 @@ def test_packed_reset_restores_fixed_root_and_preserves_floating_qpos(fixed, wit
         inst.set_pos.assert_not_called()
         inst.set_quat.assert_not_called()
     torch.testing.assert_close(inst.set_qpos.call_args.args[0], qpos)
-    assert inst.set_qpos.call_args.kwargs["skip_forward"] == with_velocity
+    # The velocity setter does not refresh link positions. Reset anchors and
+    # observations must already see the new pose before the first scene step.
+    assert inst.set_qpos.call_args.kwargs["skip_forward"] is False
     if with_velocity:
         torch.testing.assert_close(inst.set_dofs_velocity.call_args.args[0], entity["qvel"])
     else:

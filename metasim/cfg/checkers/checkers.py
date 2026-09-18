@@ -1181,6 +1181,22 @@ class _ChairMan2Checker(BaseChecker):
         task.completed_stage_events = torch.full_like(stages, -1)
         task.reward_functions[0].completed_stages.zero_()
         failed, succeeded = checks.evaluate_stages(states, handler, stages)
+        if getattr(task, "log_termination_reasons", False) and failed.any():
+            metrics = task.chairman2_metrics
+            neck = neck_height_tensor(states, handler.robot.name)
+            for env_id in failed.nonzero(as_tuple=True)[0].detach().cpu().tolist():
+                log.warning(
+                    "Chairman2 failure: env={}, stage={}, stage_step={}, "
+                    "finite={}, neck_height={:.4f} (min 0.4), upright={:.4f} (min 0.5), "
+                    "chair_drift={:.4f} (max 0.15 outside pull), "
+                    "robot_drift={:.4f} (max 0.25 in stationary stages), "
+                    "lateral={:.4f}, chair_yaw={:.4f}, contact_loss_steps={}",
+                    env_id, int(stages[env_id]), int(task.stage_steps[env_id]),
+                    bool(metrics["finite"][env_id]), float(neck[env_id]),
+                    float(metrics["upright"][env_id]), float(metrics["chair_drift"][env_id]),
+                    float(metrics["robot_drift"][env_id]), float(metrics["lateral"][env_id]),
+                    float(metrics["chair_yaw"][env_id]), int(task.contact_loss_steps[env_id]),
+                )
         task.completed_stage_events[succeeded] = stages[succeeded]
         task.just_finished = succeeded & (stages == checks.NUM_STAGES - 1)
         task.stage_success = task.just_finished.clone()
