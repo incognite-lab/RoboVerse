@@ -36,7 +36,7 @@ cameras:
        render_mode: FastPathTracer
        tone_mapper: "Off"
        render_sim_geometry: true
-       robot_gaussian_splat_dir: ./roboverse_data/robots/g1/g1_splat
+       #robot_gaussian_splat_dir: ./roboverse_data/robots/g1/g1_splat
        standalone_floor: false
        standalone_floor_pos: [0.0, 0.0, -0.03]
        standalone_floor_size: [20.0, 20.0, 0.04]
@@ -59,8 +59,8 @@ cameras:
 #-------------------------------------------
 force: false
 
-load_model_path: ./config_run/output/dagger/dagger_0/student_model_step_60000.pth
-video_save_path: ./config_run/output/eval_videos/chair_man_19.mp4
+load_model_path: ./config_run/output/dagger/dagger_1/student_model_step_140000.pth
+video_save_path: ./config_run/output/eval_videos/chair_man_dagger_simple.mp4
 eval_episodes: 1000
 eval_max_steps: 1000
 eval_total_step_cap: 1000

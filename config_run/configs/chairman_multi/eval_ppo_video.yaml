@@ -94,18 +94,18 @@ visualize_reach_waypoints: true
 #load_model_checkpoint: 1170240000
 # Optional: set a different checkpoint for each stage.
 # When true, load_model_stage_checkpoints must define stages 0 through 5.
-load_model_split_checkpoints: false
+load_model_split_checkpoints: true
 load_model_stage_checkpoints:
-  0: 50880000
-  1: 1272000000
-  2: 1272000000
-  3: 1272000000
-  4: 1272000000
-  5: 1272000000
+  0: 1507968000
+  1: 1507968000
+  2: 906624000
+  3: 1507968000
+  4: 1507968000
+  5: 1507968000
 # Can point either to one concrete run_*_chairmanmulti_concurrent directory or
 # to its parent. With a parent directory the newest valid run is selected.
-load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-17_17-18-28_chairmanmulti_concurrent
-video_save_path: ./config_run/output/eval_videos/chairman_ppo_multi_1.mp4
+load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-18_15-55-24_chairmanmulti_concurrent
+video_save_path: ./config_run/output/eval_videos/chairman_ppo_multi_2.mp4
 eval_max_steps: 2000
 
 # Evaluation stops cleanly as soon as the robot reaches a policy that the

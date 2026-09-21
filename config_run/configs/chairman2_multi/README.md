@@ -10,11 +10,11 @@ python config_run/main_multi.py chairman2_multi/eval_ppo_video
 
 For resume/evaluation set `load_model_path` to a new bundle directory containing
 `multi_policy_manifest.json` and `stage_0` through `stage_4`. Five-stage bundles
-carry `task_version: chairman2_five_stage_v1`; incompatible old bundles are
+carry `task_version: chairman2_five_stage_v2`; incompatible old bundles are
 rejected. Old files are retained. Models and snapshots use separate directories:
 
-- `config_run/output/ppo_models_chairman2_five_stage_v1`
-- `config_run/snapshots_chairman2_five_stage_v1`
+- `config_run/output/ppo_models_chairman2_five_stage_v2`
+- `config_run/snapshots_chairman2_five_stage_v2`
 
 The task uses `ChairMan_2.Chairman2Cfg`, `_ChairMan2Checker`,
 `stages_chairman2`, and `SB3_chairman2_env`. `g1_without_hands` selects
@@ -22,17 +22,28 @@ The task uses `ChairMan_2.Chairman2Cfg`, `_ChairMan2Checker`,
 commands; the motion controller drives the legs. The observation includes stage
 anchors, fixed pull direction, remaining pull distance, and elapsed stage time.
 
+The Chairman2 policy uses an 83-value task-relative observation. It contains
+the positions and velocities of the ten controlled arm joints, pelvis velocity,
+torso up-vector, chair approach/direction/velocity, end-effector target errors
+and velocities, palm orientation errors, stage-1/2 hand geometry, hand-chair
+forces, stage context, previous walking command, and a five-value stage one-hot.
+Leg joint positions/velocities and absolute poses of all intermediate arm links
+are intentionally omitted; the walking controller observes the legs internally.
+Because the network input dimension changed, models trained with the former
+observation layout cannot be resumed with this wrapper and must be retrained.
+
 | Stage | Goal | Main checker conditions | Hold | Timeout |
 |---|---|---|---|---|
 | 0 | Walk behind chair with specified walking arm pose | within 5 cm of target 0.745 m from chair base, every arm joint within 0.15 rad, torso within 5 degrees, robot/chair stopped | 0.25 s | 15 s |
-| 1 | Extend arms to specified pose | every joint within 0.15 rad, robot drift <=5 cm, chair drift <=3 cm, stopped and facing chair, arm speed <=0.20 rad/s | 0.25 s | 6 s |
-| 2 | Place both palms on backrest | both actual contacts in backrest target regions, palms down and elbows straight within 10 degrees, robot/chair stationary, limited force/slip | 0.25 s | 8 s |
+| 1 | Extend arms above backrest | both end effectors at least 0.50 m forward from torso and at or above right-target height, anchors and heading maintained | 1 step | 6 s |
+| 2 | Move hands behind backrest | both end effectors at least 0.10 m beyond the backrest toward the seat and no higher than right-target height, anchors and heading maintained | 1 step | 8 s |
 | 3 | Pull chair backward 1 m | distance/lateral error <=5 cm, chair yaw <=5 degrees, both contacts, palms down, straight elbows, robot/chair stopped | 0.40 s | 20 s |
 | 4 | Lift both hands | both palm surfaces >=10 cm above targets, within 10 cm horizontally, no hand-chair contact, anchors and stillness maintained | 0.25 s | 6 s |
 
 Stillness uses XY speed <=0.08 m/s and Z angular speed <=0.10 rad/s.
-Contact must carry >=0.5 N; success requires <=60 N per hand and relative
-hand speed <=0.08 m/s. Contact gaps in stage 3 are tolerated for 0.10 s;
+Stage 2 is geometric and does not require contact. Contact must carry >=0.5 N
+for the pull stage; it requires <=60 N per hand and relative hand speed <=0.08 m/s.
+Contact gaps in stage 3 are tolerated for 0.10 s;
 positive pull shaping remains disabled during a gap. Larger robot/chair drift,
 fall, invalid state, or timeout fails the stage. Small errors receive penalties.
 The checker measures actual motion, not just requested walking commands.

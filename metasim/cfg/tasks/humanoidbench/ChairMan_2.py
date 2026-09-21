@@ -1,6 +1,7 @@
 """Chairman2 rewards, grouped by stage like ChairMan_multi.
 
-Stages: 0 walk with arms ready, 1 extend, 2 contact, 3 pull, 4 release.
+Stages: 0 walk with arms tucked, 1 extend above backrest, 2 cross toward
+the seat, 3 pull, 4 release.
 Each reward owns its mask, state and reset. Targets remain shared with checkers
 in chairman2_geometry; weights and task registration are at the end of this file.
 """
@@ -427,7 +428,7 @@ class KeepChairStillPenalty(HumanoidBaseReward):
 # =============================================================================
 
 class ExtendArmsReward(HumanoidBaseReward):
-    """Stage 1: signed progress and running costs for extend arms."""
+    """Stage 1: extend both end effectors forward and above the backrest."""
     stage = 1
 
     def __init__(self):
@@ -446,15 +447,25 @@ class ExtendArmsReward(HumanoidBaseReward):
         if self.actual_stage is None:
             return q.new_zeros(q.shape[0])
         m = self.metrics if self.metrics is not None else g.measure(states, robot_name or self.robot_name, self)
-        pose = bilateral(m['pose1'], g.JOINT_TOLERANCE)
+        reach_shortfall = torch.relu(g.HAND_FORWARD_REACH_MIN - m['hand_forward_reach'])
+        height_shortfall = torch.relu(
+            g.HAND_ABOVE_BACKREST_MIN - m['hand_height_above_backrest']
+        )
+        task_space_cost = (
+            4.0 * bilateral(reach_shortfall, 0.15)
+            + 3.0 * bilateral(height_shortfall, 0.15)
+        )
+        near_goal = (
+            (reach_shortfall.amax(-1) <= 0.05)
+            & (height_shortfall.amax(-1) <= 0.05)
+        )
         cost = (
-            3 * pose
+            task_space_cost
             + anchor_cost(m)
-            + still_cost(m)
             + heading_cost(m)
             + chair_still_cost(m)
             + bounded(m['chair_yaw'], g.HEADING_TOLERANCE)
-            + (1 - pose) * bounded(m['arm_speed'], 0.2)
+            + near_goal.float() * bounded(m['arm_speed'], 0.2)
         )
         active = self.actual_stage == self.stage
         if self.previous_cost is None or self.previous_cost.shape != cost.shape:
@@ -468,11 +479,11 @@ class ExtendArmsReward(HumanoidBaseReward):
 
 
 # =============================================================================
-# STAGE 2: CONTACT THE BACKREST
+# STAGE 2: MOVE HANDS BEHIND THE BACKREST
 # =============================================================================
 
-class PlaceHandsReward(HumanoidBaseReward):
-    """Stage 2: signed progress and running costs for contact the backrest."""
+class MoveHandsBehindBackrestReward(HumanoidBaseReward):
+    """Stage 2: move both end effectors over the backrest toward the seat."""
     stage = 2
 
     def __init__(self):
@@ -491,19 +502,25 @@ class PlaceHandsReward(HumanoidBaseReward):
         if self.actual_stage is None:
             return q.new_zeros(q.shape[0])
         m = self.metrics if self.metrics is not None else g.measure(states, robot_name or self.robot_name, self)
-        contact_missing = 1 - m['contact'].float().mean(-1)
-        excess_force = torch.relu(m['contact_force'] - g.CONTACT_FORCE_MAX)
+        depth_shortfall = torch.relu(
+            g.HAND_BEHIND_BACKREST_MIN - m['hand_behind_backrest']
+        )
+        height_excess = torch.relu(-m['hand_below_target'])
+        task_space_cost = (
+            5.0 * bilateral(depth_shortfall, 0.10)
+            + 3.0 * bilateral(height_excess, 0.15)
+        )
+        near_goal = (
+            (depth_shortfall.amax(-1) <= 0.03)
+            & (height_excess.amax(-1) <= 0.03)
+        )
         cost = (
-            3 * bilateral(m['palm_error'], g.CONTACT_RADIUS)
-            + hand_shape_cost(m)
-            + contact_missing
+            task_space_cost
             + anchor_cost(m)
-            + still_cost(m)
             + chair_still_cost(m)
             + heading_cost(m)
             + bounded(m['chair_yaw'], g.HEADING_TOLERANCE)
-            + bilateral(excess_force, g.CONTACT_FORCE_MAX)
-            + bilateral(m['hand_slip'] * m['any_contact'], 0.08)
+            + near_goal.float() * bounded(m['arm_speed'], 0.2)
         )
         active = self.actual_stage == self.stage
         if self.previous_cost is None or self.previous_cost.shape != cost.shape:
@@ -625,7 +642,7 @@ WALK_TO_CHAIR_REWARD_WEIGHT = 0.4
 FACE_CHAIR_REWARD_WEIGHT = 0.1
 KEEP_CHAIR_STILL_PENALTY_WEIGHT = -1.0
 EXTEND_ARMS_REWARD_WEIGHT = 0.1
-PLACE_HANDS_REWARD_WEIGHT = 0.1
+MOVE_HANDS_BEHIND_BACKREST_REWARD_WEIGHT = 0.1
 PULL_CHAIR_REWARD_WEIGHT = 0.1
 LIFT_HANDS_REWARD_WEIGHT = 0.1
 
@@ -662,7 +679,7 @@ class Chairman2Cfg(HumanoidTaskCfg):
         FACE_CHAIR_REWARD_WEIGHT,
         KEEP_CHAIR_STILL_PENALTY_WEIGHT,
         EXTEND_ARMS_REWARD_WEIGHT,
-        PLACE_HANDS_REWARD_WEIGHT,
+        MOVE_HANDS_BEHIND_BACKREST_REWARD_WEIGHT,
         PULL_CHAIR_REWARD_WEIGHT,
         LIFT_HANDS_REWARD_WEIGHT,
     ]
@@ -674,7 +691,7 @@ class Chairman2Cfg(HumanoidTaskCfg):
         FaceChairReward(),
         KeepChairStillPenalty(),
         ExtendArmsReward(),
-        PlaceHandsReward(),
+        MoveHandsBehindBackrestReward(),
         PullChairReward(),
         LiftHandsReward(),
     ]

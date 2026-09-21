@@ -21,12 +21,12 @@ force: false
 # Cílový CELKOVÝ počet přechodů včetně již uložených kroků.
 # Musí být vyšší než global_timesteps v načítaném manifestu.
 total_timesteps: 5_000_000_000
-model_save_path: ./config_run/output/ppo_models_chairman2_five_stage_v1
+model_save_path: ./config_run/output/ppo_models_chairman2_five_stage_v2
 # A 15k-env rollout already advances the global counter quickly. Saving less
 # often avoids spending training time and disk space on nearly identical
 # five-policy bundles.
 model_save_freq: 50_000_000
-tensorboard_log: ./config_run/output/ppo_models_chairman2_five_stage_v1/tensorboard
+tensorboard_log: ./config_run/output/ppo_models_chairman2_five_stage_v2/tensorboard
 
 # Give every stage update at least eight 16k minibatches. A stage with many
 # active envs may contribute more because complete on-policy rollouts are kept.
@@ -63,7 +63,7 @@ stage_episode_metrics_window: 1000
 
 # Načtení všech pěti policies ze stejného běhu jako v eval_ppo_video.yaml.
 # Lze zadat i nadřazený adresář; pak se vybere nejnovější běh s manifestem.
-load_model_path: ./config_run/output/ppo_models_chairman2_five_stage_v1/REPLACE_WITH_RUN_DIRECTORY
+load_model_path: ./config_run/output/ppo_models_chairman2_five_stage_v2/REPLACE_WITH_RUN_DIRECTORY
 
 # false: nejnovější kompletně uložený checkpoint uvedený v manifestu;
 #        tabulka níže se ignoruje.

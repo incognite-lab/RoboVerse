@@ -20,11 +20,13 @@ except ImportError:
 
 # Shared criteria also drive reward shaping; all thresholds use SI units.
 from metasim.utils import chairman2_geometry as geometry
-from metasim.utils.chairman2_geometry import STAGE0_JOINT_TARGETS, STAGE1_JOINT_TARGETS
+from metasim.utils.chairman2_geometry import STAGE0_JOINT_TARGETS
 NUM_STAGES = geometry.NUM_STAGES
 STAGE_TIMEOUT_REFERENCE_DT = 0.02
 STAGE_TIMEOUTS = {0: 750, 1: 300, 2: 400, 3: 1000, 4: 300}
-HOLD_SECONDS = (0.25, 0.25, 0.25, 0.40, 0.25)
+# The two geometric waypoint stages advance on the first valid simulation
+# step. Walking, pulling and releasing retain a stability hold.
+HOLD_SECONDS = (0.25, 0.0, 0.0, 0.40, 0.25)
 CONTACT_GRACE_SECONDS = 0.10
 
 
@@ -138,11 +140,7 @@ def stege0_chacker(states, handler, mask, *, metrics=None):
 # =========================================================
 
 def stage1_success(m):
-    """Instantaneous stage 1 requirements; all conditions must hold."""
-    still = (
-        (m['robot_speed'] <= geometry.STILL_SPEED)
-        & (m['robot_yaw_speed'] <= geometry.STILL_YAW_SPEED)
-    )
+    """Both hands are extended forward far enough and above the backrest."""
     chair_still = (
         (m['chair_speed'] <= geometry.STILL_SPEED)
         & (m['chair_yaw_speed'] <= geometry.STILL_YAW_SPEED)
@@ -154,13 +152,12 @@ def stage1_success(m):
     )
     chair_unturned = m['chair_yaw'] <= geometry.HEADING_TOLERANCE
     return (
-        ((m['pose1'] <= geometry.JOINT_TOLERANCE).all(-1))
+        ((m['hand_forward_reach'] >= geometry.HAND_FORWARD_REACH_MIN).all(-1))
+        & ((m['hand_height_above_backrest'] >= geometry.HAND_ABOVE_BACKREST_MIN).all(-1))
         & (anchored)
-        & (still)
         & (chair_still)
         & (facing)
         & (chair_unturned)
-        & (m['arm_speed'] <= 0.2)
     )
 
 
@@ -177,15 +174,11 @@ def stege1_chacker(states, handler, mask, *, metrics=None):
 
 
 # =========================================================
-# STAGE 2: PLACE HANDS ON THE BACKREST
+# STAGE 2: MOVE HANDS BEHIND THE BACKREST
 # =========================================================
 
 def stage2_success(m):
-    """Instantaneous stage 2 requirements; all conditions must hold."""
-    still = (
-        (m['robot_speed'] <= geometry.STILL_SPEED)
-        & (m['robot_yaw_speed'] <= geometry.STILL_YAW_SPEED)
-    )
+    """Both end effectors crossed toward the seat and below target height."""
     chair_still = (
         (m['chair_speed'] <= geometry.STILL_SPEED)
         & (m['chair_yaw_speed'] <= geometry.STILL_YAW_SPEED)
@@ -196,29 +189,18 @@ def stage2_success(m):
         & (m['chair_drift'] <= geometry.CHAIR_DRIFT_TOLERANCE)
     )
     chair_unturned = m['chair_yaw'] <= geometry.HEADING_TOLERANCE
-    hands_ready = (
-        ((m['palm_angle'] <= geometry.PALM_ANGLE_TOLERANCE).all(-1))
-        & ((m['elbow_angle'] <= geometry.ELBOW_ANGLE_TOLERANCE).all(-1))
-    )
-    contact = (
-        (m['contact'].all(-1))
-        & ((m['contact_force'] <= geometry.CONTACT_FORCE_MAX).all(-1))
-    )
-    quiet_hands = m['hand_slip'].amax(-1) <= 0.08
     return (
-        (hands_ready)
-        & (contact)
+        ((m['hand_behind_backrest'] >= geometry.HAND_BEHIND_BACKREST_MIN).all(-1))
+        & ((m['hand_below_target'] >= 0.0).all(-1))
         & (anchored)
-        & (still)
         & (chair_still)
         & (facing)
-        & (quiet_hands)
         & (chair_unturned)
     )
 
 
 def stege2_chacker(states, handler, mask, *, metrics=None):
-    """Stage 2: place hands on the backrest. Return (terminated, success)."""
+    """Stage 2: move hands behind the backrest. Return (terminated, success)."""
     if not mask.any():
         return torch.zeros_like(mask), torch.zeros_like(mask)
     ids, m, failed, dt = common_chairman_checker(states, handler, mask, 2, metrics)
@@ -368,7 +350,7 @@ ENABLE_DISK_SNAPSHOT_LOAD = True
 ENABLE_DISK_SNAPSHOT_SAVE = True
 
 # These stage meanings differ from stages_chairman; never reuse its snapshots.
-SNAPSHOT_DIR = Path("config_run/snapshots_chairman2_five_stage_v1/")
+SNAPSHOT_DIR = Path("config_run/snapshots_chairman2_five_stage_v2/")
 MAX_SNAPSHOTS = 100
 # Pokud True, všechny envy vždy startují od stage 0
 # a snapshot curriculum se zcela ignoruje.

@@ -6,6 +6,7 @@ from typing import Literal
 from metasim.utils import configclass
 
 from .base_robot_cfg import BaseActuatorCfg, BaseRobotCfg
+from .g1_collision import G1_UPPER_BODY_SELF_COLLISION_LINK_PATTERNS
 from metasim.cfg.sensors.gyro import GyroSensorCfg
 
 @configclass
@@ -27,7 +28,8 @@ class G1WithHandsCfg(BaseRobotCfg):
 
     enabled_gravity: bool = True
     fix_base_link: bool = True
-    enabled_self_collisions: bool = False
+    enabled_self_collisions: bool = True
+    self_collision_link_patterns: tuple[str, ...] = G1_UPPER_BODY_SELF_COLLISION_LINK_PATTERNS
     isaacgym_flip_visual_attachments: bool = False
     collapse_fixed_joints: bool = False
 

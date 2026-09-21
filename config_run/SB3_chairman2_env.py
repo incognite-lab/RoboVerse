@@ -3,10 +3,12 @@
 For g1_mygym_without_hand.urdf this is 10 arm angles (radians) and three
 walking commands (m/s, m/s, rad/s). G1MotionPolicy owns all 12 leg targets;
 waist joints hold their configured default angles. Fixed joints have no action.
-The inherited multi-stage API supports both SB3 and Torch collectors.
-The six inherited contact observation slots contain world-frame resultant
-chair forces on the left/right hand [Lx, Ly, Lz, Rx, Ry, Rz], divided by 50 N
-and clipped to [-1, 1]. Each hand includes its palm and fixed finger links.
+The inherited multi-stage API supports both SB3 and Torch collectors.  Unlike
+the generic Chairman wrapper, the policy observation is deliberately compact:
+leg state is private to G1MotionPolicy and absolute poses of every arm link are
+not exposed.  The six contact slots contain world-frame resultant chair forces
+on the left/right hand [Lx, Ly, Lz, Rx, Ry, Rz], divided by 50 N and clipped to
+[-1, 1]. Each hand includes its palm and fixed finger links.
 """
 from __future__ import annotations
 
@@ -18,9 +20,15 @@ import torch
 from gymnasium import spaces
 
 try:
-    from .SB3_chairman_multi_env import StableBaseline3VecEnv as WalkingEnv
+    from .SB3_chairman_multi_env import (
+        StableBaseline3VecEnv as WalkingEnv,
+        _quaternion_error_vector,
+    )
 except ImportError:
-    from SB3_chairman_multi_env import StableBaseline3VecEnv as WalkingEnv
+    from SB3_chairman_multi_env import (
+        StableBaseline3VecEnv as WalkingEnv,
+        _quaternion_error_vector,
+    )
 
 
 class StableBaseline3VecEnv(WalkingEnv):
@@ -81,12 +89,7 @@ class StableBaseline3VecEnv(WalkingEnv):
 
     def __init__(self, env):
         super().__init__(env)
-        old_stages = self.num_stages
         self.num_stages = self.NUM_POLICY_STAGES
-        # Base joint observations follow the simulator's actual DOF list.
-        obs_dim = (self.observation_space.shape[0] - old_stages + self.num_stages
-                   - len(self.robot_joint_names) + len(self.sim_joint_names) + 8)
-        self.observation_space = spaces.Box(-np.inf, np.inf, shape=(obs_dim,), dtype=np.float32)
         cfg = env.scenario.robots[0]
         controlled = set(self.leg_joint_names) | set(self.upper_body_joint_names)
         held_names = [name for name in self.robot_joint_names if name not in controlled]
@@ -99,18 +102,67 @@ class StableBaseline3VecEnv(WalkingEnv):
         )
         self._held_targets_torch = torch.as_tensor(self._held_targets, device=self.torch_device)
         # Chairman2 checkers use actual palms rather than the old EE offsets.
-        robot = env.env.handler.get_states().robots[self.robot_name]
+        initial_states = env.env.handler.get_states()
+        robot = initial_states.robots[self.robot_name]
+        chair = initial_states.objects["chair"]
         self.left_endffector = robot.body_names.index("left_hand_palm_link")
         self.right_endffector = robot.body_names.index("right_hand_palm_link")
+        self._task_end_effector_indices = (
+            robot.body_names.index("left_endeffector"),
+            robot.body_names.index("endeffector"),
+        )
+        self._torso_index = robot.body_names.index("torso_link")
+        self._chair_base_index = chair.body_names.index("base_link")
+        self._chair_target_indices = (
+            chair.body_names.index("target_hand_left"),
+            chair.body_names.index("target_hand_right"),
+        )
 
-    def _task_context(self):
+        # Keep this layout explicit.  Besides documenting the network input it
+        # prevents a future parent-class observation from silently re-adding
+        # leg joints or large world-frame link-state blocks.
+        widths = (
+            ("arm_joint_position", self.num_upper_body_actions),
+            ("arm_joint_velocity", self.num_upper_body_actions),
+            ("pelvis_linear_velocity_body", 3),
+            ("pelvis_angular_velocity_body", 3),
+            ("torso_up_world", 3),
+            ("final_approach_body", 2),
+            ("chair_back_direction_body", 2),
+            ("chair_velocity_body", 3),
+            ("chair_yaw_rate", 1),
+            ("end_effector_target_delta_body", 6),
+            ("palm_orientation_error", 6),
+            ("hand_task_metrics", 6),
+            ("end_effector_velocity_body", 6),
+            ("hand_chair_force", 6),
+            ("stage_context", 8),
+            ("last_locomotion_command", 3),
+            ("stage_one_hot", self.num_stages),
+        )
+        self.observation_feature_slices = {}
+        offset = 0
+        for name, width in widths:
+            self.observation_feature_slices[name] = slice(offset, offset + width)
+            offset += width
+        self.observation_space = spaces.Box(
+            -np.inf, np.inf, shape=(offset,), dtype=np.float32
+        )
+
+    @property
+    def stage_observation_indices(self) -> tuple[int, ...]:
+        stage_slice = self.observation_feature_slices["stage_one_hot"]
+        return tuple(range(stage_slice.start, stage_slice.stop))
+
+    def _task_context(self, states=None):
         from metasim.utils.chair_navigation import chair_back_direction_xy, world_vector_to_body_xy
         from metasim.utils.chairman2_geometry import PULL_DISTANCE
         handler = self.env.env.handler
-        states = handler.get_states()
+        if states is None:
+            states = handler.get_states()
         robot, chair = states.robots[self.robot_name], states.objects['chair']
-        base = robot.body_state[:, robot.body_names.index('pelvis')]
-        cb = chair.body_state[:, chair.body_names.index('base_link')]
+        base = robot.body_state[:, self._pelvis_index]
+        cb = chair.body_state[:, self._chair_base_index]
         task = handler.task
         stages = self.get_current_stages_torch()
         recorded = getattr(task, 'recorded_stage', torch.full_like(stages, -1))
@@ -133,12 +185,154 @@ class StableBaseline3VecEnv(WalkingEnv):
                           (elapsed*dt/20.)[:, None]), dim=1)
 
     def add_extra_to_obs(self, obs):
-        context = self._task_context().cpu().numpy()
-        return super().add_extra_to_obs(np.concatenate((obs, context), axis=1))
+        command = torch.as_tensor(
+            self.last_locomotion_command,
+            dtype=torch.float32,
+            device=self.torch_device,
+        )
+        return self._compact_observation_torch(command).detach().cpu().numpy()
 
     def add_extra_to_obs_torch(self, obs):
-        obs = torch.as_tensor(obs, dtype=torch.float32, device=self.torch_device)
-        return super().add_extra_to_obs_torch(torch.cat((obs, self._task_context()), dim=1))
+        del obs  # The simulator's full joint vector also contains the legs.
+        return self._compact_observation_torch(self.last_locomotion_command_torch)
+
+    def _compact_observation_torch(self, locomotion_command):
+        """Return only state observable and useful to the Chairman2 policy."""
+        from metasim.utils.chair_navigation import (
+            chair_back_direction_xy,
+            world_vector_to_body_xy,
+        )
+        from metasim.utils.chairman2_geometry import (
+            hand_task_space_metrics,
+            rotate,
+        )
+
+        states = self.env.env.handler.get_states()
+        robot = states.robots[self.robot_name]
+        chair = states.objects["chair"]
+        pelvis = robot.body_state[:, self._pelvis_index]
+        torso = robot.body_state[:, self._torso_index]
+        chair_body = chair.body_state[:, self._chair_base_index]
+        pelvis_quat = pelvis[:, 3:7]
+
+        arm_q = robot.joint_pos.index_select(1, self._upper_state_indices_torch)
+        arm_qd = robot.joint_vel.index_select(1, self._upper_state_indices_torch)
+        pelvis_linear_body = torch.cat(
+            (world_vector_to_body_xy(pelvis[:, 7:9], pelvis_quat), pelvis[:, 9:10]),
+            dim=1,
+        )
+        pelvis_angular_body = torch.cat(
+            (world_vector_to_body_xy(pelvis[:, 10:12], pelvis_quat), pelvis[:, 12:13]),
+            dim=1,
+        )
+        torso_up_world = rotate(
+            torso[:, 3:7], torso.new_tensor([0.0, 0.0, 1.0])
+        )
+
+        chair_direction_world = chair_back_direction_xy(chair_body[:, 3:7])
+        final_position = (
+            chair_body[:, :2] + self.FINAL_APPROACH_DISTANCE * chair_direction_world
+        )
+        final_approach_body = world_vector_to_body_xy(
+            final_position - pelvis[:, :2], pelvis_quat
+        )
+        chair_direction_body = world_vector_to_body_xy(
+            chair_direction_world, pelvis_quat
+        )
+        chair_velocity_body = torch.cat(
+            (
+                world_vector_to_body_xy(chair_body[:, 7:9], pelvis_quat),
+                chair_body[:, 9:10],
+            ),
+            dim=1,
+        )
+
+        end_effectors = robot.body_state[:, self._task_end_effector_indices]
+        targets = chair.body_state[:, self._chair_target_indices]
+        target_delta = targets[..., :3] - end_effectors[..., :3]
+        target_delta_body = torch.cat(
+            tuple(
+                torch.cat(
+                    (
+                        world_vector_to_body_xy(target_delta[:, hand, :2], pelvis_quat),
+                        target_delta[:, hand, 2:3],
+                    ),
+                    dim=1,
+                )
+                for hand in range(2)
+            ),
+            dim=1,
+        )
+
+        palms = robot.body_state[:, [self.left_endffector, self.right_endffector]]
+        palm_orientation_error = torch.cat(
+            tuple(
+                _quaternion_error_vector(palms[:, hand, 3:7], targets[:, hand, 3:7])
+                for hand in range(2)
+            ),
+            dim=1,
+        )
+        metrics = hand_task_space_metrics(
+            torso, end_effectors, targets[..., :3], chair_direction_world
+        )
+        hand_task_metrics = torch.cat(
+            (
+                metrics["hand_forward_reach"],
+                metrics["hand_height_above_backrest"],
+                metrics["hand_behind_backrest"],
+            ),
+            dim=1,
+        )
+        end_effector_velocity_body = torch.cat(
+            tuple(
+                torch.cat(
+                    (
+                        world_vector_to_body_xy(
+                            end_effectors[:, hand, 7:9], pelvis_quat
+                        ),
+                        end_effectors[:, hand, 9:10],
+                    ),
+                    dim=1,
+                )
+                for hand in range(2)
+            ),
+            dim=1,
+        )
+        hand_chair_force = self._fingertip_chair_forces(states, robot)
+        stage_context = self._task_context(states)
+        stages = self.get_current_stages_torch().clamp(0, self.num_stages - 1)
+        stage_one_hot = torch.nn.functional.one_hot(
+            stages, num_classes=self.num_stages
+        ).to(dtype=torch.float32)
+
+        result = torch.cat(
+            (
+                arm_q,
+                arm_qd,
+                pelvis_linear_body,
+                pelvis_angular_body,
+                torso_up_world,
+                final_approach_body,
+                chair_direction_body,
+                chair_velocity_body,
+                chair_body[:, 12:13],
+                target_delta_body,
+                palm_orientation_error,
+                hand_task_metrics,
+                end_effector_velocity_body,
+                hand_chair_force,
+                stage_context,
+                locomotion_command.to(device=self.torch_device, dtype=torch.float32),
+                stage_one_hot,
+            ),
+            dim=1,
+        )
+        expected = (self.num_envs, self.observation_space.shape[0])
+        if tuple(result.shape) != expected:
+            raise RuntimeError(
+                f"Chairman2 observation has shape {tuple(result.shape)}, expected {expected}"
+            )
+        return result
 
     def _compose_robot_targets(self, actions):
         targets = super()._compose_robot_targets(actions)

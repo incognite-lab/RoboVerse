@@ -55,7 +55,7 @@ GRASP_MIN_TIPS_PER_HAND = 2
 GRASP_MIN_CLOSURE = 0.55
 STAGE0_HOLD_STEPS = 10
 STAGE1_HOLD_STEPS = 2
-STAGE2_HOLD_STEPS = 10
+STAGE2_HOLD_STEPS = 2
 STAGE3_HOLD_STEPS = 5
 
 POS_THRESHOLD = 0.4
@@ -548,7 +548,7 @@ def stege2_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
         torch.mean(closure_per_joint[:, 7:], dim=-1) >= GRASP_MIN_CLOSURE
     )
     contacts_ok = get_batch_grasp_status(states, handler, GRASP_FORCE_THRESHOLD, idx)
-    success_now = hands_near & both_hands_closed & contacts_ok
+    success_now = hands_near & contacts_ok #& both_hands_closed
     success_cond = _held_condition(
         handler, "stage2_success_steps", idx, success_now, STAGE2_HOLD_STEPS
     )

@@ -7,15 +7,15 @@ robots: [g1_without_hands]
 fix_base_link: false
 task: chairman2
 decimation: 5
-num_envs: 4
-headless: false
+num_envs: 6000
+headless: true
 add_table: true
 env_spacing: 4.0
 train_or_eval: train   #load_and_train #train_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
 
 # true: trénuje se pouze policy train_stage (0–4), bez automatického zmražení.
 # Každý reset i dokončení stage obnoví její snapshot z
-# config_run/snapshots_chairman2_five_stage_v1/stage_<train_stage>/*.pkl (náhodný výběr).
+# config_run/snapshots_chairman2_five_stage_v2/stage_<train_stage>/*.pkl (náhodný výběr).
 # Stages 1–4 vyžadují uložený snapshot; stage 0 má běžný počáteční stav.
 # Snapshot je stav simulace, nikoliv váhy policy: režim train učí novou policy.
 # false: původní trénování všech stages; train_stage se ignoruje.
@@ -30,12 +30,12 @@ force: false
 # Global number of vector-environment transitions. All five policies learn
 # concurrently from whichever env rows currently occupy their stage.
 total_timesteps: 5_000_000_000
-model_save_path: ./config_run/output/ppo_models_chairman2_five_stage_v1
+model_save_path: ./config_run/output/ppo_models_chairman2_multi
 # A 15k-env rollout already advances the global counter quickly. Saving less
 # often avoids spending training time and disk space on nearly identical
 # five-policy bundles.
 model_save_freq: 50_000_000
-tensorboard_log: ./config_run/output/ppo_models_chairman2_five_stage_v1/tensorboard
+tensorboard_log: ./config_run/output/ppo_models_chairman2_multi/tensorboard
 
 # Give every stage update at least eight 16k minibatches. A stage with many
 # active envs may contribute more because complete on-policy rollouts are kept.

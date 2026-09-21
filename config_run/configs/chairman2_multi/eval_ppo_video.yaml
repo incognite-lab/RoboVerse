@@ -65,7 +65,7 @@ cameras:
 force: false
 
 # Stage in which every evaluation reset starts. Stage 0 is procedural;
-# stages 1-5 require at least one snapshot in snapshots_chairman2_five_stage_v1/stage_X.
+# stages 1-4 require at least one snapshot in snapshots_chairman2_five_stage_v2/stage_X.
 # The reset fails with a clear error when the requested snapshot is missing.
 # The selected bundle reports training data only for policy 2.
 eval_start_stage: 0

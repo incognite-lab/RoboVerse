@@ -920,7 +920,7 @@ def stage0_init(robot_name: str):
                     "pos": torch.tensor([0.0, 0.0, 0.1]),
                     "rot": torch.tensor([1.0, 0.0, 0.0, 0.0]),
                     "dof_pos": {
-                        "floor_slide_x": 0.75, #random.uniform(0.65,0.75), #0.75,
+                        "floor_slide_x": random.uniform(0.65,0.75), #0.75,
                         "floor_slide_y": random.uniform(-0.1, 0.1), #0.0
                         "floor_rotate_z": 1.57,
                     },

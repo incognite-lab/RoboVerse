@@ -10,7 +10,7 @@ import torch
 from metasim.utils.chair_navigation import chair_back_direction_xy, forward_direction_xy
 
 NUM_STAGES = 5
-TASK_VERSION = 'chairman2_five_stage_v1'
+TASK_VERSION = 'chairman2_five_stage_v2'
 # URDF FK at nominal pelvis height 0.8 m admits bilateral surface targets
 # with <1 mm error and palm/elbow angles below 10 degrees at this distance.
 APPROACH_DISTANCE = 0.745
@@ -29,18 +29,16 @@ CONTACT_RADIUS = 0.06
 CONTACT_FORCE_MIN = 0.5
 CONTACT_FORCE_MAX = 60.0
 LIFT_HEIGHT = 0.12
+# Stage 1 uses task-space geometry rather than a prescribed arm pose.
+HAND_FORWARD_REACH_MIN = 0.50
+HAND_ABOVE_BACKREST_MIN = 0.0
+# Stage 2 moves the end effectors from above the backrest toward the seat side.
+HAND_BEHIND_BACKREST_MIN = 0.10
 STAGE0_JOINT_TARGETS = {
-    'left_shoulder_pitch_joint': 1.51, 'left_shoulder_roll_joint': 0.93,
-    'left_shoulder_yaw_joint': 1.15, 'left_elbow_joint': -0.59, 'left_wrist_roll_joint': 0.0,
-    'right_shoulder_pitch_joint': 1.51, 'right_shoulder_roll_joint': -0.93,
-    'right_shoulder_yaw_joint': -1.15, 'right_elbow_joint': -0.59, 'right_wrist_roll_joint': 0.0,
-    "waist_yaw_joint": 0.0, "waist_roll_joint": 0.0, "waist_pitch_joint": 0.0,
-}
-STAGE1_JOINT_TARGETS = {
-    'left_shoulder_pitch_joint': -1.66, 'left_shoulder_roll_joint': 0.23,
-    'left_shoulder_yaw_joint': 0.0, 'left_elbow_joint': 1.45, 'left_wrist_roll_joint': 1.35,
-    'right_shoulder_pitch_joint': -1.66, 'right_shoulder_roll_joint': -0.23,
-    'right_shoulder_yaw_joint': 0.0, 'right_elbow_joint': 1.45, 'right_wrist_roll_joint': -1.35,
+    'left_shoulder_pitch_joint': 0.87, 'left_shoulder_roll_joint': 0.45,
+    'left_shoulder_yaw_joint': 0.25, 'left_elbow_joint': -0.89, 'left_wrist_roll_joint': 1.12,
+    'right_shoulder_pitch_joint': 0.87, 'right_shoulder_roll_joint': -0.45,
+    'right_shoulder_yaw_joint': -0.25, 'right_elbow_joint': -0.89, 'right_wrist_roll_joint': -1.12,
     "waist_yaw_joint": 0.0, "waist_roll_joint": 0.0, "waist_pitch_joint": 0.0,
 }
 
@@ -59,6 +57,28 @@ def angle_between(a, b):
 
 def planar_angle(a, b):
     return torch.atan2((a[..., 0]*b[..., 1]-a[..., 1]*b[..., 0]).abs(), (a*b).sum(-1))
+
+
+def hand_task_space_metrics(torso, end_effectors, targets, chair_dir):
+    """Measure the stage-1/2 hand goals in robot/chair-relative coordinates."""
+    forward = forward_direction_xy(torso[:, 3:7])
+    ee_from_torso_xy = end_effectors[..., :2] - torso[:, None, :2]
+    hand_forward_reach = (ee_from_torso_xy * forward[:, None]).sum(-1)
+    right_target_height = targets[:, 1, 2]
+    hand_height_above_backrest = end_effectors[..., 2] - right_target_height[:, None]
+    # chair_dir points from the seat toward the robot side of the backrest.
+    # A positive value therefore means that the end effector crossed the
+    # backrest plane toward the seat.
+    hand_behind_backrest = (
+        (targets[..., :2] - end_effectors[..., :2]) * chair_dir[:, None]
+    ).sum(-1)
+    hand_below_target = right_target_height[:, None] - end_effectors[..., 2]
+    return {
+        'hand_forward_reach': hand_forward_reach,
+        'hand_height_above_backrest': hand_height_above_backrest,
+        'hand_behind_backrest': hand_behind_backrest,
+        'hand_below_target': hand_below_target,
+    }
 
 
 def hand_contacts(states, robot_name, points, targets):
@@ -113,6 +133,7 @@ def measure(states, robot_name, task):
     base, torso = body('pelvis'), body('torso_link')
     chair_body = chair.body_state[:, chair.body_names.index('base_link')]
     palms = torch.stack([body(s+'_hand_palm_link') for s in ('left', 'right')], 1)
+    end_effectors = torch.stack([body('left_endeffector'), body('endeffector')], 1)
     targets = torch.stack([chair.body_state[:, chair.body_names.index('target_hand_'+s), :3]
                            for s in ('left', 'right')], 1)
     offsets = palms.new_tensor([[0.05, -0.02, 0], [0.05, 0.02, 0]])
@@ -141,6 +162,7 @@ def measure(states, robot_name, task):
     arm_ids = [list(robot.joint_names).index(name) for name in STAGE0_JOINT_TARGETS]
     q = robot.joint_pos[:, arm_ids]
     forward = forward_direction_xy(torso[:, 3:7])
+    hand_metrics = hand_task_space_metrics(torso, end_effectors, targets, chair_dir)
     heading = planar_angle(forward, chair_body[:, :2]-torso[:, :2])
     direction_valid = (torch.linalg.vector_norm(forward, dim=-1) > 1e-6) & (
         torch.linalg.vector_norm(chair_body[:, :2]-torso[:, :2], dim=-1) > 1e-6)
@@ -148,7 +170,7 @@ def measure(states, robot_name, task):
     return dict(
         approach_error=torch.linalg.vector_norm(base[:, :2]-(chair_body[:, :2]+APPROACH_DISTANCE*chair_dir), dim=-1),
         heading=heading, pose0=(q-q.new_tensor(list(STAGE0_JOINT_TARGETS.values()))).abs(),
-        pose1=(q-q.new_tensor(list(STAGE1_JOINT_TARGETS.values()))).abs(),
+        **hand_metrics,
         robot_drift=torch.linalg.vector_norm(base[:, :2]-robot_anchor, dim=-1),
         chair_drift=torch.linalg.vector_norm(displacement, dim=-1),
         chair_yaw=planar_angle(chair_dir, chair_heading),

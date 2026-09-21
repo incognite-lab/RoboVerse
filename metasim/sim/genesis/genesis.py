@@ -17,13 +17,15 @@ from metasim.cfg.objects import ArticulationObjCfg, PrimitiveCubeCfg, PrimitiveS
 from metasim.cfg.scenario import ScenarioCfg
 from metasim.queries.base import BaseQueryType
 from metasim.sim import BaseSimHandler, GymEnvWrapper
+from metasim.types import Action, EnvState
+from metasim.utils.collision_filter import apply_genesis_link_self_collision_filter
+from metasim.utils.state import CameraState, ObjectState, RobotState, TensorState
+
 from .gaussian_splat import (
     NyxGaussianSplatRuntime,
     patch_nyx_rigid_solver_compat,
     prepare_urdfs_for_nyx,
 )
-from metasim.types import Action, EnvState
-from metasim.utils.state import CameraState, ObjectState, RobotState, TensorState
 
 # Apply IGL compatibility patch
 try:
@@ -65,14 +67,14 @@ class GenesisHandler(BaseSimHandler):
                 dt=self.scenario.sim_params.dt if self.scenario.sim_params.dt is not None else 1 / 100,
                 substeps=1,
             ),  # TODO: substeps > 1 doesn't work
-            # MetaSim robot configurations already carry this option, but it
-            # was previously ignored by the Genesis backend.  Genesis enables
-            # per-entity self collision by default, whereas Unitree's G1
-            # locomotion setup has it disabled.  This is especially important
-            # for the full 43-DoF model: unintended arm/hand/leg contacts can
-            # inject forces that the 12-DoF walking policy never observed.
+            # Link-level masks below narrow this global switch before build.
+            # This retains useful upper-body contacts without enabling the
+            # full quadratic set of robot link pairs.
             rigid_options=gs.options.RigidOptions(
                 enable_self_collision=bool(self.robot.enabled_self_collisions),
+                # Parent-child contacts are both physically unhelpful and a
+                # needless broad-phase cost for articulated arms.
+                enable_adjacent_collision=False,
             ),
             vis_options=gs.options.VisOptions(n_rendered_envs=self.scenario.num_envs),
             viewer_options=gs.options.ViewerOptions(
@@ -102,6 +104,18 @@ class GenesisHandler(BaseSimHandler):
             material=gs.materials.Rigid(gravity_compensation=1 if not self.robot.enabled_gravity else 0),
         )
         self.object_inst_dict[self.robot.name] = self.robot_inst
+
+        self_collision_patterns = getattr(self.robot, "self_collision_link_patterns", None)
+        if self.robot.enabled_self_collisions and self_collision_patterns:
+            enabled_links, enabled_geoms = apply_genesis_link_self_collision_filter(
+                self.robot_inst, self_collision_patterns
+            )
+            log.info(
+                "Genesis self-collision filter: {} links / {} geoms enabled for robot '{}'",
+                enabled_links,
+                enabled_geoms,
+                self.robot.name,
+            )
 
         log.info(f"robot: {self.robot_inst}")
 
@@ -217,8 +231,9 @@ class GenesisHandler(BaseSimHandler):
         )
         self._apply_robot_actuator_properties()
         log.info(
-            "Genesis rigid-body configuration: self collisions={} (from robot config)",
+            "Genesis rigid-body configuration: self collisions={}, link filter={} (from robot config)",
             bool(self.robot.enabled_self_collisions),
+            getattr(self.robot, "self_collision_link_patterns", None),
         )
         if any(isinstance(camera, NyxGaussianSplatCameraCfg) and camera.render_sim_geometry for camera in self.cameras):
             patch_nyx_rigid_solver_compat(self.scene_inst)

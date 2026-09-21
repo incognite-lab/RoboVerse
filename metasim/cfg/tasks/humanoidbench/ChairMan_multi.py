@@ -1401,6 +1401,118 @@ class Stage2HandRetentionReward(HumanoidBaseReward):
         return score * (self.actual_stage.to(device=score.device) == 2).to(score.dtype)
 
 
+class Stage2UpperBodyPoseRetentionReward(HumanoidBaseReward):
+    """Keep the stage-entry waist and arm pose while the fingers close.
+
+    Each environment stores its own reference when reward histories are reset
+    on entry into stage 2 (or after loading a stage-2 snapshot).  Finger and leg
+    joints are deliberately absent, so this term cannot oppose grasp closure
+    or the locomotion controller.
+
+    Output: [0, 1] in stage 2 and zero elsewhere.
+    """
+
+    def __init__(self, robot_name="g1_with_hands", position_scale=0.15):
+        super().__init__(robot_name)
+        if not math.isfinite(position_scale) or position_scale <= 0.0:
+            raise ValueError("position_scale must be finite and positive")
+        self.position_scale = float(position_scale)
+        self.joint_names = (
+            "waist_yaw_joint",
+            "waist_roll_joint",
+            "waist_pitch_joint",
+            "left_shoulder_pitch_joint",
+            "left_shoulder_roll_joint",
+            "left_shoulder_yaw_joint",
+            "left_elbow_joint",
+            "left_wrist_roll_joint",
+            "left_wrist_pitch_joint",
+            "left_wrist_yaw_joint",
+            "right_shoulder_pitch_joint",
+            "right_shoulder_roll_joint",
+            "right_shoulder_yaw_joint",
+            "right_elbow_joint",
+            "right_wrist_roll_joint",
+            "right_wrist_pitch_joint",
+            "right_wrist_yaw_joint",
+        )
+        self.joint_indices = None
+        self.reference_positions = None
+
+    def _selected_positions(self, robot) -> torch.Tensor:
+        joint_pos = robot.joint_pos
+        if self.joint_indices is None:
+            name_to_index = {name: index for index, name in enumerate(robot.joint_names)}
+            missing = [name for name in self.joint_names if name not in name_to_index]
+            if missing:
+                raise ValueError(
+                    "Stage2UpperBodyPoseRetentionReward is missing joints: "
+                    + ", ".join(missing)
+                )
+            self.joint_indices = torch.tensor(
+                [name_to_index[name] for name in self.joint_names],
+                dtype=torch.long,
+                device=joint_pos.device,
+            )
+        elif self.joint_indices.device != joint_pos.device:
+            self.joint_indices = self.joint_indices.to(joint_pos.device)
+        return joint_pos.index_select(1, self.joint_indices)
+
+    def reset(self, env_ids: torch.Tensor, states: EnvState):
+        robot = states.robots[self.robot_name]
+        current = self._selected_positions(robot).detach()
+        env_ids = torch.as_tensor(env_ids, dtype=torch.long, device=current.device)
+
+        if (
+            self.reference_positions is None
+            or self.reference_positions.shape != current.shape
+            or self.reference_positions.device != current.device
+        ):
+            # Non-stage-2 rows are harmless placeholders and will be replaced
+            # when those environments actually enter stage 2.
+            self.reference_positions = current.clone()
+
+        if self.actual_stage is None:
+            capture_ids = env_ids
+        else:
+            stages = self.actual_stage.to(device=current.device)
+            capture_ids = env_ids[stages.index_select(0, env_ids) == 2]
+        if capture_ids.numel():
+            self.reference_positions.index_copy_(
+                0,
+                capture_ids,
+                current.index_select(0, capture_ids),
+            )
+
+    def __call__(self, states: EnvState, robot_name: str = None) -> torch.FloatTensor:
+        robot = states.robots[robot_name or self.robot_name]
+        current = self._selected_positions(robot)
+        num_envs = current.shape[0]
+        if self.actual_stage is None:
+            return current.new_zeros(num_envs)
+
+        stage_mask = self.actual_stage.to(device=current.device) == 2
+        if not stage_mask.any():
+            return current.new_zeros(num_envs)
+
+        if (
+            self.reference_positions is None
+            or self.reference_positions.shape != current.shape
+            or self.reference_positions.device != current.device
+        ):
+            self.reference_positions = current.detach().clone()
+
+        normalized_error = torch.abs(current - self.reference_positions) / self.position_scale
+        per_joint_score = torch.exp(-normalized_error.square())
+        # A single drifting arm joint must not disappear in a mean over all 17
+        # joints, hence the strong weakest-joint component.
+        score = (
+            0.75 * torch.min(per_joint_score, dim=-1).values
+            + 0.25 * torch.mean(per_joint_score, dim=-1)
+        )
+        return score * stage_mask.to(dtype=current.dtype)
+
+
 class PreciseHandTargetReward(HumanoidBaseReward):
     """Stage 1-2 reward for holding both end effectors on their targets.
 
@@ -2676,13 +2788,13 @@ KEEP_CHAIR_STILL_PENALTY_WEIGHT = -1.0
 
 # Scalar defaults for stage-1/shared functions. Effective stage-1 weights are
 # set in STAGE1_REWARD_WEIGHTS below; keep shared defaults for other stages.
-STAGE1_ARM_JOINT_VELOCITY_PENALTY_WEIGHT = -0.1
-WAIST_STRAIGHT_REWARD_WEIGHT = 0.01
-REACH_CHAIR_REWARD_WEIGHT = 0.04
-REACH_ORIENTATION_REWARD_WEIGHT = 0.02
-HAND_TARGET_STILLNESS_REWARD_WEIGHT = 0.01
-STAY_NEAR_ANCHOR_REWARD_WEIGHT = 0.01
-PRECISE_HAND_TARGET_REWARD_WEIGHT = 0.01
+# STAGE1_ARM_JOINT_VELOCITY_PENALTY_WEIGHT = -0.08
+# WAIST_STRAIGHT_REWARD_WEIGHT = 0.01
+# REACH_CHAIR_REWARD_WEIGHT = 0.1
+# REACH_ORIENTATION_REWARD_WEIGHT = 0.1
+# HAND_TARGET_STILLNESS_REWARD_WEIGHT = 0.01
+# STAY_NEAR_ANCHOR_REWARD_WEIGHT = 0.01
+# PRECISE_HAND_TARGET_REWARD_WEIGHT = 0.01
 
 # Stage 1 balances arm motion against reaching, rather than inheriting the
 # much larger general penalties. Keep shared terms unchanged in other stages.
@@ -2690,35 +2802,37 @@ PRECISE_HAND_TARGET_REWARD_WEIGHT = 0.01
 # hands <= 1.5: total positive shaping <= 1.525 per step. At gamma=0.995 this
 # is below the 2.5 discount cost of delaying the +500 completion bonus.
 STAGE1_REWARD_WEIGHTS = {
-    "TerminationCfg": -250.0,
+    "TerminationCfg": -100.0,
     "DeltaActionRateCfg": -0.03,
     "DoFVelocityAccelerationCfg": -0.05,
     "LocomotionCommandPenalty": -0.1,
-    "UprightPenaltyCfg": -0.10,
+    #"UprightPenaltyCfg": -0.10,
     "KeepChairStillPenalty": -0.1,
-    "Stage1ArmJointVelocityPenalty": -0.170,
-    "OpenGraspReward": 0.05,
-    "WaistStraightReward": 0.05,
-    "ReachChairProgressReward": 0.60,
-    "HandOrientationProgressReward": 0.20,
-    "HandTargetStillnessReward": 0.20,
-    "StayNearAnchorReward": 0.09,
-    "PreciseHandTargetReward": 0.20,
+    "Stage1ArmJointVelocityPenalty": -0.1,
+    "OpenGraspReward": 0.1,
+    "WaistStraightReward": 0.1,
+    "ReachChairProgressReward": 1.00,
+    "HandOrientationProgressReward": 0.10,
+    "HandTargetStillnessReward": 0.10,
+    "StayNearAnchorReward": 0.1,
+    "PreciseHandTargetReward": 0.10,
 }
 
 # Stage 2
-CLOSE_GRASP_REWARD_WEIGHT = 0.5
-FORCE_GRASP_REWARD_WEIGHT = 1.5
+CLOSE_GRASP_REWARD_WEIGHT = 0.1
+FORCE_GRASP_REWARD_WEIGHT = 1.0
 STAGE2_HAND_RETENTION_REWARD_WEIGHT = 0.5
+STAGE2_UPPER_BODY_POSE_RETENTION_REWARD_WEIGHT = 0.0
 # Overrides of shared terms apply only to transitions produced in stage 2.
 STAGE2_REWARD_WEIGHTS = {
-    "TerminationCfg": -250.0,
-    "DeltaActionRateCfg": -0.005,
-    "DoFVelocityAccelerationCfg": -0.010,
-    "LocomotionCommandPenalty": -0.010,
-    "UprightPenaltyCfg": -0.010,
-    "WaistStraightReward": 0.005,
-    "StayNearAnchorReward": 0.005,
+    "TerminationCfg": -100.0,
+    "DeltaActionRateCfg": -0.05,
+    "DoFVelocityAccelerationCfg": -0.01,
+    "LocomotionCommandPenalty": -0.1,
+    "UprightPenaltyCfg": -0.05,
+    "WaistStraightReward": 0.02,
+    "StayNearAnchorReward": 0.1,
+    "Stage2UpperBodyPoseRetentionReward": 0.1,
 }
 
 # Stage 3
@@ -2812,18 +2926,20 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
         KEEP_CHAIR_STILL_PENALTY_WEIGHT,
         OPEN_GRASP_REWARD_WEIGHT,
 
-        STAGE1_ARM_JOINT_VELOCITY_PENALTY_WEIGHT,
-        WAIST_STRAIGHT_REWARD_WEIGHT,
-        REACH_CHAIR_REWARD_WEIGHT,
-        REACH_ORIENTATION_REWARD_WEIGHT,
-        HAND_TARGET_STILLNESS_REWARD_WEIGHT,
-        STAY_NEAR_ANCHOR_REWARD_WEIGHT,
-        PRECISE_HAND_TARGET_REWARD_WEIGHT,
-
+        # These functions are weighted only through stage_reward_weights. Zero
+        # placeholders preserve one-to-one alignment with reward_functions.
+        0.0,  # Stage1ArmJointVelocityPenalty
+        0.0,  # WaistStraightReward
+        0.0,  # ReachChairProgressReward
+        0.0,  # HandOrientationProgressReward
+        0.0,  # HandTargetStillnessReward
+        0.0,  # StayNearAnchorReward
+        0.0,  # PreciseHandTargetReward
 
         CLOSE_GRASP_REWARD_WEIGHT,
         FORCE_GRASP_REWARD_WEIGHT,
         STAGE2_HAND_RETENTION_REWARD_WEIGHT,
+        STAGE2_UPPER_BODY_POSE_RETENTION_REWARD_WEIGHT,
 
         MAINTAIN_ANY_GRASP_REWARD_WEIGHT,
         STAGE3_HAND_DRIFT_PENALTY_WEIGHT,
@@ -2864,6 +2980,7 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
         CloseGraspReward(),
         GraspForceReward(),
         Stage2HandRetentionReward(),
+        Stage2UpperBodyPoseRetentionReward(),
 
         MaintainAnyGraspReward(),
         Stage3HandDriftPenalty(),

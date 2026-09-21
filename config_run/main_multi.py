@@ -126,7 +126,7 @@ def main():
         #config_name = "g1_door_IK"
         #config_name = "g1_door_open_stand_train"
         #config_name = "g1_door_stand_IK"
-        config_name = "chairman_multi/eval_ppo_video"
+        config_name = "chairman2_multi/eval_ppo_video"
         #config_name = "g1_ChairMan"
         #config_name = "chairman_multi/train_ppo"
         # log.error("Please provide the config file path, e.g. python train_sb3.py configs/isaacgym.yaml")

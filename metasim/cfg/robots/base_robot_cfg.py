@@ -66,6 +66,14 @@ class BaseRobotCfg(ArticulationObjCfg):
     enabled_self_collisions: bool = True
     """Whether to enable self collisions. Default to True. If False, the robot will not collide with itself."""
 
+    self_collision_link_patterns: tuple[str, ...] | None = None
+    """Optional glob patterns limiting self collisions to selected links.
+
+    Backends that support link-level filtering use these patterns only for
+    robot-vs-robot contacts.  Collisions with the environment remain enabled
+    for every link.  ``None`` retains the backend's full self-collision model.
+    """
+
     isaacgym_flip_visual_attachments: bool = True
     """Whether to flip visual attachments when loading the URDF in IsaacGym. Default to True. For more details, see
 
