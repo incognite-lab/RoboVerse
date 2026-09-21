@@ -7,7 +7,7 @@ robots: [g1_with_hands]
 fix_base_link: false
 task: chairmanmulti #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
 decimation: 5
-num_envs: 9000
+num_envs: 14000
 headless: true
 add_table: true
 env_spacing: 4.0
@@ -75,7 +75,7 @@ stage_episode_metrics_window: 1000
 
 # Used only with train_or_eval: load_and_train; must point to a complete
 # concurrent multi-policy run directory containing stage_0 ... stage_5.
-load_model_path: ./config_run/output/ppo_models_multi/config_run/output/ppo_models_multi/run_2026-09-17_17-18-28_chairmanmulti_concurrent
+load_model_path: ./config_run/output/ppo_models_multi/config_run/output/ppo_models_multi/top_models
 # PPO parameters
 #-------------------------------------------
 net_arch_pivf: true
@@ -83,13 +83,13 @@ net_arch_pivf: true
 # Two 256-wide layers are large enough for the stage-local tasks. The previous
 # third layer added compute to all six policies without adding a useful wider
 # representation.
-net_arch_pi: [256, 256, 128]
-net_arch_vf: [256, 256, 128]
+net_arch_pi: [64, 64, 64]
+net_arch_vf: [64, 64, 64]
 
 learning_rate: 0.0003
 # Do not decay against global task progress: downstream policies are unlocked
 # later and must still start with the full learning rate.
-learning_schedule: constant
+learning_schedule: linear
 
 # A longer rollout improves temporal credit assignment for the 5-10 second
 # stages. Smaller minibatches provide substantially more optimizer steps per

@@ -6,6 +6,11 @@ The palm mesh spans roughly +/-2 cm in Y; the old 7 cm EE offset is outside
 that mesh. Use a point on the actual palm surface instead.
 """
 import math
+from collections import defaultdict
+from functools import lru_cache
+from pathlib import Path
+import xml.etree.ElementTree as ET
+
 import torch
 from metasim.utils.chair_navigation import chair_back_direction_xy, forward_direction_xy
 
@@ -34,6 +39,16 @@ HAND_FORWARD_REACH_MIN = 0.50
 HAND_ABOVE_BACKREST_MIN = 0.0
 # Stage 2 moves the end effectors from above the backrest toward the seat side.
 HAND_BEHIND_BACKREST_MIN = 0.10
+UPPER_BODY_COM_DEADZONE = 0.05
+UPPER_BODY_COM_SCALE = 0.10
+G1_WITHOUT_HANDS_URDF = (
+    Path(__file__).resolve().parents[2]
+    / "roboverse_data/robots/g1/urdf/g1_mygym_without_hand.urdf"
+)
+G1_WITH_HANDS_URDF = (
+    Path(__file__).resolve().parents[2]
+    / "roboverse_data/robots/g1/urdf/g1_mygym.urdf"
+)
 STAGE0_JOINT_TARGETS = {
     'left_shoulder_pitch_joint': 0.87, 'left_shoulder_roll_joint': 0.45,
     'left_shoulder_yaw_joint': 0.25, 'left_elbow_joint': -0.89, 'left_wrist_roll_joint': 1.12,
@@ -48,6 +63,80 @@ def rotate(q, v):
     v = torch.broadcast_to(v, q.shape[:-1] + (3,))
     t = 2 * torch.linalg.cross(q[..., 1:], v, dim=-1)
     return v + q[..., :1] * t + torch.linalg.cross(q[..., 1:], t, dim=-1)
+
+
+@lru_cache(maxsize=None)
+def upper_body_inertials(urdf_path: str = str(G1_WITHOUT_HANDS_URDF)):
+    """Return mass and local COM offset for the complete torso subtree."""
+    root = ET.parse(urdf_path).getroot()
+    children = defaultdict(list)
+    for joint in root.findall("joint"):
+        parent = joint.find("parent")
+        child = joint.find("child")
+        if parent is not None and child is not None:
+            children[parent.attrib["link"]].append(child.attrib["link"])
+
+    selected = set()
+    pending = ["torso_link"]
+    while pending:
+        link_name = pending.pop()
+        if link_name in selected:
+            continue
+        selected.add(link_name)
+        pending.extend(children.get(link_name, ()))
+
+    inertials = {}
+    for link in root.findall("link"):
+        name = link.attrib["name"]
+        if name not in selected:
+            continue
+        inertial = link.find("inertial")
+        if inertial is None or inertial.find("mass") is None:
+            continue
+        mass = float(inertial.find("mass").attrib["value"])
+        if mass <= 0:
+            continue
+        origin = inertial.find("origin")
+        xyz = (0.0, 0.0, 0.0) if origin is None else tuple(
+            float(value) for value in origin.attrib.get("xyz", "0 0 0").split()
+        )
+        if len(xyz) != 3:
+            raise ValueError(f"Invalid inertial origin for URDF link {name}: {xyz}")
+        inertials[name] = (mass, xyz)
+    if "torso_link" not in inertials:
+        raise ValueError(f"URDF {urdf_path} has no massive torso_link")
+    return inertials
+
+
+_UPPER_BODY_TENSOR_CACHE = {}
+
+
+def upper_body_center_of_mass(robot, urdf_path: str = str(G1_WITHOUT_HANDS_URDF)):
+    """Mass-weighted world COM from torso through head, arms, hands and fingers."""
+    body_names = tuple(str(name) for name in robot.body_names)
+    key = (urdf_path, body_names, str(robot.body_state.device), robot.body_state.dtype)
+    cached = _UPPER_BODY_TENSOR_CACHE.get(key)
+    if cached is None:
+        inertials = upper_body_inertials(urdf_path)
+        indices, masses, offsets = [], [], []
+        for index, name in enumerate(body_names):
+            if name in inertials:
+                mass, offset = inertials[name]
+                indices.append(index)
+                masses.append(mass)
+                offsets.append(offset)
+        if not indices:
+            raise ValueError("No upper-body inertial links are present in the robot state")
+        cached = (
+            torch.as_tensor(indices, dtype=torch.long, device=robot.body_state.device),
+            robot.body_state.new_tensor(masses),
+            robot.body_state.new_tensor(offsets),
+        )
+        _UPPER_BODY_TENSOR_CACHE[key] = cached
+    indices, masses, offsets = cached
+    links = robot.body_state.index_select(1, indices)
+    link_com = links[..., :3] + rotate(links[..., 3:7], offsets[None])
+    return (link_com * masses[None, :, None]).sum(1) / masses.sum()
 
 
 def angle_between(a, b):
@@ -161,6 +250,8 @@ def measure(states, robot_name, task):
         chair_body[:, None, 10:13].expand_as(targets), targets-chair_body[:, None, :3], dim=-1)
     arm_ids = [list(robot.joint_names).index(name) for name in STAGE0_JOINT_TARGETS]
     q = robot.joint_pos[:, arm_ids]
+    upper_com = upper_body_center_of_mass(robot)
+    upper_com_offset = upper_com[:, :2] - base[:, :2]
     forward = forward_direction_xy(torso[:, 3:7])
     hand_metrics = hand_task_space_metrics(torso, end_effectors, targets, chair_dir)
     heading = planar_angle(forward, chair_body[:, :2]-torso[:, :2])
@@ -177,6 +268,9 @@ def measure(states, robot_name, task):
         robot_speed=torch.linalg.vector_norm(base[:, 7:9], dim=-1), robot_yaw_speed=base[:, 12].abs(),
         chair_speed=torch.linalg.vector_norm(chair_body[:, 7:9], dim=-1), chair_yaw_speed=chair_body[:, 12].abs(),
         arm_speed=robot.joint_vel[:, arm_ids].abs().amax(-1),
+        upper_body_com=upper_com,
+        upper_body_com_offset=upper_com_offset,
+        upper_body_com_horizontal_error=torch.linalg.vector_norm(upper_com_offset, dim=-1),
         palm_angle=palm_angle, elbow_angle=elbow_angle,
         palm_error=torch.linalg.vector_norm(points-targets, dim=-1),
         contact=contact, any_contact=any_contact, contact_force=forces,

@@ -10,6 +10,7 @@ from metasim.cfg.checkers import _ChairManChecker
 from metasim.cfg.objects import ArticulationObjCfg, RigidObjCfg
 from metasim.types import EnvState
 from metasim.utils import configclass
+from metasim.utils import chairman2_geometry as chairman_geometry
 from metasim.utils.chair_navigation import (
     CHAIR_FINAL_DISTANCE,
     chair_back_direction_xy,
@@ -447,39 +448,29 @@ class HumanlyDofLimitCfg(HumanoidBaseReward):
         return penalty
 
 
-class UprightPenaltyCfg(HumanoidBaseReward):
-    """
-    Penalty magnitude for torso not being upright.
+class UpperBodyCenterOfMassPenalty(HumanoidBaseReward):
+    """Penalize the upper-body COM projection outside the pelvis center."""
 
-    Assumes quaternion order [w, x, y, z] in body_state[:, :, 3:7].
-
-    Output: <0, 1>
-    Use with NEGATIVE weight.
-    """
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
-        self.target_z = torch.tensor([0.0, 0.0, 1.0])
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
-        robot = states.robots[robot_name]
-        torso_link_idx = robot.body_names.index("torso_link")
-        root_quat = robot.body_state[:, torso_link_idx, 3:7]
-        device = root_quat.device
-
-        if self.target_z.device != device:
-            self.target_z = self.target_z.to(device)
-
-        w, x, y, z = root_quat[:, 0], root_quat[:, 1], root_quat[:, 2], root_quat[:, 3]
-
-        current_z_x = 2 * (x * z + y * w)
-        current_z_y = 2 * (y * z - x * w)
-        current_z_z = 1 - 2 * (x * x + y * y)
-
-        current_z_axis = torch.stack([current_z_x, current_z_y, current_z_z], dim=1)
-        alignment = torch.sum(current_z_axis * self.target_z, dim=-1)
-
-        penalty = torch.clamp((1.0 - alignment) / 2.0, min=0.0, max=1.0)
-        return penalty
+        robot = states.robots[robot_name or self.robot_name]
+        pelvis_idx = robot.body_names.index("pelvis")
+        upper_com = chairman_geometry.upper_body_center_of_mass(
+            robot, str(chairman_geometry.G1_WITH_HANDS_URDF)
+        )
+        error = torch.linalg.vector_norm(
+            upper_com[:, :2] - robot.body_state[:, pelvis_idx, :2], dim=-1
+        )
+        outside = torch.relu(error - chairman_geometry.UPPER_BODY_COM_DEADZONE)
+        normalized = outside / chairman_geometry.UPPER_BODY_COM_SCALE
+        print("UpperBodyCenterOfMassPenalty cost:", torch.nan_to_num(normalized.square() / (1 + normalized.square()), nan=1.0, posinf=1.0))
+        return torch.nan_to_num(
+            normalized.square() / (1 + normalized.square()),
+            nan=1.0,
+            posinf=1.0,
+        )
 
 
 # =============================================================================
@@ -499,18 +490,12 @@ class Stage0ArmPos(HumanoidBaseReward):
         self.dof_indices = None
         self.required_pos_tensor = None
         self.required_pos_list = None
-        self.waist_mask = None
         self.finger_mask = None
         self.arm_mask = None
         self.arm_sigma = 0.18
-        self.waist_sigma = 0.08
         self.finger_sigma = 0.25
 
         self.required_pos: dict[str, float] = {
-            "waist_yaw_joint": 0.0,
-            "waist_roll_joint": 0.0,
-            "waist_pitch_joint": 0.0,
-
             "left_shoulder_pitch_joint": 0.28,
             "right_shoulder_pitch_joint": 0.28,
 
@@ -581,22 +566,17 @@ class Stage0ArmPos(HumanoidBaseReward):
             selected_names = [robot.joint_names[i] for i in self.dof_indices]
             self.dof_indices = torch.tensor(self.dof_indices, device=device, dtype=torch.long)
             self.required_pos_tensor = torch.tensor(self.required_pos_list, device=device).unsqueeze(0)
-            self.waist_mask = torch.tensor(
-                [name.startswith("waist_") for name in selected_names],
-                device=device,
-            )
             self.finger_mask = torch.tensor(
                 ["_hand_" in name for name in selected_names],
                 device=device,
             )
-            self.arm_mask = ~(self.waist_mask | self.finger_mask)
+            self.arm_mask = ~self.finger_mask
 
         if self.dof_indices.device != device:
             self.dof_indices = self.dof_indices.to(device)
         if self.required_pos_tensor.device != device:
             self.required_pos_tensor = self.required_pos_tensor.to(device)
-        if self.waist_mask.device != device:
-            self.waist_mask = self.waist_mask.to(device)
+        if self.finger_mask.device != device:
             self.finger_mask = self.finger_mask.to(device)
             self.arm_mask = self.arm_mask.to(device)
 
@@ -608,11 +588,8 @@ class Stage0ArmPos(HumanoidBaseReward):
                 return torch.ones(num_envs, device=device)
             return torch.exp(-torch.mean(torch.square(error[:, mask] / sigma), dim=-1))
 
-        # Do not dilute three waist joints by averaging them with 28 arm/finger
-        # joints. This makes torso motion during walking visibly expensive.
         pose_score = (
-            0.45 * group_reward(self.waist_mask, self.waist_sigma)
-            + 0.45 * group_reward(self.arm_mask, self.arm_sigma)
+            0.90 * group_reward(self.arm_mask, self.arm_sigma)
             + 0.10 * group_reward(self.finger_mask, self.finger_sigma)
         )
         return pose_score * stage_mask.float()
@@ -1024,59 +1001,6 @@ class Stage1ArmJointVelocityPenalty(HumanoidBaseReward):
         return penalty * stage_mask.float()
 
 
-class WaistStraightReward(HumanoidBaseReward):
-    """Reward a neutral waist pose during hand manipulation stages.
-
-    The score is one when yaw, roll and pitch are all zero and decays
-    smoothly towards zero as the three joints move away from neutral.
-    It is active only in stages 1 and 2.
-    """
-
-    def __init__(self, robot_name="g1_with_hands"):
-        super().__init__(robot_name)
-        self.active_stages = (1, 2)
-        self.joint_names = (
-            "waist_yaw_joint",
-            "waist_roll_joint",
-            "waist_pitch_joint",
-        )
-        self.sigma = 0.15
-        self.joint_indices = None
-
-    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
-        robot = states.robots[robot_name]
-        joint_pos = robot.joint_pos
-        device = joint_pos.device
-        num_envs = joint_pos.shape[0]
-
-        if self.actual_stage is None:
-            return torch.zeros(num_envs, dtype=joint_pos.dtype, device=device)
-
-        if self.joint_indices is None:
-            name_to_index = {name: index for index, name in enumerate(robot.joint_names)}
-            missing = [name for name in self.joint_names if name not in name_to_index]
-            if missing:
-                raise ValueError(
-                    "WaistStraightReward could not find required joints: "
-                    + ", ".join(missing)
-                )
-            self.joint_indices = torch.tensor(
-                [name_to_index[name] for name in self.joint_names],
-                dtype=torch.long,
-                device=device,
-            )
-        elif self.joint_indices.device != device:
-            self.joint_indices = self.joint_indices.to(device)
-
-        waist_pos = joint_pos.index_select(1, self.joint_indices)
-        normalized_error = waist_pos / self.sigma
-        pose_score = torch.exp(-torch.mean(normalized_error.square(), dim=-1))
-        stage_mask = _stage_mask(
-            self.actual_stage.to(device=device), self.active_stages
-        )
-        return pose_score * stage_mask.to(dtype=joint_pos.dtype)
-
-
 class ReachChairProgressReward(HumanoidBaseReward):
     """Stage 1 exponential reward for reaching both hand targets.
 
@@ -1402,12 +1326,13 @@ class Stage2HandRetentionReward(HumanoidBaseReward):
 
 
 class Stage2UpperBodyPoseRetentionReward(HumanoidBaseReward):
-    """Keep the stage-entry waist and arm pose while the fingers close.
+    """Keep the stage-entry arm pose while the fingers close.
 
     Each environment stores its own reference when reward histories are reset
-    on entry into stage 2 (or after loading a stage-2 snapshot).  Finger and leg
-    joints are deliberately absent, so this term cannot oppose grasp closure
-    or the locomotion controller.
+    on entry into stage 2 (or after loading a stage-2 snapshot). Waist, finger
+    and leg joints are deliberately absent: balance is shaped by the COM term,
+    while this reward cannot oppose torso compensation, grasp closure or the
+    locomotion controller.
 
     Output: [0, 1] in stage 2 and zero elsewhere.
     """
@@ -1418,9 +1343,6 @@ class Stage2UpperBodyPoseRetentionReward(HumanoidBaseReward):
             raise ValueError("position_scale must be finite and positive")
         self.position_scale = float(position_scale)
         self.joint_names = (
-            "waist_yaw_joint",
-            "waist_roll_joint",
-            "waist_pitch_joint",
             "left_shoulder_pitch_joint",
             "left_shoulder_roll_joint",
             "left_shoulder_yaw_joint",
@@ -2772,9 +2694,9 @@ TERMINATION_WEIGHT = -1.0
 DELTA_ACTION_RATE_WEIGHT = -0.2
 DOF_VELOCITY_ACCELERATION_WEIGHT = -0.75
 LOCOMOTION_COMMAND_PENALTY_WEIGHT = -0.4
+UPPER_BODY_COM_PENALTY_WEIGHT = -10.0
 DOF_POSITION_LIMITS_WEIGHT = -0.0
 HUMANLY_DOF_LIMIT_WEIGHT = -0.25
-UPRIGHT_PENALTY_WEIGHT = -0.50
 ARM_RESTING_POSE_PENALTY_WEIGHT = -0.05
 # Every stage-local policy gets the same one-shot completion bonus.
 MULTI_POLICY_STAGE_COMPLETION_WEIGHT = 500.0
@@ -2789,7 +2711,6 @@ KEEP_CHAIR_STILL_PENALTY_WEIGHT = -1.0
 # Scalar defaults for stage-1/shared functions. Effective stage-1 weights are
 # set in STAGE1_REWARD_WEIGHTS below; keep shared defaults for other stages.
 # STAGE1_ARM_JOINT_VELOCITY_PENALTY_WEIGHT = -0.08
-# WAIST_STRAIGHT_REWARD_WEIGHT = 0.01
 # REACH_CHAIR_REWARD_WEIGHT = 0.1
 # REACH_ORIENTATION_REWARD_WEIGHT = 0.1
 # HAND_TARGET_STILLNESS_REWARD_WEIGHT = 0.01
@@ -2805,12 +2726,10 @@ STAGE1_REWARD_WEIGHTS = {
     "TerminationCfg": -100.0,
     "DeltaActionRateCfg": -0.03,
     "DoFVelocityAccelerationCfg": -0.05,
-    "LocomotionCommandPenalty": -0.1,
-    #"UprightPenaltyCfg": -0.10,
+    "LocomotionCommandPenalty": -0.7,
     "KeepChairStillPenalty": -0.1,
     "Stage1ArmJointVelocityPenalty": -0.1,
     "OpenGraspReward": 0.1,
-    "WaistStraightReward": 0.1,
     "ReachChairProgressReward": 1.00,
     "HandOrientationProgressReward": 0.10,
     "HandTargetStillnessReward": 0.10,
@@ -2829,8 +2748,6 @@ STAGE2_REWARD_WEIGHTS = {
     "DeltaActionRateCfg": -0.05,
     "DoFVelocityAccelerationCfg": -0.01,
     "LocomotionCommandPenalty": -0.1,
-    "UprightPenaltyCfg": -0.05,
-    "WaistStraightReward": 0.02,
     "StayNearAnchorReward": 0.1,
     "Stage2UpperBodyPoseRetentionReward": 0.1,
 }
@@ -2853,7 +2770,6 @@ LATE_STAGE_REWARD_WEIGHTS = {
     "DeltaActionRateCfg": -0.01,
     "DoFVelocityAccelerationCfg": -0.02,
     "LocomotionCommandPenalty": -0.02,
-    "UprightPenaltyCfg": -0.04,
 }
 # At gamma=.995, postponing success costs 2.5 per step; postponing failure
 # discounts its cost by 1.25. Stages 1..5 keep positive shaping below 2.5
@@ -2890,6 +2806,8 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
     verbose_motion_diagnostics: bool = False
     # Draw the approach and final hand targets in non-headless Genesis.
     visualize_reach_waypoints: bool = False
+    # Draw upper-body COM and pelvis XY projections in headless Genesis.
+    visualize_center_of_mass: bool = False
     num_policy_stages: int = 6
     stage_reward_weights: dict = {
         1: STAGE1_REWARD_WEIGHTS, 2: STAGE2_REWARD_WEIGHTS,
@@ -2916,9 +2834,9 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
         DELTA_ACTION_RATE_WEIGHT,
         DOF_VELOCITY_ACCELERATION_WEIGHT,
         LOCOMOTION_COMMAND_PENALTY_WEIGHT,
+        UPPER_BODY_COM_PENALTY_WEIGHT,
         # DOF_POSITION_LIMITS_WEIGHT,
         # HUMANLY_DOF_LIMIT_WEIGHT,
-        #UPRIGHT_PENALTY_WEIGHT,
 
         STAGE0_ARM_POS_REWARD_WEIGHT,
         WALK_TO_CHAIR_REWARD_WEIGHT,
@@ -2929,7 +2847,6 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
         # These functions are weighted only through stage_reward_weights. Zero
         # placeholders preserve one-to-one alignment with reward_functions.
         0.0,  # Stage1ArmJointVelocityPenalty
-        0.0,  # WaistStraightReward
         0.0,  # ReachChairProgressReward
         0.0,  # HandOrientationProgressReward
         0.0,  # HandTargetStillnessReward
@@ -2959,9 +2876,9 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
         DeltaActionRateCfg(),
         DoFVelocityAccelerationCfg(),
         LocomotionCommandPenalty(),
+        UpperBodyCenterOfMassPenalty(),
         # DofPositionLimitsCfg(),
         # HumanlyDofLimitCfg(),
-        #UprightPenaltyCfg(),
 
         Stage0ArmPos(),
         WalkToChairProgressReward(),
@@ -2970,7 +2887,6 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
         OpenGraspReward(),
 
         Stage1ArmJointVelocityPenalty(),
-        WaistStraightReward(),
         ReachChairProgressReward(),
         HandOrientationProgressReward(),
         HandTargetStillnessReward(),

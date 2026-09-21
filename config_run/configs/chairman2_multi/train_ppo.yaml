@@ -7,12 +7,12 @@ robots: [g1_without_hands]
 fix_base_link: false
 task: chairman2
 decimation: 5
-num_envs: 6000
+num_envs: 15000
 headless: true
 add_table: true
 env_spacing: 4.0
 train_or_eval: train   #load_and_train #train_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
-
+#visualize_center_of_mass: true
 # true: trénuje se pouze policy train_stage (0–4), bez automatického zmražení.
 # Každý reset i dokončení stage obnoví její snapshot z
 # config_run/snapshots_chairman2_five_stage_v2/stage_<train_stage>/*.pkl (náhodný výběr).
@@ -83,13 +83,13 @@ net_arch_pivf: true
 # Two 256-wide layers are large enough for the stage-local tasks. The previous
 # third layer added compute to all five policies without adding a useful wider
 # representation.
-net_arch_pi: [256, 256, 128]
-net_arch_vf: [256, 256, 128]
+net_arch_pi: [64, 64, 64]
+net_arch_vf: [64, 64, 64]
 
 learning_rate: 0.0003
 # Do not decay against global task progress: downstream policies are unlocked
 # later and must still start with the full learning rate.
-learning_schedule: constant
+learning_schedule: linear
 
 # A longer rollout improves temporal credit assignment for the 5-10 second
 # stages. Smaller minibatches provide substantially more optimizer steps per

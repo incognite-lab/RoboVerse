@@ -53,6 +53,8 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
         super().__init__(env)
         self._reach_waypoint_debug_objects = []
         self._reach_waypoint_visualization_failed = False
+        self._center_of_mass_debug_objects = []
+        self._center_of_mass_visualization_failed = False
         self._reach_waypoint_reward = next(
             (
                 reward_fn
@@ -70,6 +72,15 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
             and scene is not None
             and callable(getattr(scene, "draw_debug_sphere", None))
             and callable(getattr(scene, "draw_debug_line", None))
+            and callable(getattr(scene, "clear_debug_object", None))
+        )
+        # Requested specifically for off-screen/headless rendering. Keeping it
+        # opt-in avoids a GPU->CPU synchronization on every training step.
+        self._visualize_center_of_mass = bool(
+            getattr(env.scenario.task, "visualize_center_of_mass", False)
+            and getattr(handler, "headless", False)
+            and scene is not None
+            and callable(getattr(scene, "draw_debug_sphere", None))
             and callable(getattr(scene, "clear_debug_object", None))
         )
         self.num_upper_body_actions = len(self.upper_body_joint_names)
@@ -482,12 +493,69 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
                 self._reach_waypoint_visualization_failed = True
             self._visualize_reach_waypoints = False
 
+    def _clear_center_of_mass_visualization(self) -> None:
+        """Remove only the COM and pelvis ground markers."""
+        objects = getattr(self, "_center_of_mass_debug_objects", [])
+        if not objects:
+            return
+        scene = self.env.env.handler.scene_inst
+        for debug_object in objects:
+            scene.clear_debug_object(debug_object)
+        objects.clear()
+
+    def _update_center_of_mass_visualization(self) -> None:
+        """Draw env 0's upper-body COM and pelvis XY projections on the ground."""
+        if not getattr(self, "_visualize_center_of_mass", False):
+            return
+        try:
+            from metasim.utils import chairman2_geometry as geometry
+
+            with torch.no_grad():
+                states = self.env.env.handler.get_states()
+                robot = states.robots[self.robot_name]
+                urdf_path = (
+                    geometry.G1_WITHOUT_HANDS_URDF
+                    if self.robot_name == "g1_without_hands"
+                    else geometry.G1_WITH_HANDS_URDF
+                )
+                upper_com = geometry.upper_body_center_of_mass(
+                    robot, str(urdf_path)
+                )[0, :2]
+                pelvis_idx = robot.body_names.index("pelvis")
+                pelvis_xy = robot.body_state[0, pelvis_idx, :2]
+                # Slight lift prevents z-fighting while visually remaining on
+                # the z=0 ground plane.
+                marker_z = upper_com.new_tensor([0.025])
+                com_point = torch.cat((upper_com, marker_z)).cpu().numpy()
+                pelvis_point = torch.cat((pelvis_xy, marker_z)).cpu().numpy()
+
+            self._clear_center_of_mass_visualization()
+            scene = self.env.env.handler.scene_inst
+            self._center_of_mass_debug_objects.extend((
+                scene.draw_debug_sphere(
+                    com_point, radius=0.04, color=(1.0, 0.15, 0.05, 0.95)
+                ),
+                scene.draw_debug_sphere(
+                    pelvis_point, radius=0.04, color=(0.05, 0.75, 1.0, 0.95)
+                ),
+            ))
+        except Exception as exc:
+            # Debug rendering must never terminate evaluation or training.
+            if not getattr(self, "_center_of_mass_visualization_failed", False):
+                log.warning("Could not draw ChairMan COM markers: %s", exc)
+                self._center_of_mass_visualization_failed = True
+            self._visualize_center_of_mass = False
+
+    def _update_debug_visualizations(self) -> None:
+        self._update_reach_waypoint_visualization()
+        self._update_center_of_mass_visualization()
+
     def torch_reset(self) -> torch.Tensor:
         """Reset and return a GPU observation for MultiPPOTrainer."""
         obs, _ = self.env.reset()
         self._reset_motion_state_torch()
         self.timesteps.zero_()
-        self._update_reach_waypoint_visualization()
+        self._update_debug_visualizations()
         return self.add_extra_to_obs_torch(obs)
 
     def torch_step(
@@ -530,7 +598,7 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
             self._reset_motion_state_torch(reset_ids)
 
         observation = self.add_extra_to_obs_torch(obs)
-        self._update_reach_waypoint_visualization()
+        self._update_debug_visualizations()
         metadata = {
             "stage_before": stage_before,
             "stage_after_event": stage_after_event,
@@ -555,7 +623,7 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
                 "ChairMan multi-policy reset selected a stage without a policy: "
                 f"{np.unique(self._stage_before_step[unexpected])}"
             )
-        self._update_reach_waypoint_visualization()
+        self._update_debug_visualizations()
         return observation
 
     def step_async(self, actions: np.ndarray) -> None:
@@ -566,7 +634,7 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
 
     def step_wait(self):
         observation, rewards, dones, infos = super().step_wait()
-        self._update_reach_waypoint_visualization()
+        self._update_debug_visualizations()
         stage_after = self.get_current_stages()
 
         task = self.env.env.handler.task

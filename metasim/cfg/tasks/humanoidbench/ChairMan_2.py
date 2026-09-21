@@ -63,6 +63,8 @@ def hand_shape_cost(m):
 # =============================================================================
 
 class MotionRegularization(HumanoidBaseReward):
+    """Ve všech stages penalizuje prudké povely, rychlé klouby a náklon trupu."""
+
     def __init__(self):
         super().__init__('g1_with_hands')
         self.robot_name = 'g1_without_hands'
@@ -93,11 +95,36 @@ class MotionRegularization(HumanoidBaseReward):
         cost = (
             0.03 * bounded(rate, 3.0)
             + 0.05 * bounded(speed, 1.5)
-            + 0.1 * (1 - m['upright']).clamp(min=0)
+            + 0.01 * (1 - m['upright']).clamp(min=0)
         )
         if self.command is not None:
             cost += 0.02*bounded((self.command-self.previous_command).abs().mean(-1)/self.control_dt, 3.0)
         return -torch.nan_to_num(cost, nan=1.0, posinf=1.0)*self.control_dt/0.02
+
+
+class UpperBodyCenterOfMassReward(HumanoidBaseReward):
+    """Ve všech stages penalizuje vodorovné vychýlení COM vršku těla od pelvisu."""
+
+    def __init__(self, robot_name="g1_without_hands"):
+        super().__init__('g1_with_hands')
+        self.robot_name = robot_name
+        self.metrics = None
+        self.control_dt = 0.01
+
+    def __call__(self, states, robot_name=None):
+        name = robot_name or self.robot_name
+        robot = states.robots[name]
+        metrics = self.metrics if self.metrics is not None else g.measure(states, name, self)
+        outside = torch.relu(
+            metrics['upper_body_com_horizontal_error'] - g.UPPER_BODY_COM_DEADZONE
+        )
+        normalized = outside / g.UPPER_BODY_COM_SCALE
+        cost = normalized.square() / (1 + normalized.square())
+        # Zero is the optimum. A non-positive running reward cannot be farmed
+        # by delaying stage completion, and dt scaling keeps its strength
+        # stable when simulation decimation changes.
+        #print("UpperBodyCenterOfMassReward cost:", (-torch.nan_to_num(cost, nan=1.0, posinf=1.0) * self.control_dt / 0.02))
+        return -torch.nan_to_num(cost, nan=1.0, posinf=1.0) * self.control_dt / 0.02
 
 
 # =============================================================================
@@ -105,6 +132,8 @@ class MotionRegularization(HumanoidBaseReward):
 # =============================================================================
 
 class StageOutcomeReward(HumanoidBaseReward):
+    """Dává bonus za dokončení stage a penalizaci za neúspěšné ukončení."""
+
     def __init__(self):
         super().__init__('g1_with_hands')
         self.robot_name = 'g1_without_hands'
@@ -130,16 +159,7 @@ class StageOutcomeReward(HumanoidBaseReward):
 # =============================================================================
 
 class WalkToChairProgressReward(HumanoidBaseReward):
-    """
-    Stage 0 reward for tracking a desired XY velocity vector toward the chair.
-
-    The desired vector points to the final standing position behind the chair.
-    Its magnitude is the walking speed the policy should produce.  Motion in
-    the opposite direction is negative, and every step also receives a signed
-    distance-progress term.
-
-    Output: <-1, 1>
-    """
+    """Stage 0: odměňuje chůzi k cíli za židlí a následné zastavení."""
     def __init__(self, robot_name="g1_without_hands", target_speed=0.5):
         super().__init__('g1_with_hands')
         self.robot_name = robot_name
@@ -269,16 +289,7 @@ class WalkToChairProgressReward(HumanoidBaseReward):
         return total_reward * stage_mask.float()
 
 class FaceChairReward(HumanoidBaseReward):
-    """
-    Stage 0 reward for keeping the robot facing the chair.
-
-    Reward torso forward-axis alignment with the chair in the XY plane.
-    Every increase in angular error reduces the reward: +1 at zero error,
-    zero at 20 degrees, and negative beyond that. No progress bonus or
-    angular tolerance can mask a misaligned torso.
-
-    Output: <-1, 1>
-    """
+    """Stage 0: odměňuje natočení trupu směrem k židli."""
     def __init__(self, robot_name="g1_without_hands"):
         super().__init__('g1_with_hands')
         self.robot_name = robot_name
@@ -326,15 +337,7 @@ class FaceChairReward(HumanoidBaseReward):
 
 
 class Stage0ArmPos(HumanoidBaseReward):
-    """Drive every configured joint into the exact pose required by stage 0.
-
-    The rational per-joint score remains informative far from the target. The
-    worst joint carries most of the score, so correctly positioning nine
-    joints cannot hide one incorrect joint. Signed progress rewards reducing
-    the error and penalizes regression. A stationary partial pose receives a
-    small negative cost; the hold bonus starts only when every joint satisfies
-    the same tolerance as the checker.
-    """
+    """Stage 0: odměňuje přiblížení všech zadaných kloubů k chodecké póze."""
     def __init__(self):
         super().__init__('g1_with_hands')
         self.robot_name = 'g1_without_hands'
@@ -405,7 +408,7 @@ class Stage0ArmPos(HumanoidBaseReward):
 
 
 class KeepChairStillPenalty(HumanoidBaseReward):
-    """Stage 0 chair displacement, rotation and speed; use negative weight."""
+    """Stage 0: penalizuje posun, rotaci a rychlost židle před manipulací."""
     def __init__(self):
         super().__init__('g1_with_hands')
         self.robot_name = 'g1_without_hands'
@@ -428,7 +431,7 @@ class KeepChairStillPenalty(HumanoidBaseReward):
 # =============================================================================
 
 class ExtendArmsReward(HumanoidBaseReward):
-    """Stage 1: extend both end effectors forward and above the backrest."""
+    """Stage 1: odměňuje natažení obou end-effectorů před tělo nad opěradlo."""
     stage = 1
 
     def __init__(self):
@@ -483,7 +486,7 @@ class ExtendArmsReward(HumanoidBaseReward):
 # =============================================================================
 
 class MoveHandsBehindBackrestReward(HumanoidBaseReward):
-    """Stage 2: move both end effectors over the backrest toward the seat."""
+    """Stage 2: odměňuje přesun obou end-effectorů za opěradlo směrem k sedáku."""
     stage = 2
 
     def __init__(self):
@@ -538,7 +541,7 @@ class MoveHandsBehindBackrestReward(HumanoidBaseReward):
 # =============================================================================
 
 class PullChairReward(HumanoidBaseReward):
-    """Stage 3: signed progress and running costs for pull and stop."""
+    """Stage 3: odměňuje stabilní úchop, rovný tah židle a zastavení v cíli."""
     stage = 3
 
     def __init__(self):
@@ -591,7 +594,7 @@ class PullChairReward(HumanoidBaseReward):
 # =============================================================================
 
 class LiftHandsReward(HumanoidBaseReward):
-    """Stage 4: signed progress and running costs for release and lift."""
+    """Stage 4: odměňuje puštění židle a zvednutí obou rukou nad targety."""
     stage = 4
 
     def __init__(self):
@@ -636,6 +639,7 @@ class LiftHandsReward(HumanoidBaseReward):
 # =============================================================================
 
 MOTION_REGULARIZATION_WEIGHT = 0.1
+UPPER_BODY_COM_REWARD_WEIGHT = 1.0
 STAGE_OUTCOME_WEIGHT = 50.0  # 500 per completed stage, -500 on failure.
 STAGE0_ARM_POS_REWARD_WEIGHT = 0.4
 WALK_TO_CHAIR_REWARD_WEIGHT = 0.4
@@ -664,6 +668,7 @@ class Chairman2Cfg(HumanoidTaskCfg):
     curriculum_max_stage: int | None = None
     snapshot_save_probability: float = 0.1
     verbose_motion_diagnostics: bool = False
+    visualize_center_of_mass: bool = False
     log_reward_components: bool = True
     reset_rewards_on_stage_change: bool = True
     objects = [ArticulationObjCfg(
@@ -674,6 +679,7 @@ class Chairman2Cfg(HumanoidTaskCfg):
     reward_weights = [
         STAGE_OUTCOME_WEIGHT,
         MOTION_REGULARIZATION_WEIGHT,
+        UPPER_BODY_COM_REWARD_WEIGHT,
         STAGE0_ARM_POS_REWARD_WEIGHT,
         WALK_TO_CHAIR_REWARD_WEIGHT,
         FACE_CHAIR_REWARD_WEIGHT,
@@ -686,6 +692,7 @@ class Chairman2Cfg(HumanoidTaskCfg):
     reward_functions = [
         StageOutcomeReward(),
         MotionRegularization(),
+        UpperBodyCenterOfMassReward(),
         Stage0ArmPos(),
         WalkToChairProgressReward(),
         FaceChairReward(),

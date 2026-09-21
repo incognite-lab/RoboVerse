@@ -32,6 +32,13 @@ are intentionally omitted; the walking controller observes the legs internally.
 Because the network input dimension changed, models trained with the former
 observation layout cannot be resumed with this wrapper and must be retrained.
 
+For an off-screen COM diagnostic use `headless: true` together with
+`visualize_center_of_mass: true`. Env 0 then shows the upper-body COM XY
+projection as an orange-red ground marker and the pelvis XY position as a cyan
+marker. Their centers are 2.5 cm above `z=0` to prevent flickering with the
+ground plane. The option is disabled by default because updating it every step
+requires a GPU-to-CPU synchronization.
+
 | Stage | Goal | Main checker conditions | Hold | Timeout |
 |---|---|---|---|---|
 | 0 | Walk behind chair with specified walking arm pose | within 5 cm of target 0.745 m from chair base, every arm joint within 0.15 rad, torso within 5 degrees, robot/chair stopped | 0.25 s | 15 s |
@@ -63,9 +70,13 @@ stage-specific constraints. Waiting has a negative reward. Completion gives
 +10 once per transition; final completion gives +20, failure -10. Positive
 stage-3 shaping additionally requires both contacts and correct palm/elbow
 geometry. Separate small penalties regularize rapid arm commands, joint
-velocity, walking-command changes and torso tilt. Thresholds/weights are initial
-engineering settings; contact force and surface offsets should be checked in
-simulation before long training.
+velocity, walking-command changes and torso tilt. A global reward in every
+stage also keeps the mass-weighted center of mass of the complete torso subtree
+(torso, head, arms, hands and fingers) projected above the pelvis. It has a 5 cm
+dead zone, a 10 cm shaping scale and weight 0.2; URDF masses and inertial COM
+offsets are used, while pelvis and leg links are excluded. Thresholds/weights
+are initial engineering settings; contact force and surface offsets should be
+checked in simulation before long training.
 
 Policies switch without resetting the simulator on intermediate success.
 Actor inheritance, freezing, curriculum caps and `train_only: true` /

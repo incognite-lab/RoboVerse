@@ -7,6 +7,7 @@ from metasim.cfg.checkers.stages_chairman2 import stage1_success, stage2_success
 from metasim.cfg.tasks.humanoidbench.ChairMan_2 import (
     ExtendArmsReward,
     MoveHandsBehindBackrestReward,
+    UpperBodyCenterOfMassReward,
 )
 from metasim.utils import chairman2_geometry as geometry
 
@@ -27,6 +28,31 @@ def _common_metrics(num_envs: int = 2) -> dict[str, torch.Tensor]:
 
 
 class Chairman2TaskSpaceStagesTest(unittest.TestCase):
+    def test_upper_body_inertials_are_the_torso_subtree_only(self) -> None:
+        inertials = geometry.upper_body_inertials()
+        self.assertIn("torso_link", inertials)
+        self.assertIn("head_link", inertials)
+        self.assertIn("left_hand_index_1_link", inertials)
+        self.assertIn("right_hand_thumb_2_link", inertials)
+        self.assertNotIn("pelvis", inertials)
+        self.assertNotIn("left_hip_pitch_link", inertials)
+        self.assertGreater(sum(mass for mass, _ in inertials.values()), 0.0)
+
+    def test_upper_body_com_reward_prefers_projection_above_pelvis(self) -> None:
+        robot = SimpleNamespace(joint_pos=torch.zeros((3, 1)))
+        states = SimpleNamespace(robots={"g1_without_hands": robot})
+        reward = UpperBodyCenterOfMassReward()
+        reward.control_dt = 0.02
+        reward.metrics = {
+            "upper_body_com_horizontal_error": torch.tensor([0.0, 0.05, 0.20])
+        }
+
+        values = reward(states, "g1_without_hands")
+
+        self.assertEqual(values[0].item(), 0.0)
+        self.assertEqual(values[1].item(), 0.0)
+        self.assertGreater(values[1].item(), values[2].item())
+
     def test_chair_relative_depth_points_toward_the_seat(self) -> None:
         torso = torch.tensor([[0.0, 0.70, 0.85, 2**-0.5, 0.0, 0.0, -(2**-0.5)]])
         targets = torch.tensor([[[0.15, 0.29, 0.96], [-0.15, 0.29, 0.96]]])
