@@ -372,6 +372,8 @@ def main():
     elif config.get("train_or_eval") == "eval":
         import re
         import csv
+        import gc
+        import json
         import matplotlib.pyplot as plt
 
         metasim_env = MetaSimVecEnv(
@@ -404,16 +406,81 @@ def main():
             return chair_pos_xy.detach().cpu().numpy().copy()
 
         # ---------------------------------------------------------
-        # 1) Najít a seřadit checkpointy model_XXXX.zip
+        # 1) Find either single-policy checkpoints in the root directory or
+        #    checkpoint labels shared by every policy in a multi-policy bundle.
         # ---------------------------------------------------------
         model_files = []
         pattern = re.compile(r"model_(\d+)\.zip$")
+        manifest_path = os.path.join(model_dir, "multi_policy_manifest.json")
+        is_multi_bundle = (
+            config.get("task") in ("chairmanmulti", "chairman2")
+            and os.path.isfile(manifest_path)
+        )
 
-        for filename in os.listdir(model_dir):
-            match = pattern.match(filename)
-            if match:
-                step_count = int(match.group(1))
-                model_files.append((step_count, filename))
+        if is_multi_bundle:
+            with open(manifest_path, encoding="utf-8") as f:
+                multi_manifest = json.load(f)
+            num_stage_policies = int(
+                multi_manifest.get(
+                    "num_stage_policies",
+                    getattr(env, "NUM_POLICY_STAGES", 0),
+                )
+            )
+            checkpoint_sets = []
+            missing_stage_dirs = []
+            for stage in range(num_stage_policies):
+                stage_dir = os.path.join(model_dir, f"stage_{stage}")
+                if not os.path.isdir(stage_dir):
+                    missing_stage_dirs.append(stage)
+                    checkpoint_sets.append(set())
+                    continue
+                labels = {
+                    int(match.group(1))
+                    for filename in os.listdir(stage_dir)
+                    if (match := pattern.fullmatch(filename)) is not None
+                }
+                checkpoint_sets.append(labels)
+
+            common_checkpoints = (
+                set.intersection(*checkpoint_sets) if checkpoint_sets else set()
+            )
+            requested_checkpoint = config.get("load_model_checkpoint")
+            if requested_checkpoint not in (None, ""):
+                requested_checkpoint = int(requested_checkpoint)
+                if requested_checkpoint not in common_checkpoints:
+                    env.close()
+                    raise FileNotFoundError(
+                        "The requested multi-policy checkpoint "
+                        f"{requested_checkpoint} is not present for every stage."
+                    )
+                common_checkpoints = {requested_checkpoint}
+
+            model_files = [
+                (step, f"multi_policy_{step}")
+                for step in sorted(common_checkpoints)
+            ]
+            if not model_files:
+                env.close()
+                missing = (
+                    f" Missing stage directories: {missing_stage_dirs}."
+                    if missing_stage_dirs else ""
+                )
+                raise FileNotFoundError(
+                    "No numeric checkpoint is shared by every stage policy in "
+                    f"{model_dir}.{missing} A complete task evaluation requires "
+                    "one model for every stage."
+                )
+            log.info(
+                "Detected a {}-stage Multi-PPO bundle with {} common checkpoints.",
+                num_stage_policies,
+                len(model_files),
+            )
+        else:
+            for filename in os.listdir(model_dir):
+                match = pattern.fullmatch(filename)
+                if match:
+                    step_count = int(match.group(1))
+                    model_files.append((step_count, filename))
 
         model_files.sort(key=lambda x: x[0])
 
@@ -478,15 +545,27 @@ def main():
         # 4) Hlavní eval smyčka přes checkpointy
         # ---------------------------------------------------------
         for step_count, filename in model_files:
-            full_path = os.path.join(model_dir, filename)
             log.info(f"Evaluating PPO checkpoint: {filename} | step={step_count}")
 
             try:
-                model = PPO.load(
-                    full_path,
-                    env=env,
-                    device="cuda" if torch.cuda.is_available() else "cpu"
-                )
+                if is_multi_bundle:
+                    from multi_ppo_trainer import load_policy_router
+
+                    model = None
+                    multi_router, _ = load_policy_router(
+                        env,
+                        model_dir,
+                        device="cuda" if torch.cuda.is_available() else "cpu",
+                        checkpoint=step_count,
+                    )
+                else:
+                    multi_router = None
+                    full_path = os.path.join(model_dir, filename)
+                    model = PPO.load(
+                        full_path,
+                        env=env,
+                        device="cuda" if torch.cuda.is_available() else "cpu"
+                    )
             except Exception as e:
                 log.error(f"Failed to load model {filename}: {e}")
                 continue
@@ -539,18 +618,10 @@ def main():
                 current_chair_xy = get_chair_base_xy()
                 last_chair_xy_before_step[running_envs] = current_chair_xy[running_envs]
 
-                actions, _ = model.predict(obs, deterministic=True)
-
-                actions = np.asarray(actions)
-
-                # Pro envy, které už byly vyhodnoceny, posíláme nulovou akci.
-                # Tyto envy se ale už nepočítají do statistik.
-                if np.any(~running_envs):
-                    actions[~running_envs] = 0.0
-
                 # ---------------------------------------------------------
                 # Stage čteme PŘED env.step().
-                # Tento krok tedy odpovídá stage, ve které agent právě vybírá akci.
+                # This both records stage occupancy and routes each environment
+                # row through the policy that owns the action about to be taken.
                 # ---------------------------------------------------------
                 try:
                     actual_stage = (
@@ -572,6 +643,20 @@ def main():
                 except Exception as e:
                     log.warning(f"Could not read actual_stage during PPO eval: {e}")
                     stages_before_step = np.zeros(env.num_envs, dtype=np.int64)
+
+                routing_stages = stages_before_step.copy()
+                if multi_router is not None:
+                    actions = multi_router.predict(
+                        obs, routing_stages, deterministic=True
+                    )
+                else:
+                    actions, _ = model.predict(obs, deterministic=True)
+                actions = np.asarray(actions)
+
+                # Pro envy, které už byly vyhodnoceny, posíláme nulovou akci.
+                # Tyto envy se ale už nepočítají do statistik.
+                if np.any(~running_envs):
+                    actions[~running_envs] = 0.0
 
                 stages_before_step = np.clip(
                     stages_before_step,
@@ -827,6 +912,17 @@ def main():
                 f"Avg Stage Steps: {mean_stage_counts} | "
                 f"End Stage Counts: {end_stage_counts}"
             )
+
+            # Release the current checkpoint before loading the next six-policy
+            # bundle. Otherwise Python keeps the old router alive while the new
+            # one is being constructed and GPU memory can temporarily double.
+            if multi_router is not None:
+                del multi_router
+            if model is not None:
+                del model
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         env.close()
 

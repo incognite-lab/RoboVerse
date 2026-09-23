@@ -27,4 +27,4 @@ eval_count_timeouts_as_failures: true
 num_eval_stages: 6
 
 # Managed by run_chairman_training_pipeline.py
-load_model_path: "./config_run/output/ppo_models_multi/"
+load_model_path: "./config_run/output/ppo_models_multi/run_2026-09-21_17-37-41_chairmanmulti_concurrent"

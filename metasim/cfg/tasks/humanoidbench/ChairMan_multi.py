@@ -465,7 +465,7 @@ class UpperBodyCenterOfMassPenalty(HumanoidBaseReward):
         )
         outside = torch.relu(error - chairman_geometry.UPPER_BODY_COM_DEADZONE)
         normalized = outside / chairman_geometry.UPPER_BODY_COM_SCALE
-        print("UpperBodyCenterOfMassPenalty cost:", torch.nan_to_num(normalized.square() / (1 + normalized.square()), nan=1.0, posinf=1.0))
+        #print("UpperBodyCenterOfMassPenalty cost:", torch.nan_to_num(normalized.square() / (1 + normalized.square()), nan=1.0, posinf=1.0))
         return torch.nan_to_num(
             normalized.square() / (1 + normalized.square()),
             nan=1.0,
@@ -2699,7 +2699,7 @@ DOF_POSITION_LIMITS_WEIGHT = -0.0
 HUMANLY_DOF_LIMIT_WEIGHT = -0.25
 ARM_RESTING_POSE_PENALTY_WEIGHT = -0.05
 # Every stage-local policy gets the same one-shot completion bonus.
-MULTI_POLICY_STAGE_COMPLETION_WEIGHT = 500.0
+MULTI_POLICY_STAGE_COMPLETION_WEIGHT = 5000.0
 
 # Stage 0
 STAGE0_ARM_POS_REWARD_WEIGHT = 0.4

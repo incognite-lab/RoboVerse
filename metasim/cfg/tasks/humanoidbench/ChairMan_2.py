@@ -337,20 +337,28 @@ class FaceChairReward(HumanoidBaseReward):
 
 
 class Stage0ArmPos(HumanoidBaseReward):
-    """Stage 0: odměňuje přiblížení všech zadaných kloubů k chodecké póze."""
+    """Stage 0: reward per-joint progress and accurate target-pose retention."""
     def __init__(self):
         super().__init__('g1_with_hands')
         self.robot_name = 'g1_without_hands'
         self.active_stage = 0
-        self.previous_score = None
-        self.progress_weight = 10.0
-        self.remaining_error_weight = 0.01
-        self.hold_bonus = 0.25
+        # Waist joints are held by the wrapper and are not policy actions.  The
+        # checker still verifies them, but including them here would assign the
+        # policy reward for errors it cannot correct.
+        self.joint_targets = {
+            name: target for name, target in g.STAGE0_JOINT_TARGETS.items()
+            if not name.startswith("waist_")
+        }
+        self.previous_error = None
+        self.progress_weight = 1.0
+        self.regress_multiplier = 1.25
+        self.pose_bonus_weight = 1.0
+        self.pose_bonus_sharpness = 3.0
 
     def reset(self, env_ids, states):
         """Forget progress history only for environments that were reset."""
-        if self.previous_score is not None:
-            self.previous_score[env_ids] = torch.nan
+        if self.previous_error is not None:
+            self.previous_error[env_ids] = torch.nan
 
     def __call__(self, states, robot_name=None):
         robot = states.robots[robot_name or self.robot_name]
@@ -362,43 +370,54 @@ class Stage0ArmPos(HumanoidBaseReward):
             return robot.joint_pos.new_zeros(robot.joint_pos.shape[0])
 
         names = list(robot.joint_names)
-        indices = [names.index(name) for name in g.STAGE0_JOINT_TARGETS]
+        indices = [names.index(name) for name in self.joint_targets]
         error = (robot.joint_pos[:, indices] - robot.joint_pos.new_tensor(
-            list(g.STAGE0_JOINT_TARGETS.values()))).abs()
-        normalized_error = error / g.JOINT_TOLERANCE
-
-        # Unlike a narrow Gaussian (or a squared rational kernel), this score
-        # keeps a strong slope when a joint starts many tolerances away.
-        joint_score = 1.0 / (1.0 + normalized_error)
-        mean_score = joint_score.mean(-1)
-        worst_score = joint_score.amin(-1)
-        inside_fraction = (error <= g.JOINT_TOLERANCE).float().mean(-1)
-        current_score = (
-            0.25 * mean_score
-            + 0.65 * worst_score
-            + 0.10 * inside_fraction
-        )
+            list(self.joint_targets.values()))).abs()
 
         if (
-            self.previous_score is None
-            or self.previous_score.shape != current_score.shape
-            or self.previous_score.device != current_score.device
+            self.previous_error is None
+            or self.previous_error.shape != error.shape
+            or self.previous_error.device != error.device
         ):
-            self.previous_score = torch.full_like(current_score, torch.nan)
+            self.previous_error = torch.full_like(error, torch.nan)
 
         previous = torch.where(
-            torch.isnan(self.previous_score), current_score, self.previous_score
+            torch.isnan(self.previous_error), error, self.previous_error
         )
-        progress = current_score - previous
-        all_inside = (error <= g.JOINT_TOLERANCE).all(-1)
+        # Normalize so that moving one joint by one checker tolerance has a
+        # stable scale. Regress is charged per joint before averaging, making
+        # an equally large move away 25% stronger than a move toward the goal.
+        per_joint_progress = torch.clamp(
+            (previous - error) / g.JOINT_TOLERANCE,
+            min=-1.0,
+            max=1.0,
+        )
+        asymmetric_progress = torch.where(
+            per_joint_progress >= 0.0,
+            per_joint_progress,
+            self.regress_multiplier * per_joint_progress,
+        ).mean(-1)
+
+        # Every joint contributes independently after entering the checker's
+        # tolerance. At the boundary its contribution is exp(-sharpness), and
+        # it grows exponentially to 1 at the exact target. Averaging means one
+        # exact joint contributes 1/N and all exact joints give a bonus of 1.
+        normalized_error = error / g.JOINT_TOLERANCE
+        numerical_slack = 8.0 * torch.finfo(error.dtype).eps
+        inside = normalized_error <= 1.0 + numerical_slack
+        per_joint_pose_bonus = torch.where(
+            inside,
+            torch.exp(-self.pose_bonus_sharpness * normalized_error.clamp(max=1.0)),
+            torch.zeros_like(normalized_error),
+        )
+        pose_bonus = per_joint_pose_bonus.mean(-1)
 
         reward = (
-            self.progress_weight * progress
-            - self.remaining_error_weight * (1.0 - current_score)
-            + self.hold_bonus * all_inside.float()
+            self.progress_weight * asymmetric_progress
+            + self.pose_bonus_weight * pose_bonus
         )
-        self.previous_score = torch.where(
-            active, current_score.detach(), self.previous_score
+        self.previous_error = torch.where(
+            active[:, None], error.detach(), self.previous_error
         )
         return torch.where(
             active,
@@ -641,7 +660,7 @@ class LiftHandsReward(HumanoidBaseReward):
 MOTION_REGULARIZATION_WEIGHT = 0.1
 UPPER_BODY_COM_REWARD_WEIGHT = 1.0
 STAGE_OUTCOME_WEIGHT = 50.0  # 500 per completed stage, -500 on failure.
-STAGE0_ARM_POS_REWARD_WEIGHT = 0.4
+STAGE0_ARM_POS_REWARD_WEIGHT = 1.0
 WALK_TO_CHAIR_REWARD_WEIGHT = 0.4
 FACE_CHAIR_REWARD_WEIGHT = 0.1
 KEEP_CHAIR_STILL_PENALTY_WEIGHT = -1.0

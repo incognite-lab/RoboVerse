@@ -94,17 +94,17 @@ visualize_reach_waypoints: true
 #load_model_checkpoint: 1170240000
 # Optional: set a different checkpoint for each stage.
 # When true, load_model_stage_checkpoints must define stages 0 through 5.
-load_model_split_checkpoints: true
+load_model_split_checkpoints: false
 load_model_stage_checkpoints:
-  0: 1507968000
-  1: 1507968000
-  2: 906624000
-  3: 1507968000
-  4: 1507968000
-  5: 1507968000
+  0: 5255370000
+  1: 2072960000
+  2: 2578560000
+  3: 2578560000
+  4: 2578560000
+  5: 2578560000
 # Can point either to one concrete run_*_chairmanmulti_concurrent directory or
 # to its parent. With a parent directory the newest valid run is selected.
-load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-18_15-55-24_chairmanmulti_concurrent
+load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-23_15-35-51_chairmanmulti_concurrent
 video_save_path: ./config_run/output/eval_videos/chairman_ppo_multi_2.mp4
 eval_max_steps: 2000
 
@@ -114,5 +114,5 @@ eval_max_steps: 2000
 eval_allow_untrained_policies: false
 
 # Record one physical episode instead of continuing after the wrapper reset.
-eval_stop_on_done: true
+eval_stop_on_done: false
 video_slowdown: 1

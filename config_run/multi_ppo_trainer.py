@@ -379,18 +379,21 @@ class MultiPPOTrainer:
                 split_checkpoints=resume_split_checkpoints,
                 expected_num_stages=self.num_stage_policies,
                 expected_task_version=self.task_version,
+                allow_partial=True,
             )
             self.models = {
-                stage: _load_stage_model(paths[stage], env, self.device)
-                for stage in range(self.num_stage_policies)
+                stage: _load_stage_model(path, env, self.device)
+                for stage, path in paths.items()
             }
             self.global_timesteps = int(manifest.get("global_timesteps", 0))
             self.global_env_steps = int(manifest.get("global_env_steps", 0))
         else:
             manifest = {}
+            initial_stage = self.train_stage if self.train_stage is not None else 0
             self.models = {
-                stage: _new_stage_model(env, config, stage, self.device)
-                for stage in range(self.num_stage_policies)
+                initial_stage: _new_stage_model(
+                    env, config, initial_stage, self.device
+                )
             }
 
         self.pending = {
@@ -403,6 +406,11 @@ class MultiPPOTrainer:
         self.attempts = np.zeros(self.num_stage_policies, dtype=np.int64)
         self.successes = np.zeros(self.num_stage_policies, dtype=np.int64)
         self.samples = np.zeros(self.num_stage_policies, dtype=np.int64)
+        # This counter advances only after a batch has actually been consumed
+        # by PPO. It is the clock for each policy's learning-rate schedule.
+        self.lr_trained_samples = np.zeros(
+            self.num_stage_policies, dtype=np.int64
+        )
         self.updates = np.zeros(self.num_stage_policies, dtype=np.int64)
         self.frozen = np.zeros(self.num_stage_policies, dtype=bool)
 
@@ -412,6 +420,9 @@ class MultiPPOTrainer:
             self.attempts[stage] = int(saved.get("attempts", 0))
             self.successes[stage] = int(saved.get("successes", 0))
             self.samples[stage] = int(saved.get("samples", 0))
+            self.lr_trained_samples[stage] = int(
+                saved.get("lr_trained_samples", self.samples[stage])
+            )
             self.updates[stage] = int(saved.get("updates", 0))
             self.frozen[stage] = bool(saved.get("frozen", False))
 
@@ -421,7 +432,6 @@ class MultiPPOTrainer:
         self.inherit_stage_actor = bool(config.get("inherit_stage_actor", True))
         self.actor_initialization = {}
         self.actor_initialized = np.zeros(self.num_stage_policies, dtype=bool)
-        self.actor_initialized[0] = True
         for stage in range(self.num_stage_policies):
             saved = stage_manifest.get(str(stage), {})
             provenance = saved.get("actor_initialization")
@@ -430,8 +440,8 @@ class MultiPPOTrainer:
             # Never overwrite trained, frozen, or already inherited policies,
             # including legacy bundles that predate provenance metadata.
             self.actor_initialized[stage] |= bool(
-                provenance is not None or self.samples[stage] or self.updates[stage]
-                or self.models[stage].num_timesteps or self.frozen[stage]
+                stage in self.models or provenance is not None
+                or self.samples[stage] or self.updates[stage]
                 or saved.get("frozen", False)
             )
 
@@ -496,20 +506,28 @@ class MultiPPOTrainer:
             return
         if self.train_stage is not None and stage != self.train_stage:
             return
+        self.models[stage] = _new_stage_model(
+            self.env, self.config, stage, self.device
+        )
         if not self.inherit_stage_actor:
+            self.actor_initialization[stage] = {"kind": "independent"}
             self.actor_initialized[stage] = True
             self._publish_curriculum_limit()
+            log.info("Created policy for stage {} on its first visit.", stage)
             return
         source = stage - 1
         # Direct snapshot starts may bypass all predecessors. Copying another
         # random actor in that case adds no learned behavior.
-        if not (self.samples[source] or self.updates[source] or self.frozen[source]
-                or self.models[source].num_timesteps):
+        source_model = self.models.get(source)
+        if source_model is None or not (
+            self.samples[source] or self.updates[source] or self.frozen[source]
+            or source_model.num_timesteps
+        ):
             log.warning("Stage {} starts from snapshots without a trained policy {}; "
                         "keeping its independent actor initialization.", stage, source)
             self.actor_initialization[stage] = {"kind": "independent", "reason": "source_has_no_data"}
         else:
-            transfer_actor(self.models[source], self.models[stage], source, stage,
+            transfer_actor(source_model, self.models[stage], source, stage,
                            getattr(self.env, "stage_observation_indices", None))
             floor = float(self.config.get("inherit_actor_std_min", 0.10))
             finger_floor = float(self.config.get("inherit_finger_std_min", 0.20))
@@ -544,7 +562,25 @@ class MultiPPOTrainer:
 
     @property
     def progress_remaining(self) -> float:
+        """Global progress retained for non-LR PPO schedules and reporting."""
         return max(0.0, 1.0 - self.global_timesteps / max(1, self.total_timesteps))
+
+    def _stage_lr_progress_remaining(self, stage: int) -> float:
+        """Linear-LR progress driven only by training data for this stage."""
+        budget = int(
+            _stage_value(
+                self.config,
+                "stage_lr_timesteps",
+                stage,
+                self.total_timesteps,
+            )
+        )
+        if budget <= 0:
+            raise ValueError("stage_lr_timesteps must be positive")
+        return max(
+            0.0,
+            1.0 - float(self.lr_trained_samples[stage]) / float(budget),
+        )
 
     def _env_reset_torch(self) -> torch.Tensor:
         if self.torch_rollouts:
@@ -602,11 +638,14 @@ class MultiPPOTrainer:
         )
         records: dict[int, tuple] = {}
 
-        for stage, model in self.models.items():
+        for stage in range(self.num_stage_policies):
             env_ids = (stages == stage).nonzero(as_tuple=False).flatten()
             if env_ids.numel() == 0:
                 continue
             self._initialize_stage_actor(stage)
+            model = self.models.get(stage)
+            if model is None:
+                raise RuntimeError(f"No policy is available for active stage {stage}")
             obs_device = observations.index_select(0, env_ids)
             model.policy.set_training_mode(False)
             deterministic = bool(
@@ -904,7 +943,9 @@ class MultiPPOTrainer:
         model = self.models[stage]
         policy = model.policy
         policy.set_training_mode(True)
-        learning_rate = float(model.lr_schedule(self.progress_remaining))
+        learning_rate = float(
+            model.lr_schedule(self._stage_lr_progress_remaining(stage))
+        )
         update_learning_rate(policy.optimizer, learning_rate)
         clip_range = float(model.clip_range(self.progress_remaining))
         clip_range_vf = (
@@ -1002,6 +1043,8 @@ class MultiPPOTrainer:
                 break
 
         self.updates[stage] += 1
+        if minibatches:
+            self.lr_trained_samples[stage] += num_samples
         policy.set_training_mode(False)
         zero = torch.zeros((), dtype=torch.float32, device=self.torch_device)
 
@@ -1181,6 +1224,8 @@ class MultiPPOTrainer:
         current_envs: int,
         samples_this_rollout: int,
     ) -> str:
+        if stage not in self.models:
+            return "NOT CREATED"
         if self.frozen[stage]:
             return "FROZEN / INFERENCE" if current_envs else "FROZEN"
         if current_envs:
@@ -1393,7 +1438,7 @@ class MultiPPOTrainer:
 
     def _manifest(self, model_paths: dict[int, str]) -> dict:
         return {
-            "format_version": 2,
+            "format_version": 3,
             "trainer": "concurrent_ragged_multi_ppo",
             "task": self.config.get("task"),
             "task_version": self.task_version,
@@ -1402,8 +1447,12 @@ class MultiPPOTrainer:
             "global_env_steps": self.global_env_steps,
             "stages": {
                 str(stage): {
-                    "model": model_paths[stage],
+                    "model": model_paths.get(stage),
+                    "initialized": stage in self.models,
                     "samples": int(self.samples[stage]),
+                    "lr_trained_samples": int(
+                        self.lr_trained_samples[stage]
+                    ),
                     "updates": int(self.updates[stage]),
                     "attempts": int(self.attempts[stage]),
                     "successes": int(self.successes[stage]),
@@ -1528,6 +1577,7 @@ def resolve_policy_bundle(
     split_checkpoints: bool = False,
     expected_num_stages: int | None = None,
     expected_task_version: str | None = None,
+    allow_partial: bool = False,
 ):
     root = Path(bundle_path).expanduser()
     if root.is_file() and root.name == MANIFEST_NAME:
@@ -1552,6 +1602,13 @@ def resolve_policy_bundle(
     paths: dict[int, str] = {}
     selected_checkpoints: dict[int, str] = {}
     for stage in range(num_stages):
+        stage_data = manifest.get("stages", {}).get(str(stage), {})
+        # Format-v3 checkpoints explicitly distinguish a policy that has not
+        # been created yet from a corrupt/missing model file. This early skip
+        # also permits split-checkpoint resume without placeholder labels for
+        # unreached stages.
+        if allow_partial and stage_data.get("initialized") is False:
+            continue
         checkpoint_label = _stage_checkpoint_label(
             stage,
             checkpoint=checkpoint,
@@ -1560,8 +1617,10 @@ def resolve_policy_bundle(
             num_stages=num_stages,
         )
         if checkpoint_label is None:
-            relative = manifest.get("stages", {}).get(str(stage), {}).get("model")
+            relative = stage_data.get("model")
             if not relative:
+                if allow_partial and not stage_data.get("initialized", False):
+                    continue
                 raise ValueError(f"Manifest has no model entry for stage {stage}")
             candidate = Path(relative)
             if not candidate.is_absolute():
@@ -1570,6 +1629,8 @@ def resolve_policy_bundle(
             candidate = root / f"stage_{stage}" / f"model_{checkpoint_label}"
         existing = _model_file(candidate)
         if existing is None:
+            if allow_partial and not stage_data.get("initialized", True):
+                continue
             raise FileNotFoundError(f"Stage {stage} model does not exist: {candidate}")
         paths[stage] = str(existing)
         if checkpoint_label is not None:

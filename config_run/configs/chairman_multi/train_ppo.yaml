@@ -7,11 +7,11 @@ robots: [g1_with_hands]
 fix_base_link: false
 task: chairmanmulti #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
 decimation: 5
-num_envs: 14000
+num_envs: 5000
 headless: true
 add_table: true
 env_spacing: 4.0
-train_or_eval: load_and_train   #load_and_train #train_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
+train_or_eval: train   #load_and_train #train_dagger #eval_video #eval_dagger_video #train_grpo #eval_grpo_video
 
 # true: trénuje se pouze policy train_stage (0–5), bez automatického zmražení.
 # Každý reset i dokončení stage obnoví její snapshot z
@@ -87,9 +87,20 @@ net_arch_pi: [64, 64, 64]
 net_arch_vf: [64, 64, 64]
 
 learning_rate: 0.0003
-# Do not decay against global task progress: downstream policies are unlocked
-# later and must still start with the full learning rate.
+# Linear decay uses each policy's own PPO-trained sample counter. A policy that
+# has not been reached therefore stays at the initial learning rate. This may
+# also be a six-item list or a {stage: value} mapping for per-stage budgets.
 learning_schedule: linear
+final_learning_rate: 0.0
+stage_lr_timesteps: 5_000_000_000
+
+# stage_lr_timesteps:
+#   0: 1_000_000_000
+#   1: 500_000_000
+#   2: 500_000_000
+#   3: 300_000_000
+#   4: 300_000_000
+#   5: 200_000_000
 
 # A longer rollout improves temporal credit assignment for the 5-10 second
 # stages. Smaller minibatches provide substantially more optimizer steps per
