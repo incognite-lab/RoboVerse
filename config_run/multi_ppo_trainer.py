@@ -1664,11 +1664,31 @@ def policy_stages_with_training_data(manifest: dict) -> set[int]:
 class MultiPolicyRouter:
     """Inference-only batch router shared by PPO evaluation and DAgger."""
 
-    def __init__(self, models: dict[int, PPO], action_space):
-        self.num_stage_policies = len(models)
-        if not models or set(models) != set(range(self.num_stage_policies)):
-            raise ValueError("The router requires consecutive stage policies starting at zero")
+    def __init__(
+        self,
+        models: dict[int, PPO],
+        action_space,
+        num_stage_policies: int | None = None,
+    ):
+        if not models:
+            raise ValueError("The router requires at least one stage policy")
+        self.num_stage_policies = int(
+            num_stage_policies
+            if num_stage_policies is not None
+            else max(models) + 1
+        )
+        invalid_model_stages = sorted(
+            stage
+            for stage in models
+            if stage < 0 or stage >= self.num_stage_policies
+        )
+        if invalid_model_stages:
+            raise ValueError(
+                f"Policy model stage(s) {invalid_model_stages} are outside "
+                f"the valid range 0..{self.num_stage_policies - 1}"
+            )
         self.models = models
+        self.available_stages = frozenset(models)
         self.action_space = action_space
 
     def predict(
@@ -1679,6 +1699,17 @@ class MultiPolicyRouter:
         actions = np.zeros(
             (len(observations), self.action_space.shape[0]), dtype=np.float32
         )
+        invalid = (stages < 0) | (stages >= self.num_stage_policies)
+        if invalid.any():
+            raise ValueError(f"Unexpected stages {np.unique(stages[invalid])}")
+        missing = sorted(
+            set(np.unique(stages).tolist()) - self.available_stages
+        )
+        if missing:
+            raise ValueError(
+                f"No loaded policy for active stage(s) {missing}; available "
+                f"stage policies are {sorted(self.available_stages)}"
+            )
         for stage, model in self.models.items():
             mask = stages == stage
             if mask.any():
@@ -1686,9 +1717,6 @@ class MultiPolicyRouter:
                     observations[mask], deterministic=deterministic
                 )
                 actions[mask] = predicted
-        invalid = (stages < 0) | (stages >= self.num_stage_policies)
-        if invalid.any():
-            raise ValueError(f"Unexpected stages {np.unique(stages[invalid])}")
         return np.clip(actions, self.action_space.low, self.action_space.high)
 
 
@@ -1699,6 +1727,7 @@ def load_policy_router(
     checkpoint: str | int | None = None,
     stage_checkpoints=None,
     split_checkpoints: bool = False,
+    allow_partial: bool = False,
 ):
     paths, manifest = resolve_policy_bundle(
         bundle_path,
@@ -1707,10 +1736,15 @@ def load_policy_router(
         split_checkpoints=split_checkpoints,
         expected_num_stages=getattr(env, "NUM_POLICY_STAGES", NUM_STAGE_POLICIES),
         expected_task_version=_task_version(env),
+        allow_partial=allow_partial,
     )
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     models = {
         stage: _load_stage_model(path, env, device)
         for stage, path in paths.items()
     }
-    return MultiPolicyRouter(models, env.action_space), manifest
+    return MultiPolicyRouter(
+        models,
+        env.action_space,
+        num_stage_policies=int(manifest["num_stage_policies"]),
+    ), manifest

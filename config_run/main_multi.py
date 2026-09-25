@@ -1710,6 +1710,7 @@ def main():
         log.info(f"Loading model from {model_path}")
         multi_router = None
         multi_manifest = None
+        loaded_multi_stages = set()
         trained_multi_stages = set()
         if config.get("task") in ("chairmanmulti", "chairman2"):
             from multi_ppo_trainer import (
@@ -1724,14 +1725,17 @@ def main():
                 checkpoint=config.get("load_model_checkpoint"),
                 stage_checkpoints=config.get("load_model_stage_checkpoints"),
                 split_checkpoints=bool(config.get("load_model_split_checkpoints", False)),
+                allow_partial=True,
             )
+            loaded_multi_stages = set(multi_router.available_stages)
             trained_multi_stages = policy_stages_with_training_data(
                 multi_manifest
-            )
+            ) & loaded_multi_stages
             log.info(
                 "Loaded ChairMan Multi-PPO bundle at global timestep {}. "
-                "Policies with training data: {}",
+                "Available policies: {}; policies with training data: {}",
                 int(multi_manifest.get("global_timesteps", 0)),
+                sorted(loaded_multi_stages),
                 sorted(trained_multi_stages),
             )
         else:
@@ -1797,14 +1801,25 @@ def main():
 
             if multi_router is not None:
                 active_stages = set(np.unique(stages_before_step).tolist())
-                unavailable = sorted(active_stages - trained_multi_stages)
-                if unavailable and not allow_untrained_multi_policies:
+                missing_models = sorted(active_stages - loaded_multi_stages)
+                if missing_models:
+                    log.warning(
+                        "Stopping Multi-PPO video before step {}: active stage(s) {} "
+                        "do not have a model in this partial bundle. Available "
+                        "stage policies: {}.",
+                        step,
+                        missing_models,
+                        sorted(loaded_multi_stages),
+                    )
+                    break
+                untrained = sorted(active_stages - trained_multi_stages)
+                if untrained and not allow_untrained_multi_policies:
                     log.warning(
                         "Stopping Multi-PPO video before step {}: active stage(s) {} "
                         "have no training samples. Set eval_allow_untrained_policies: "
                         "true to evaluate their randomly initialized checkpoints.",
                         step,
-                        unavailable,
+                        untrained,
                     )
                     break
                 actions = multi_router.predict(

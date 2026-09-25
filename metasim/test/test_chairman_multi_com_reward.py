@@ -33,18 +33,36 @@ class ChairmanMultiCenterOfMassRewardTest(unittest.TestCase):
         self.assertGreater(values[2].item(), 0.0)
         self.assertLessEqual(values[2].item(), 1.0)
 
-    def test_com_penalty_is_global_and_waist_shaping_is_absent(self) -> None:
+    def test_com_penalty_and_neutral_stage0_waist_pose(self) -> None:
         cfg = ChairmanmultiCfg()
         names = [type(reward).__name__ for reward in cfg.reward_functions]
         index = names.index("UpperBodyCenterOfMassPenalty")
 
         self.assertEqual(cfg.reward_weights[index], -0.2)
+        self.assertEqual(
+            cfg.stage_reward_weights[0]["UpperBodyCenterOfMassPenalty"], 0.0
+        )
+        self.assertEqual(
+            cfg.stage_reward_weights[1]["UpperBodyCenterOfMassPenalty"], -0.2
+        )
         self.assertNotIn("UprightPenaltyCfg", names)
         self.assertNotIn("WaistStraightReward", names)
         for overrides in cfg.stage_reward_weights.values():
             self.assertNotIn("UprightPenaltyCfg", overrides)
             self.assertNotIn("WaistStraightReward", overrides)
-        self.assertFalse(any(name.startswith("waist_") for name in Stage0ArmPos().required_pos))
+        waist_targets = {
+            name: value
+            for name, value in Stage0ArmPos().required_pos.items()
+            if name.startswith("waist_")
+        }
+        self.assertEqual(
+            waist_targets,
+            {
+                "waist_yaw_joint": 0.0,
+                "waist_roll_joint": 0.0,
+                "waist_pitch_joint": 0.0,
+            },
+        )
         self.assertFalse(
             any(name.startswith("waist_") for name in Stage2UpperBodyPoseRetentionReward().joint_names)
         )

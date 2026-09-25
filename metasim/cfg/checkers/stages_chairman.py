@@ -54,8 +54,8 @@ GRASP_FORCE_THRESHOLD = 0.5
 GRASP_MIN_TIPS_PER_HAND = 2
 GRASP_MIN_CLOSURE = 0.55
 STAGE0_HOLD_STEPS = 10
-STAGE1_HOLD_STEPS = 2
-STAGE2_HOLD_STEPS = 2
+STAGE1_HOLD_STEPS = 5
+STAGE2_HOLD_STEPS = 5
 STAGE3_HOLD_STEPS = 5
 
 POS_THRESHOLD = 0.4
@@ -397,7 +397,7 @@ def stege0_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
         return terminated, success
 
     term_common = common_chairman_checker(states, handler, idx, stage_id=0) | check_movement_chair(states, handler, idx)
-    # Stejný finální bod jako ve WalkToChairProgressReward: 0.75 m za
+    # Stejný finální bod jako ve Stage0ReferenceVelocityReward: 0.77 m za
     # opěradlem, nezávisle na natočení židle ve světě.
     robot_state = states.robots[handler.robot.name]
     base_link_idx = robot_state.body_names.index("pelvis")
