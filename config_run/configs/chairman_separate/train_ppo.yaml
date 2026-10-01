@@ -1,0 +1,106 @@
+sim: genesis
+robots: [g1_with_hands]
+fix_base_link: false
+task: chairmanseparate
+decimation: 5
+num_envs: 10000
+headless: true
+add_table: true
+env_spacing: 4.0
+train_or_eval: train
+
+# Všechny policy se učí celou úlohu od stage 0 až po konečný úspěch.
+reset_to_stage0: false
+use_snapshot_curriculum: true
+snapshot_save_probability: 0.1
+force: false
+
+total_timesteps: 5_000_000_000
+model_save_path: ./config_run/output/ppo_models_separate
+model_save_freq: 50_000_000
+tensorboard_log: ./config_run/output/ppo_models_separate/tensorboard
+n_steps: 64
+batch_size: 16384
+n_epochs: 4
+gamma: 0.995
+gae_lambda: 0.97
+learning_rate: 0.0003
+learning_schedule: linear
+final_learning_rate: 0.0
+policy_lr_timesteps: 5_000_000_000
+clip_range: 0.2
+ent_coef: 0.002
+vf_coef: 0.5
+max_grad_norm: 0.5
+target_kl: 0.02
+normalize_advantage: true
+log_std_init: -1.0
+net_arch_pivf: true
+net_arch_pi: [64, 64, 64]
+net_arch_vf: [64, 64, 64]
+
+# Dostupné observation_groups:
+# joint_positions, robot_body_states, pelvis_velocity, chair_position,
+# chair_velocity, chair_vector_world, chair_vector_body, chair_distance,
+# final_distance, staging_vector_body, final_vector_body, chair_back_body,
+# chair_geometry, hand_target_body, hand_orientation_error,
+# hand_velocity_body, fingertip_forces, previous_walk_command, stage,
+# arm_errors, left_hand_task, right_hand_task, previous_policy_actions, all.
+# action_groups musí dohromady pokrýt každou z 34 akcí právě jednou.
+# PolicyDeltaAction je lokální změna akce dané policy; ostatní názvy jsou
+# nezvážené reward třídy z ChairMan_separate.py.
+policies:
+  waist:
+    action_groups: [waist]
+    observation_groups: [joint_positions, robot_body_states, pelvis_velocity, previous_policy_actions]
+    delta_action_scale: 0.25
+    reward_terms:
+      CenteredUpperBodyCOMReward: 1.0
+      FaceChairAllStagesReward: 0.3
+      WaistVelocityPenalty: -0.2
+      PolicyDeltaAction: -0.2
+  right_arm:
+    action_groups: [right_arm]
+    observation_groups: [joint_positions, right_hand_task, pelvis_velocity, chair_geometry, stage, previous_policy_actions]
+    reward_terms:
+      RightStage0ArmPoseReward: 1.0
+      RightHandDistanceReward: 0.6
+      RightHandOrientationReward: 0.4
+      RightArmVelocityPenalty: -0.1
+      KeepChairStillPenaltyArms: -1.0
+      PolicyDeltaAction: -0.02
+  left_arm:
+    action_groups: [left_arm]
+    observation_groups: [joint_positions, left_hand_task, pelvis_velocity, chair_geometry, stage, previous_policy_actions]
+    reward_terms:
+      LeftStage0ArmPoseReward: 1.0
+      LeftHandDistanceReward: 0.6
+      LeftHandOrientationReward: 0.4
+      LeftArmVelocityPenalty: -0.1
+      KeepChairStillPenaltyArms: -1.0
+      PolicyDeltaAction: -0.02
+  right_fingers:
+    action_groups: [right_fingers]
+    observation_groups: [joint_positions, right_hand_task, fingertip_forces, stage, previous_policy_actions]
+    reward_terms:
+      RightOpenFingersReward: 0.5
+      RightCloseGraspReward: 0.5
+      RightGraspForceReward: 1.5
+      PolicyDeltaAction: -0.01
+  left_fingers:
+    action_groups: [left_fingers]
+    observation_groups: [joint_positions, left_hand_task, fingertip_forces, stage, previous_policy_actions]
+    reward_terms:
+      LeftOpenFingersReward: 0.5
+      LeftCloseGraspReward: 0.5
+      LeftGraspForceReward: 1.5
+      PolicyDeltaAction: -0.01
+  direction:
+    action_groups: [direction]
+    observation_groups: [joint_positions, pelvis_velocity, chair_geometry, previous_walk_command, stage, previous_policy_actions]
+    delta_action_scale: 0.15
+    reward_terms:
+      ApproachAndStandReward: 1.0
+      Stage3ReverseVelocityReward: 1.0
+      PolicyDeltaAction: -0.1
+      KeepChairStillPenaltyWalk: -1.0

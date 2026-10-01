@@ -119,7 +119,7 @@ def _curriculum_limit(handler, available):
 # =========================================================
 
 # Pokud True, při startu se načtou snapshoty z disku do RAM bufferu.
-ENABLE_DISK_SNAPSHOT_LOAD = True
+ENABLE_DISK_SNAPSHOT_LOAD = False
 
 # Pokud True, nové snapshoty se budou průběžně zapisovat i na disk.
 ENABLE_DISK_SNAPSHOT_SAVE = True
@@ -1289,10 +1289,15 @@ def stage0_init(robot_name: str):
             }
         }
     elif robot_name == "g1_with_hands":
+        chair_x = random.uniform(0.5, 1.0)
+        chair_y = random.uniform(-0.2, 0.2)
+        chair_rot = random.uniform(1.27, 1.87)
+        robot_x = random.uniform(-4.0, -2.0)
+        robot_y = random.uniform(-1.2, 1.2)
         state = {
             "robots": {
                 "g1_with_hands": {
-                    "pos" : torch.tensor([-2.5,0.0,0.8]),
+                    "pos" : torch.tensor([-2.5, 0.0, 0.8]),
                     "rot" : torch.tensor([1.0,0.0,0.0,0.0]),
                     "dof_pos": {
                         "left_hip_pitch_joint": -0.1,

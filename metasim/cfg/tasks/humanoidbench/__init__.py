@@ -31,3 +31,4 @@ from .ChairMan_simple import ChairmansimpleCfg
 from .ChairMan_simple import ChairmansimplegaussianCfg
 from .ChairMan_simple import ChairmansimplegaussiangrpoCfg
 from .ChairMan_simple import ChairmansimplegrpoCfg, ChairmansimplegaussianCfg, ChairmansimplegaussiangrpoCfg
+from .ChairMan_separate import ChairmanseparateCfg

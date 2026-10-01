@@ -122,6 +122,7 @@ class MetaSimVecEnv(VectorEnv):
         stage_weights = getattr(self.scenario.task, "stage_reward_weights", {})
         record_terms = bool(getattr(self.scenario.task, "log_reward_components", False))
         reward_terms = {}
+        raw_reward_terms = {}
         original_stages = None
         if reward_stage is not None:
             # The staged checker advances actual_stage before rewards are
@@ -153,6 +154,10 @@ class MetaSimVecEnv(VectorEnv):
                             )
                 tot_reward += weighted_reward
                 if record_terms:
+                    # Separate-body policies reuse the same stateful reward
+                    # evaluation with policy-specific weights.
+                    raw_reward_terms[type(reward_fn).__name__] = (
+                        reward_fn_ret.detach())
                     reward_terms[type(reward_fn).__name__] = weighted_reward.detach()
         finally:
             if original_stages is not None:
@@ -161,6 +166,7 @@ class MetaSimVecEnv(VectorEnv):
                         reward_fn.actual_stage = actual_stage
         if record_terms:
             self.scenario.task.last_reward_terms = reward_terms
+            self.scenario.task.last_raw_reward_terms = raw_reward_terms
         if getattr(self.scenario.task, "reset_rewards_on_stage_change", False):
             events = getattr(self.scenario.task, "completed_stage_events", None)
             if events is not None:

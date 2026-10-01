@@ -1,0 +1,36 @@
+sim: genesis
+robots: [g1_with_hands]
+fix_base_link: false
+task: chairmanseparate
+decimation: 5
+num_envs: 1
+headless: false
+add_table: true
+env_spacing: 4.0
+train_or_eval: eval_video
+reset_to_stage0: true
+use_snapshot_curriculum: false
+snapshot_save_probability: 0.0
+cameras:
+  camera1:
+    type: PinholeCameraCfg
+    params:
+      name: camera0
+      pos: [-4.0, -4.0, 4.0]
+      look_at: [0.0, 0.0, 0.0]
+      width: 1024
+      height: 640
+load_model_path: ./config_run/output/ppo_models_separate/run_CHANGE_ME
+# load_model_checkpoint: 50000000
+video_save_path: ./config_run/output/chairman_separate/eval.mp4
+video_slowdown: 3
+eval_episodes: 1
+eval_max_steps: 6000
+visualize_reach_waypoints: true
+policies:
+  waist: {action_groups: [waist], observation_groups: [joint_positions, robot_body_states, pelvis_velocity, chair_geometry, stage, previous_policy_actions]}
+  right_arm: {action_groups: [right_arm], observation_groups: [joint_positions, right_hand_task, pelvis_velocity, chair_geometry, stage, previous_policy_actions]}
+  left_arm: {action_groups: [left_arm], observation_groups: [joint_positions, left_hand_task, pelvis_velocity, chair_geometry, stage, previous_policy_actions]}
+  right_fingers: {action_groups: [right_fingers], observation_groups: [joint_positions, right_hand_task, fingertip_forces, stage, previous_policy_actions]}
+  left_fingers: {action_groups: [left_fingers], observation_groups: [joint_positions, left_hand_task, fingertip_forces, stage, previous_policy_actions]}
+  direction: {action_groups: [direction], observation_groups: [joint_positions, pelvis_velocity, chair_geometry, previous_walk_command, stage, previous_policy_actions]}
