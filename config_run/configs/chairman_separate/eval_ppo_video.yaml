@@ -20,7 +20,7 @@ cameras:
       look_at: [0.0, 0.0, 0.0]
       width: 1024
       height: 640
-load_model_path: ./config_run/output/ppo_models_separate/run_CHANGE_ME
+load_model_path: ./config_run/output/ppo_models_separate/run_2026-10-01_11-38-33_chairman_separate
 # load_model_checkpoint: 50000000
 video_save_path: ./config_run/output/chairman_separate/eval.mp4
 video_slowdown: 3
@@ -28,7 +28,7 @@ eval_episodes: 1
 eval_max_steps: 6000
 visualize_reach_waypoints: true
 policies:
-  waist: {action_groups: [waist], observation_groups: [joint_positions, robot_body_states, pelvis_velocity, chair_geometry, stage, previous_policy_actions]}
+  waist: {action_groups: [waist], observation_groups: [joint_positions, robot_body_states, pelvis_velocity, previous_policy_actions]}
   right_arm: {action_groups: [right_arm], observation_groups: [joint_positions, right_hand_task, pelvis_velocity, chair_geometry, stage, previous_policy_actions]}
   left_arm: {action_groups: [left_arm], observation_groups: [joint_positions, left_hand_task, pelvis_velocity, chair_geometry, stage, previous_policy_actions]}
   right_fingers: {action_groups: [right_fingers], observation_groups: [joint_positions, right_hand_task, fingertip_forces, stage, previous_policy_actions]}

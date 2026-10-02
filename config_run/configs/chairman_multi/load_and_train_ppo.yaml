@@ -7,7 +7,7 @@ robots: [g1_with_hands]
 fix_base_link: false
 task: chairmanmulti #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
 decimation: 5
-num_envs: 15000
+num_envs: 5000
 headless: true
 add_table: true
 env_spacing: 4.0
@@ -63,7 +63,7 @@ stage_episode_metrics_window: 1000
 
 # Načtení všech šesti policies ze stejného běhu jako v eval_ppo_video.yaml.
 # Lze zadat i nadřazený adresář; pak se vybere nejnovější běh s manifestem.
-load_model_path: ./config_run/output/ppo_models_multi/top_models
+load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-29_18-28-18_chairmanmulti_concurrent
 
 # false: nejnovější kompletně uložený checkpoint uvedený v manifestu;
 #        tabulka níže se ignoruje.

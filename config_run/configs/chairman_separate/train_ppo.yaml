@@ -56,6 +56,8 @@ policies:
     delta_action_scale: 0.25
     reward_terms:
       CenteredUpperBodyCOMReward: 1.0
+      CumulativeStageProgressReward: 1.3
+      TerminationCfg: -1.0
       FaceChairAllStagesReward: 0.3
       WaistVelocityPenalty: -0.2
       PolicyDeltaAction: -0.2
@@ -64,6 +66,7 @@ policies:
     observation_groups: [joint_positions, right_hand_task, pelvis_velocity, chair_geometry, stage, previous_policy_actions]
     reward_terms:
       RightStage0ArmPoseReward: 1.0
+      CumulativeStageProgressReward: 1.0
       RightHandDistanceReward: 0.6
       RightHandOrientationReward: 0.4
       RightArmVelocityPenalty: -0.1
@@ -74,6 +77,7 @@ policies:
     observation_groups: [joint_positions, left_hand_task, pelvis_velocity, chair_geometry, stage, previous_policy_actions]
     reward_terms:
       LeftStage0ArmPoseReward: 1.0
+      CumulativeStageProgressReward: 1.0
       LeftHandDistanceReward: 0.6
       LeftHandOrientationReward: 0.4
       LeftArmVelocityPenalty: -0.1
@@ -84,6 +88,7 @@ policies:
     observation_groups: [joint_positions, right_hand_task, fingertip_forces, stage, previous_policy_actions]
     reward_terms:
       RightOpenFingersReward: 0.5
+      CumulativeStageProgressReward: 0.5
       RightCloseGraspReward: 0.5
       RightGraspForceReward: 1.5
       PolicyDeltaAction: -0.01
@@ -92,6 +97,7 @@ policies:
     observation_groups: [joint_positions, left_hand_task, fingertip_forces, stage, previous_policy_actions]
     reward_terms:
       LeftOpenFingersReward: 0.5
+      CumulativeStageProgressReward: 0.5
       LeftCloseGraspReward: 0.5
       LeftGraspForceReward: 1.5
       PolicyDeltaAction: -0.01
@@ -101,6 +107,7 @@ policies:
     delta_action_scale: 0.15
     reward_terms:
       ApproachAndStandReward: 1.0
+      CumulativeStageProgressReward: 1.0
       Stage3ReverseVelocityReward: 1.0
       PolicyDeltaAction: -0.1
       KeepChairStillPenaltyWalk: -1.0

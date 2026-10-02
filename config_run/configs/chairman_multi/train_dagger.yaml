@@ -88,4 +88,4 @@ visualization: false
 
 # Directory produced by main_multi.py train. The teacher router loads all
 # stage_0 ... stage_5 policies from its manifest.
-expert_model_path: "./config_run/output/ppo_models_multi/"
+load_model_path: "./config_run/output/ppo_models_multi/run_2026-09-29_18-28-18_chairmanmulti_concurrent"

@@ -90,6 +90,14 @@ class SeparatePPOTrainer:
         self.samples = {name: 0 for name in self.names}
         self.updates = {name: 0 for name in self.names}
         self.lr_samples = {name: 0 for name in self.names}
+        self.num_stages = int(getattr(env, "NUM_POLICY_STAGES", 6))
+        self.cumulative_stage_completions = torch.zeros(
+            self.num_stages, dtype=torch.long, device=self.torch_device)
+        self.episode_returns = {
+            name: torch.zeros(self.num_envs, device=self.torch_device)
+            for name in self.names}
+        self.episode_lengths = torch.zeros(
+            self.num_envs, dtype=torch.long, device=self.torch_device)
         if resume_path:
             paths, manifest = resolve_policy_bundle(resume_path, resume_checkpoint)
             validate_bundle_layout(env, manifest)
@@ -112,13 +120,34 @@ class SeparatePPOTrainer:
         budget = int(_policy_value(self.config, name, "policy_lr_timesteps", self.total_timesteps))
         return max(0.0, 1.0 - self.lr_samples[name] / max(1, budget))
 
+    def _synchronize_device(self):
+        if self.torch_device.type == "cuda":
+            torch.cuda.synchronize(self.torch_device)
+
     def _collect(self, full_obs):
         rollouts = {name: RaggedStageRollout(
             self.num_envs,
             float(_policy_value(self.config, name, "gamma", 0.99)),
             float(_policy_value(self.config, name, "gae_lambda", 0.95))) for name in self.names}
         ids = torch.arange(self.num_envs, device=self.torch_device)
-        reward_sums = {name: 0.0 for name in self.names}
+        scalar = lambda: torch.zeros((), device=self.torch_device)
+        reward_sums = {name: scalar() for name in self.names}
+        reward_sq_sums = {name: scalar() for name in self.names}
+        action_abs_sums = {name: scalar() for name in self.names}
+        completed_return_sums = {name: scalar() for name in self.names}
+        metrics = {
+            "steps": 0,
+            "stage_occupancy": torch.zeros(self.num_stages, device=self.torch_device),
+            "stage_current": torch.zeros(self.num_stages, device=self.torch_device),
+            "stage_completed": torch.zeros(self.num_stages, dtype=torch.long, device=self.torch_device),
+            "episode_ends": scalar(),
+            "successes": scalar(),
+            "timeouts": scalar(),
+            "failures": scalar(),
+            "episode_length_sum": scalar(),
+            "failure_counts": {},
+            "raw_reward_sums": {},
+        }
         for _ in range(self.n_steps):
             observations = self.env.policy_observations_torch(full_obs)
             local_actions, records = {}, {}
@@ -148,15 +177,131 @@ class SeparatePPOTrainer:
                     log_prob, next_value, dones))
                 self.samples[name] += self.num_envs
                 self.models[name].num_timesteps += self.num_envs
-                reward_sums[name] += float(rewards[name].sum().detach().cpu())
+                reward_sums[name] += rewards[name].sum()
+                reward_sq_sums[name] += rewards[name].square().sum()
+                action_abs_sums[name] += local_actions[name].abs().sum()
+                self.episode_returns[name] += rewards[name]
+
+            self.episode_lengths += 1
+            active_stages = metadata["stage_after"].long().clamp(
+                0, self.num_stages - 1)
+            current_counts = torch.bincount(
+                active_stages, minlength=self.num_stages)[:self.num_stages]
+            metrics["stage_current"] = current_counts
+            metrics["stage_occupancy"] += current_counts
+
+            completed = metadata["completed_stage"].long()
+            valid = completed[(completed >= 0) & (completed < self.num_stages)]
+            if valid.numel():
+                metrics["stage_completed"] += torch.bincount(
+                    valid, minlength=self.num_stages)[:self.num_stages]
+
+            physical_done = metadata["physical_done"].bool()
+            success = metadata["task_success"].bool()
+            timeout = metadata["timeout"].bool() & physical_done
+            failure = physical_done & ~success & ~timeout
+            metrics["episode_ends"] += physical_done.sum()
+            metrics["successes"] += success.sum()
+            metrics["timeouts"] += timeout.sum()
+            metrics["failures"] += failure.sum()
+            if physical_done.any():
+                metrics["episode_length_sum"] += (
+                    self.episode_lengths[physical_done].sum())
+                for name in self.names:
+                    completed_return_sums[name] += (
+                        self.episode_returns[name][physical_done].sum())
+                    self.episode_returns[name][physical_done] = 0.0
+                self.episode_lengths[physical_done] = 0
+
+            for reason, mask in metadata.get("failure_masks", {}).items():
+                count = mask.to(self.torch_device, dtype=torch.bool).sum()
+                metrics["failure_counts"][reason] = (
+                    metrics["failure_counts"].get(reason, 0) + count)
+            for term, value in metadata.get("raw_reward_terms", {}).items():
+                term_sum = value.to(self.torch_device).float().sum()
+                metrics["raw_reward_sums"][term] = (
+                    metrics["raw_reward_sums"].get(term, 0.0) + term_sum)
+
             full_obs = next_full_obs
             self.global_env_steps += 1
             self.global_timesteps += self.num_envs
+            metrics["steps"] += 1
             if self.global_timesteps >= self.total_timesteps: break
+        sample_count = max(1, self.num_envs * metrics["steps"])
+        episode_count = int(metrics["episode_ends"].item())
         for name in self.names:
+            mean = float((reward_sums[name] / sample_count).item())
+            variance = max(
+                0.0, float((reward_sq_sums[name] / sample_count).item()) - mean * mean)
             self.writer.add_scalar(f"{name}/rollout/reward_mean",
-                reward_sums[name] / max(1, self.num_envs * self.n_steps), self.global_timesteps)
-        return full_obs, {name: rollouts[name].finish() for name in self.names}
+                mean, self.global_timesteps)
+            self.writer.add_scalar(f"{name}/rollout/reward_std",
+                variance ** 0.5, self.global_timesteps)
+            action_dim = len(self.env.policy_action_indices[name])
+            self.writer.add_scalar(
+                f"{name}/rollout/action_abs_mean",
+                float((action_abs_sums[name] / (sample_count * action_dim)).item()),
+                self.global_timesteps)
+            if episode_count:
+                self.writer.add_scalar(
+                    f"{name}/rollout/episode_return_mean",
+                    float((completed_return_sums[name] / episode_count).item()),
+                    self.global_timesteps)
+
+        return (full_obs, {name: rollouts[name].finish() for name in self.names},
+                metrics)
+
+    def _log_rollout_metrics(self, metrics, transitions, collect_s, update_s, iteration_s):
+        self.cumulative_stage_completions += metrics["stage_completed"]
+
+        steps = max(1, metrics["steps"])
+        current = metrics["stage_current"].detach().cpu().tolist()
+        mean_counts = (metrics["stage_occupancy"] / steps
+                       ).detach().cpu().tolist()
+        completed = metrics["stage_completed"].detach().cpu().tolist()
+        cumulative = self.cumulative_stage_completions.detach().cpu().tolist()
+
+        self.writer.add_scalar("performance/fps_total", transitions / max(iteration_s, 1e-9), self.global_timesteps)
+        self.writer.add_scalar("performance/fps_collection", transitions / max(collect_s, 1e-9), self.global_timesteps)
+        self.writer.add_scalar("performance/collection_seconds", collect_s, self.global_timesteps)
+        self.writer.add_scalar("performance/update_seconds", update_s, self.global_timesteps)
+        self.writer.add_scalar("performance/iteration_seconds", iteration_s, self.global_timesteps)
+
+        for stage in range(self.num_stages):
+            suffix = f"stage_{stage}"
+            self.writer.add_scalar(f"stages/active_count/{suffix}", current[stage], self.global_timesteps)
+            self.writer.add_scalar(f"stages/active_fraction/{suffix}", current[stage] / self.num_envs, self.global_timesteps)
+            self.writer.add_scalar(f"stages/mean_active_count/{suffix}", mean_counts[stage], self.global_timesteps)
+            self.writer.add_scalar(f"stages/completed_rollout/{suffix}", completed[stage], self.global_timesteps)
+            self.writer.add_scalar(f"stages/completed_total/{suffix}", cumulative[stage], self.global_timesteps)
+
+        ended = int(metrics["episode_ends"].item())
+        successes = int(metrics["successes"].item())
+        timeouts = int(metrics["timeouts"].item())
+        failures = int(metrics["failures"].item())
+        self.writer.add_scalar("episodes/ended_rollout", ended, self.global_timesteps)
+        self.writer.add_scalar("episodes/successes_rollout", successes, self.global_timesteps)
+        self.writer.add_scalar("episodes/timeouts_rollout", timeouts, self.global_timesteps)
+        self.writer.add_scalar("episodes/failures_rollout", failures, self.global_timesteps)
+        if ended:
+            self.writer.add_scalar("episodes/success_rate",
+                successes / ended, self.global_timesteps)
+            self.writer.add_scalar("episodes/length_mean",
+                float(metrics["episode_length_sum"].item()) / ended, self.global_timesteps)
+
+        sample_count = max(1, self.num_envs * metrics["steps"])
+        for term, value in metrics["raw_reward_sums"].items():
+            self.writer.add_scalar(f"reward_components/{term}",
+                float(value.item()) / sample_count, self.global_timesteps)
+        for reason, value in metrics["failure_counts"].items():
+            self.writer.add_scalar(f"failures/{reason}",
+                int(value.item()), self.global_timesteps)
+
+        active_text = ", ".join(f"S{i}={int(v)}" for i, v in enumerate(current))
+        complete_text = ", ".join(f"S{i}={int(v)}" for i, v in enumerate(completed))
+        log.info(
+            "Stages active [{}], completed [{}], episodes={} (success={}, timeout={}, failure={})",
+            active_text, complete_text, ended, successes, timeouts, failures)
 
     def _update(self, name, batch: FlatBatch):
         if batch is None or len(batch) < 2: return
@@ -222,13 +367,24 @@ class SeparatePPOTrainer:
         log.info("Training six simultaneous policies {} on {} envs", self.names, self.num_envs)
         try:
             while self.global_timesteps < self.total_timesteps:
+                self._synchronize_device()
                 started = time.perf_counter()
-                full_obs, batches = self._collect(full_obs)
+                timesteps_before = self.global_timesteps
+                full_obs, batches, metrics = self._collect(full_obs)
+                self._synchronize_device()
+                collected_at = time.perf_counter()
                 for name in self.names: self._update(name, batches[name])
-                elapsed = time.perf_counter() - started
+                self._synchronize_device()
+                updated_at = time.perf_counter()
+                transitions = self.global_timesteps - timesteps_before
+                collect_s = collected_at - started
+                update_s = updated_at - collected_at
+                elapsed = updated_at - started
+                self._log_rollout_metrics(
+                    metrics, transitions, collect_s, update_s, elapsed)
                 log.info("Separate PPO: {}/{} transitions, {:.0f} FPS, updates {}",
                          self.global_timesteps, self.total_timesteps,
-                         self.num_envs * self.n_steps / max(elapsed, 1e-9), self.updates)
+                         transitions / max(elapsed, 1e-9), self.updates)
                 if save_freq > 0 and self.global_timesteps - self.last_save >= save_freq:
                     self.save(str(self.global_timesteps)); self.last_save = self.global_timesteps
             self.save("final"); return self.run_dir

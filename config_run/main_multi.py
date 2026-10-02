@@ -2157,11 +2157,40 @@ def main():
         runner = OnPolicyRunner(env, algo, runner_cfg)
         runner.learn()
 
-    elif config.get("train_or_eval") == "train_dagger":
+    elif config.get("train_or_eval") in ("train_dagger", "load_and_train_dagger"):
         VIZUALIZATION = config.get("visualization", False)
+
+        resume_dagger = config.get("train_or_eval") == "load_and_train_dagger"
+        student_checkpoint_path = config.get("load_student_path")
+        if resume_dagger and not student_checkpoint_path:
+            raise ValueError(
+                "load_and_train_dagger requires load_student_path "
+                "(DAgger student checkpoint)"
+            )
+        if resume_dagger and not os.path.isfile(student_checkpoint_path):
+            raise FileNotFoundError(
+                f"DAgger student checkpoint not found: {student_checkpoint_path}"
+            )
+
+        expert_bundle_path = config.get("expert_model_path") or config.get(
+            "load_model_path"
+        )
+        if not expert_bundle_path:
+            raise ValueError(
+                "Multi-policy DAgger requires expert_model_path (or the legacy "
+                "load_model_path) pointing to a multi-policy run directory"
+            )
 
         from dagger_vp.student_net import VisionStudent
         from dagger_vp.dagger_trainer import DAggerBuffer, train_dagger_step
+        from dagger_vp.checkpoint import (
+            load_dagger_checkpoint,
+            save_dagger_checkpoint,
+        )
+        from multi_ppo_trainer import (
+            load_policy_router,
+            policy_stages_with_training_data,
+        )
         from torch.utils.tensorboard import SummaryWriter
         import cv2
 
@@ -2186,21 +2215,38 @@ def main():
         os.makedirs(save_dir, exist_ok=True)
         save_freq = config.get("model_save_freq", 5000)
 
-        log.info(f"Loading Expert model from {config.get('load_model_path')}")
+        log.info(f"Loading multi-policy expert bundle from {expert_bundle_path}")
 
         sys.modules["numpy._core"] = np.core
         sys.modules["numpy._core.numeric"] = np.core.numeric
 
-        expert_model = PPO.load(
-            config.get("load_model_path"),
-            env=env,
+        allow_partial_expert = bool(
+            config.get("dagger_allow_partial_expert", True)
+        )
+        expert_model, expert_manifest = load_policy_router(
+            env,
+            expert_bundle_path,
             device=device,
-            custom_objects={
-                "observation_space": env.observation_space,
-                "action_space": env.action_space,
-                "_last_obs": None,
-                "_last_episode_starts": None,
-            },
+            checkpoint=config.get("load_model_checkpoint"),
+            stage_checkpoints=config.get("load_model_stage_checkpoints"),
+            split_checkpoints=bool(
+                config.get("load_model_split_checkpoints", False)
+            ),
+            allow_partial=allow_partial_expert,
+        )
+        loaded_expert_stages = set(expert_model.available_stages)
+        trained_expert_stages = policy_stages_with_training_data(
+            expert_manifest
+        ) & loaded_expert_stages
+        allow_untrained_expert = bool(
+            config.get("dagger_allow_untrained_expert", False)
+        )
+        log.info(
+            "Loaded Multi-PPO DAgger expert at global timestep {}. "
+            "Available policies: {}; policies with training data: {}",
+            int(expert_manifest.get("global_timesteps", 0)),
+            sorted(loaded_expert_stages),
+            sorted(trained_expert_stages),
         )
 
         num_actions = env.action_space.shape[0]
@@ -2215,6 +2261,18 @@ def main():
             student_model.parameters(),
             lr=config.get("learning_rate", 3e-4)
         )
+
+        start_step = 0
+        beta = config.get("beta_start", 1.0)
+        if resume_dagger:
+            start_step, beta = load_dagger_checkpoint(
+                student_checkpoint_path, student_model, optimizer, device, config
+            )
+            log.info(
+                f"Resuming DAgger from {student_checkpoint_path} at step "
+                f"{start_step}, beta={beta}. Replay buffer, environment and "
+                "success counters start fresh."
+            )
 
         dagger_buffer_device = config.get("dagger_buffer_device", "cpu")
         dagger_buffer_pin_memory = config.get(
@@ -2239,7 +2297,8 @@ def main():
         )
 
         total_iterations = config.get("total_timesteps", 100_000)
-        beta = config.get("beta_start", 1.0)
+        end_step = start_step + total_iterations
+        next_step = start_step
         beta_decay = config.get("beta_decay", 0.9995)
 
         store_per_step = config.get("dagger_store_per_step", 32)
@@ -2264,7 +2323,7 @@ def main():
 
         log.info("Starting DAgger Training...")
 
-        for step in range(total_iterations):
+        for step in range(start_step, end_step):
             states = metasim_env.env.handler.get_states()
 
             # Kamera: [N, H, W, C] -> [N, C, H, W]
@@ -2283,9 +2342,32 @@ def main():
                 dtype=torch.float32
             )
 
+            expert_stages = env.get_current_stages()
+            active_expert_stages = set(np.unique(expert_stages).tolist())
+            missing_expert_stages = sorted(
+                active_expert_stages - loaded_expert_stages
+            )
+            if missing_expert_stages:
+                raise RuntimeError(
+                    "DAgger reached stage(s) without an expert policy: "
+                    f"{missing_expert_stages}. Loaded expert stages are "
+                    f"{sorted(loaded_expert_stages)}. Use a bundle containing "
+                    "those stages or restrict the training curriculum."
+                )
+            untrained_expert_stages = sorted(
+                active_expert_stages - trained_expert_stages
+            )
+            if untrained_expert_stages and not allow_untrained_expert:
+                raise RuntimeError(
+                    "DAgger reached stage(s) whose expert policy has no training "
+                    f"data: {untrained_expert_stages}. Select a trained expert "
+                    "bundle or explicitly set dagger_allow_untrained_expert: true."
+                )
+
             with torch.no_grad():
-                expert_actions, _ = expert_model.predict(
+                expert_actions = expert_model.predict(
                     expert_obs,
+                    expert_stages,
                     deterministic=True
                 )
 
@@ -2412,7 +2494,7 @@ def main():
                 )
 
                 log.info(
-                    f"Step {step}/{total_iterations} | "
+                    f"Step {step}/{end_step} | "
                     f"Beta: {beta:.4f} | "
                     f"Loss: {mean_loss:.6f} | "
                     f"Buffer: {buffer.size} | "
@@ -2426,6 +2508,10 @@ def main():
                 # aby ukazovaly pouze období od posledního logu.
                 recent_completed_envs = 0
                 recent_successful_envs = 0
+
+            # Save the state for the next iteration, including an ESC stop.
+            beta = max(0.0, beta * beta_decay)
+            next_step = step + 1
 
             if VIZUALIZATION and step % 5 == 0:
                 img_vis = student_obs_uint8[0].permute(1, 2, 0).detach().cpu().numpy()
@@ -2445,13 +2531,23 @@ def main():
                     f"student_model_step_{step}.pth"
                 )
 
-                torch.save(student_model.state_dict(), current_save_path)
+                save_dagger_checkpoint(
+                    current_save_path,
+                    student_model,
+                    optimizer,
+                    next_step,
+                    beta,
+                )
                 log.info(f"Checkpoint saved to {current_save_path}")
 
-            beta = max(0.0, beta * beta_decay)
-
         final_save_path = os.path.join(save_dir, "student_model_final.pth")
-        torch.save(student_model.state_dict(), final_save_path)
+        save_dagger_checkpoint(
+            final_save_path,
+            student_model,
+            optimizer,
+            next_step,
+            beta,
+        )
 
         final_success_rate = (
             total_successful_envs / total_completed_envs

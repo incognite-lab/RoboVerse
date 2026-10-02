@@ -2879,15 +2879,44 @@ class RightArmVelocityPenalty(_SideArmVelocityPenalty):
     side = "right"
 
 
-class CenteredUpperBodyCOMReward(UpperBodyCenterOfMassPenalty):
-    """Positive all-stage reward for keeping upper-body COM above the pelvis."""
+class CumulativeStageProgressReward(HumanoidBaseReward):
+    """Persistent progress reward: stage 0 -> 0, stage 1 -> 1, etc."""
 
     def __call__(self, states, robot_name=None):
-        penalty = super().__call__(states, robot_name)
+        robot = states.robots[robot_name or self.robot_name]
+        device = robot.joint_pos.device
         if self.actual_stage is None:
-            return torch.zeros_like(penalty)
+            return torch.zeros(robot.joint_pos.shape[0], device=device)
+        stage = self.actual_stage.to(device=device).clamp(0, 5)
+        return stage.to(dtype=robot.joint_pos.dtype)
+
+
+class CenteredUpperBodyCOMReward(HumanoidBaseReward):
+    """Exponentially reward the upper-body COM directly above the pelvis.
+
+    The horizontal error has no dead zone: every non-zero displacement lowers
+    the reward. ``sigma`` controls the width of the Gaussian reward curve.
+    """
+
+    def __init__(self, robot_name="g1_with_hands", sigma=0.05):
+        super().__init__(robot_name)
+        self.sigma = float(sigma)
+        if self.sigma <= 0.0:
+            raise ValueError("CenteredUpperBodyCOMReward sigma must be positive")
+
+    def __call__(self, states, robot_name=None):
+        robot = states.robots[robot_name or self.robot_name]
+        pelvis_idx = robot.body_names.index("pelvis")
+        upper_com = chairman_geometry.upper_body_center_of_mass(
+            robot, str(chairman_geometry.G1_WITH_HANDS_URDF))
+        horizontal_error = upper_com[:, :2] - robot.body_state[:, pelvis_idx, :2]
+        squared_distance = horizontal_error.square().sum(dim=-1)
+        reward = torch.exp(-0.5 * squared_distance / (self.sigma * self.sigma))
+        reward = torch.nan_to_num(reward, nan=0.0, posinf=0.0, neginf=0.0)
+        if self.actual_stage is None:
+            return torch.zeros_like(reward)
         active = (self.actual_stage >= 0) & (self.actual_stage <= 5)
-        return (1.0 - penalty) * active.to(penalty.dtype)
+        return reward * active.to(reward.dtype)
 
 
 class FaceChairAllStagesReward(FaceChairReward):
@@ -3168,15 +3197,12 @@ class ChairmanseparateCfg(HumanoidTaskCfg):
     # The shared task reward is intentionally minimal. SeparatePPOTrainer
     # combines the raw terms below with independent YAML weights per policy.
     stage_reward_weights: dict = {}
-    reward_weights = [
-        -1.0,  # TerminationCfg
-        0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        1.0,0.0,0.0  # MultiPolicyStageCompletionReward
-    ]
+    # Only termination and stage completion contribute to the shared task
+    # reward. Separate policies weight every raw term independently in YAML.
+    reward_weights = [-1.0] + [0.0] * 20 + [1.0, 0.0, 0.0]
     reward_functions = [
         TerminationCfg(),
+        CumulativeStageProgressReward(),
         CenteredUpperBodyCOMReward(),
         FaceChairAllStagesReward(),
         WaistVelocityPenalty(),
