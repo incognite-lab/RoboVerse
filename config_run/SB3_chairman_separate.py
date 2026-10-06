@@ -197,6 +197,7 @@ class StableBaseline3VecEnv(_MultiEnv):
 
     def separate_rewards_torch(self, metadata, policy_actions):
         raw, done, rewards = metadata.get("raw_reward_terms", {}), metadata.get("physical_done"), {}
+        policy_reward_terms = {}
         for name in POLICY_NAMES:
             action = policy_actions[name]
             ids = torch.as_tensor(
@@ -205,6 +206,7 @@ class StableBaseline3VecEnv(_MultiEnv):
             controlled_action = torch.maximum(torch.minimum(
                 action, self._action_high_torch[ids]), self._action_low_torch[ids])
             reward = torch.zeros(self.num_envs, dtype=torch.float32, device=self.torch_device)
+            policy_reward_terms[name] = {}
             for term, weight in self.policy_specs[name].get("reward_terms", {}).items():
                 if term == "PolicyDeltaAction":
                     scale = float(self.policy_specs[name].get("delta_action_scale", 0.35))
@@ -215,8 +217,11 @@ class StableBaseline3VecEnv(_MultiEnv):
                     if term not in raw:
                         raise KeyError(f"Reward {term!r} for {name} unavailable; choose from {sorted(raw)}")
                     value = raw[term].to(self.torch_device).float()
-                reward += float(weight) * value
+                contribution = float(weight) * value
+                reward += contribution
+                policy_reward_terms[name][term] = contribution.detach()
             rewards[name] = reward
+        metadata["policy_reward_terms"] = policy_reward_terms
         self._update_action_history(policy_actions, done)
         return rewards
 

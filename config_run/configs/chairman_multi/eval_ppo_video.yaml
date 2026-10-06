@@ -36,8 +36,8 @@ cameras:
        name: camera0
        pos: [-4.0, -4.0, 4.0]
        look_at: [0.0, 0.0, 0.0]
-       width: 1024 #128
-       height: 640 #128
+       width: 1920 #128
+       height: 1080 #128
       #  focal_length: 6.0 #6
       #  mount_to: g1_slider_simple
       #  mount_link: head_link
@@ -94,20 +94,19 @@ visualize_reach_waypoints: true
 #load_model_checkpoint: 2225280000
 # Optional: set a different checkpoint for each stage.
 # When true, load_model_stage_checkpoints must define stages 0 through 5.
-load_model_split_checkpoints: false
+load_model_split_checkpoints: true
 load_model_stage_checkpoints:
-  0: 5255370000
-  1: 1
-  2: 1475520000
+  0: 5056640000
+  1: 5056640000
+  2: 3640960000
  # 3: 2578560000
   #4: 2578560000
  # 5: 2578560000
 # Can point either to one concrete run_*_chairmanmulti_concurrent directory or
 # to its parent. With a parent directory the newest valid run is selected.
 #load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-29_15-07-27_chairmanmulti_concurrent
-load_model_path: ./config_run/output/ppo_models_multi/run_2026-09-29_18-28-18_chairmanmulti_concurrent
-
-video_save_path: ./config_run/output/eval_videos/chairman_ppo_multi_3.mp4
+load_model_path: ./config_run/output/ppo_models_multi/run_2026-10-02_15-45-29_chairmanmulti_concurrent
+video_save_path: ./config_run/output/eval_videos/chairman_ppo_multi_5.mp4
 eval_max_steps: 2000
 
 # Evaluation stops cleanly as soon as the robot reaches a policy that the

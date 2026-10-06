@@ -20,11 +20,11 @@ cameras:
       look_at: [0.0, 0.0, 0.0]
       width: 1024
       height: 640
-load_model_path: ./config_run/output/ppo_models_separate/run_2026-10-01_11-38-33_chairman_separate
+load_model_path: ./config_run/output/ppo_models_separate/run_2026-10-05_16-36-32_chairman_separate
 # load_model_checkpoint: 50000000
 video_save_path: ./config_run/output/chairman_separate/eval.mp4
-video_slowdown: 3
-eval_episodes: 1
+video_slowdown: 1
+eval_episodes: 2
 eval_max_steps: 6000
 visualize_reach_waypoints: true
 policies:

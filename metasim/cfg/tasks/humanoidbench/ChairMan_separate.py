@@ -2919,6 +2919,51 @@ class CenteredUpperBodyCOMReward(HumanoidBaseReward):
         return reward * active.to(reward.dtype)
 
 
+class PelvisFacingChairReward(HumanoidBaseReward):
+    """Reward the pelvis forward axis for pointing directly at the chair.
+
+    The reward is continuous with no angular tolerance: it is +1 at zero
+    heading error, zero at ``zero_reward_angle_degrees`` and approaches -1
+    when the robot turns sideways or backwards relative to the chair.
+    """
+
+    def __init__(self, robot_name="g1_with_hands",
+                 zero_reward_angle_degrees=30.0):
+        super().__init__(robot_name)
+        if not 0.0 < zero_reward_angle_degrees < 180.0:
+            raise ValueError("zero_reward_angle_degrees must be in (0, 180)")
+        self.zero_reward_angle = math.radians(zero_reward_angle_degrees)
+
+    def __call__(self, states, robot_name=None):
+        robot = states.robots[robot_name or self.robot_name]
+        chair = states.objects["chair"]
+        device = robot.body_state.device
+        num_envs = robot.body_state.shape[0]
+        if self.actual_stage is None:
+            return torch.zeros(num_envs, device=device)
+
+        pelvis_idx = robot.body_names.index("pelvis")
+        chair_idx = chair.body_names.index("base_link")
+        pelvis_xy = robot.body_state[:, pelvis_idx, :2]
+        pelvis_quat = robot.body_state[:, pelvis_idx, 3:7]
+        to_chair = chair.body_state[:, chair_idx, :2] - pelvis_xy
+        distance = torch.linalg.vector_norm(to_chair, dim=-1)
+        chair_direction = to_chair / distance.clamp_min(1.0e-6).unsqueeze(-1)
+        pelvis_forward = forward_direction_xy(pelvis_quat)
+
+        alignment = torch.sum(pelvis_forward * chair_direction, dim=-1)
+        cross = (pelvis_forward[:, 0] * chair_direction[:, 1]
+                 - pelvis_forward[:, 1] * chair_direction[:, 0])
+        heading_error = torch.atan2(torch.abs(cross), alignment)
+        reward = 2.0 * torch.exp(
+            -math.log(2.0) * torch.square(
+                heading_error / self.zero_reward_angle)) - 1.0
+        reward = torch.where(distance > 1.0e-6, reward, torch.zeros_like(reward))
+        reward = torch.nan_to_num(reward, nan=-1.0, posinf=1.0, neginf=-1.0)
+        active = (self.actual_stage >= 0) & (self.actual_stage <= 5)
+        return reward * active.to(device=device, dtype=reward.dtype)
+
+
 class FaceChairAllStagesReward(FaceChairReward):
     """Face the chair in every currently trained stage."""
 
@@ -3199,12 +3244,13 @@ class ChairmanseparateCfg(HumanoidTaskCfg):
     stage_reward_weights: dict = {}
     # Only termination and stage completion contribute to the shared task
     # reward. Separate policies weight every raw term independently in YAML.
-    reward_weights = [-1.0] + [0.0] * 20 + [1.0, 0.0, 0.0]
+    reward_weights = [-1.0] + [0.0] * 21 + [1.0, 0.0, 0.0]
     reward_functions = [
         TerminationCfg(),
         CumulativeStageProgressReward(),
         CenteredUpperBodyCOMReward(),
         FaceChairAllStagesReward(),
+        PelvisFacingChairReward(),
         WaistVelocityPenalty(),
         ApproachAndStandReward(),
         Stage3ReverseVelocityReward(),

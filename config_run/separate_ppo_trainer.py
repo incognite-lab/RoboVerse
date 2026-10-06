@@ -140,6 +140,8 @@ class SeparatePPOTrainer:
             "stage_occupancy": torch.zeros(self.num_stages, device=self.torch_device),
             "stage_current": torch.zeros(self.num_stages, device=self.torch_device),
             "stage_completed": torch.zeros(self.num_stages, dtype=torch.long, device=self.torch_device),
+            "stage_sample_counts": torch.zeros(
+                self.num_stages, dtype=torch.long, device=self.torch_device),
             "episode_ends": scalar(),
             "successes": scalar(),
             "timeouts": scalar(),
@@ -147,6 +149,11 @@ class SeparatePPOTrainer:
             "episode_length_sum": scalar(),
             "failure_counts": {},
             "raw_reward_sums": {},
+            "raw_reward_stage_sums": {},
+            "policy_reward_term_sums": {name: {} for name in self.names},
+            "policy_stage_reward_sums": {
+                name: torch.zeros(self.num_stages, device=self.torch_device)
+                for name in self.names},
         }
         for _ in range(self.n_steps):
             observations = self.env.policy_observations_torch(full_obs)
@@ -162,6 +169,10 @@ class SeparatePPOTrainer:
             physical_action = self.env.compose_actions_torch(local_actions)
             next_full_obs, _, dones, metadata = self.env.torch_step(physical_action)
             rewards = self.env.separate_rewards_torch(metadata, local_actions)
+            reward_stages = metadata["stage_before"].long().clamp(
+                0, self.num_stages - 1)
+            metrics["stage_sample_counts"] += torch.bincount(
+                reward_stages, minlength=self.num_stages)[:self.num_stages]
             next_observations = self.env.policy_observations_torch(next_full_obs)
             for name in self.names:
                 obs, action, value, log_prob = records[name]
@@ -181,6 +192,8 @@ class SeparatePPOTrainer:
                 reward_sq_sums[name] += rewards[name].square().sum()
                 action_abs_sums[name] += local_actions[name].abs().sum()
                 self.episode_returns[name] += rewards[name]
+                metrics["policy_stage_reward_sums"][name].scatter_add_(
+                    0, reward_stages, rewards[name])
 
             self.episode_lengths += 1
             active_stages = metadata["stage_after"].long().clamp(
@@ -218,9 +231,19 @@ class SeparatePPOTrainer:
                 metrics["failure_counts"][reason] = (
                     metrics["failure_counts"].get(reason, 0) + count)
             for term, value in metadata.get("raw_reward_terms", {}).items():
-                term_sum = value.to(self.torch_device).float().sum()
+                value = value.to(self.torch_device).float()
+                term_sum = value.sum()
                 metrics["raw_reward_sums"][term] = (
                     metrics["raw_reward_sums"].get(term, 0.0) + term_sum)
+                if term not in metrics["raw_reward_stage_sums"]:
+                    metrics["raw_reward_stage_sums"][term] = torch.zeros(
+                        self.num_stages, device=self.torch_device)
+                metrics["raw_reward_stage_sums"][term].scatter_add_(
+                    0, reward_stages, value)
+            for name, terms in metadata.get("policy_reward_terms", {}).items():
+                for term, contribution in terms.items():
+                    sums = metrics["policy_reward_term_sums"][name]
+                    sums[term] = sums.get(term, 0.0) + contribution.sum()
 
             full_obs = next_full_obs
             self.global_env_steps += 1
@@ -260,6 +283,7 @@ class SeparatePPOTrainer:
                        ).detach().cpu().tolist()
         completed = metrics["stage_completed"].detach().cpu().tolist()
         cumulative = self.cumulative_stage_completions.detach().cpu().tolist()
+        stage_samples = metrics["stage_sample_counts"].detach().cpu().tolist()
 
         self.writer.add_scalar("performance/fps_total", transitions / max(iteration_s, 1e-9), self.global_timesteps)
         self.writer.add_scalar("performance/fps_collection", transitions / max(collect_s, 1e-9), self.global_timesteps)
@@ -274,6 +298,10 @@ class SeparatePPOTrainer:
             self.writer.add_scalar(f"stages/mean_active_count/{suffix}", mean_counts[stage], self.global_timesteps)
             self.writer.add_scalar(f"stages/completed_rollout/{suffix}", completed[stage], self.global_timesteps)
             self.writer.add_scalar(f"stages/completed_total/{suffix}", cumulative[stage], self.global_timesteps)
+            self.writer.add_scalar(
+                f"stages/transition_rate_per_sample/{suffix}",
+                completed[stage] / max(1, stage_samples[stage]),
+                self.global_timesteps)
 
         ended = int(metrics["episode_ends"].item())
         successes = int(metrics["successes"].item())
@@ -293,6 +321,28 @@ class SeparatePPOTrainer:
         for term, value in metrics["raw_reward_sums"].items():
             self.writer.add_scalar(f"reward_components/{term}",
                 float(value.item()) / sample_count, self.global_timesteps)
+        for term, stage_sums in metrics["raw_reward_stage_sums"].items():
+            values = stage_sums.detach().cpu().tolist()
+            for stage in range(self.num_stages):
+                if stage_samples[stage]:
+                    self.writer.add_scalar(
+                        f"reward_components_by_stage/{term}/stage_{stage}",
+                        values[stage] / stage_samples[stage],
+                        self.global_timesteps)
+        for name in self.names:
+            for term, value in metrics["policy_reward_term_sums"][name].items():
+                self.writer.add_scalar(
+                    f"{name}/reward_terms/{term}",
+                    float(value.item()) / sample_count,
+                    self.global_timesteps)
+            stage_reward_sums = metrics["policy_stage_reward_sums"][name]
+            stage_reward_sums = stage_reward_sums.detach().cpu().tolist()
+            for stage in range(self.num_stages):
+                if stage_samples[stage]:
+                    self.writer.add_scalar(
+                        f"{name}/reward_by_stage/stage_{stage}",
+                        stage_reward_sums[stage] / stage_samples[stage],
+                        self.global_timesteps)
         for reason, value in metrics["failure_counts"].items():
             self.writer.add_scalar(f"failures/{reason}",
                 int(value.item()), self.global_timesteps)
@@ -302,6 +352,7 @@ class SeparatePPOTrainer:
         log.info(
             "Stages active [{}], completed [{}], episodes={} (success={}, timeout={}, failure={})",
             active_text, complete_text, ended, successes, timeouts, failures)
+        self.writer.flush()
 
     def _update(self, name, batch: FlatBatch):
         if batch is None or len(batch) < 2: return
@@ -310,7 +361,8 @@ class SeparatePPOTrainer:
         lr = float(model.lr_schedule(self._lr_progress(name)))
         update_learning_rate(policy.optimizer, lr)
         clip = float(model.clip_range(self.progress_remaining))
-        losses, kls = [], []
+        losses, policy_losses, value_losses = [], [], []
+        entropy_losses, kls, clip_fractions = [], [], []
         for _ in range(int(_policy_value(self.config, name, "n_epochs", self.n_epochs))):
             order = torch.randperm(len(batch), device=self.torch_device)
             for start in range(0, len(batch), self.batch_size):
@@ -328,16 +380,32 @@ class SeparatePPOTrainer:
                 with torch.no_grad():
                     log_ratio = log_prob - batch.old_log_prob[idx]
                     kl = ((torch.exp(log_ratio) - 1) - log_ratio).mean()
+                    clip_fraction = (torch.abs(ratio - 1.0) > clip).float().mean()
                 if model.target_kl is not None and float(kl) > 1.5 * model.target_kl: break
                 policy.optimizer.zero_grad(set_to_none=True); loss.backward()
                 torch.nn.utils.clip_grad_norm_(policy.parameters(), model.max_grad_norm)
-                policy.optimizer.step(); losses.append(loss.detach()); kls.append(kl.detach())
+                policy.optimizer.step()
+                losses.append(loss.detach())
+                policy_losses.append(policy_loss.detach())
+                value_losses.append(value_loss.detach())
+                entropy_losses.append(entropy_loss.detach())
+                kls.append(kl.detach())
+                clip_fractions.append(clip_fraction.detach())
             model._n_updates += 1
         policy.set_training_mode(False)
         self.updates[name] += 1; self.lr_samples[name] += len(batch)
         self.writer.add_scalar(f"{name}/train/loss", float(torch.stack(losses).mean()) if losses else 0, self.global_timesteps)
+        self.writer.add_scalar(f"{name}/train/policy_loss", float(torch.stack(policy_losses).mean()) if policy_losses else 0, self.global_timesteps)
+        self.writer.add_scalar(f"{name}/train/value_loss", float(torch.stack(value_losses).mean()) if value_losses else 0, self.global_timesteps)
+        self.writer.add_scalar(f"{name}/train/entropy_loss", float(torch.stack(entropy_losses).mean()) if entropy_losses else 0, self.global_timesteps)
         self.writer.add_scalar(f"{name}/train/approx_kl", float(torch.stack(kls).mean()) if kls else 0, self.global_timesteps)
+        self.writer.add_scalar(f"{name}/train/clip_fraction", float(torch.stack(clip_fractions).mean()) if clip_fractions else 0, self.global_timesteps)
         self.writer.add_scalar(f"{name}/train/learning_rate", lr, self.global_timesteps)
+        if hasattr(policy, "log_std"):
+            self.writer.add_scalar(
+                f"{name}/train/action_std",
+                float(policy.log_std.detach().exp().mean()),
+                self.global_timesteps)
 
     def _manifest(self, paths):
         return {"format_version": 1, "trainer": "simultaneous_separate_ppo",

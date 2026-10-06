@@ -107,6 +107,7 @@ policies:
     delta_action_scale: 0.15
     reward_terms:
       ApproachAndStandReward: 1.0
+      PelvisFacingChairReward: 1.0
       CumulativeStageProgressReward: 1.0
       Stage3ReverseVelocityReward: 1.0
       PolicyDeltaAction: -0.1

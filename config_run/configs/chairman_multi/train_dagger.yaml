@@ -1,7 +1,3 @@
-#genesis config stand
-
-# Environment settings
-#-------------------------------------------
 sim: genesis
 robots: [g1_with_hands]
 fix_base_link: false
@@ -66,9 +62,9 @@ force: false
 
 # PPO training settings
 #-------------------------------------------
-total_timesteps: 1000
+total_timesteps: 1_000_000
 model_save_path: ./config_run/output/dagger_multi
-model_save_freq: 500
+model_save_freq: 10000
 tensorboard_log: ./config_run/output/dagger_multi/tensorboard
 
 
