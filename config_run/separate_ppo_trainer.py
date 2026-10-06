@@ -20,6 +20,20 @@ except ImportError:
 
 MANIFEST_NAME = "separate_policy_manifest.json"
 
+
+def _stage_outcome_counts(completed, physical_done, stage_before, num_stages):
+    """Return per-stage successes, failed attempts and total finished attempts."""
+    completed = completed.long()
+    stage_before = stage_before.long().clamp(0, num_stages - 1)
+    valid = completed[(completed >= 0) & (completed < num_stages)]
+    successes = torch.bincount(valid, minlength=num_stages)[:num_stages]
+    failed_mask = physical_done.bool() & (completed < 0)
+    failed_stages = stage_before[failed_mask]
+    failures = torch.bincount(
+        failed_stages, minlength=num_stages
+    )[:num_stages]
+    return successes, failures, successes + failures
+
 def _policy_value(config, policy, key, default):
     local = config.get("policies", {}).get(policy, {})
     return local.get(key, config.get(key, default))
@@ -65,11 +79,13 @@ def _load_model(path, env, name, device):
 
 class SeparatePPOTrainer:
     """All six policies collect every physical step and solve the full episode."""
-    def __init__(self, env, config, resume_path=None, resume_checkpoint=None):
+    def __init__(self, env, config, resume_path=None, resume_checkpoint=None,
+                 stage_transition_logger=None):
         required = ("policy_observations_torch", "compose_actions_torch", "separate_rewards_torch")
         if not all(hasattr(env, name) for name in required):
             raise TypeError("SeparatePPOTrainer requires SB3_chairman_separate.StableBaseline3VecEnv")
         self.env, self.config = env, dict(config)
+        self.stage_transition_logger = stage_transition_logger
         self.names = tuple(env.POLICY_NAMES)
         self.num_envs = int(env.num_envs)
         self.device = str(env.torch_device)
@@ -92,6 +108,8 @@ class SeparatePPOTrainer:
         self.lr_samples = {name: 0 for name in self.names}
         self.num_stages = int(getattr(env, "NUM_POLICY_STAGES", 6))
         self.cumulative_stage_completions = torch.zeros(
+            self.num_stages, dtype=torch.long, device=self.torch_device)
+        self.cumulative_stage_attempts = torch.zeros(
             self.num_stages, dtype=torch.long, device=self.torch_device)
         self.episode_returns = {
             name: torch.zeros(self.num_envs, device=self.torch_device)
@@ -140,6 +158,15 @@ class SeparatePPOTrainer:
             "stage_occupancy": torch.zeros(self.num_stages, device=self.torch_device),
             "stage_current": torch.zeros(self.num_stages, device=self.torch_device),
             "stage_completed": torch.zeros(self.num_stages, dtype=torch.long, device=self.torch_device),
+            "stage_failed_attempts": torch.zeros(
+                self.num_stages, dtype=torch.long, device=self.torch_device),
+            "stage_attempts": torch.zeros(
+                self.num_stages, dtype=torch.long, device=self.torch_device),
+            "stage_success_env_mask": torch.zeros(
+                (self.num_stages, self.num_envs),
+                dtype=torch.bool,
+                device=self.torch_device,
+            ),
             "stage_sample_counts": torch.zeros(
                 self.num_stages, dtype=torch.long, device=self.torch_device),
             "episode_ends": scalar(),
@@ -168,6 +195,14 @@ class SeparatePPOTrainer:
                                  value.detach().flatten().float(), log_prob.detach().flatten().float())
             physical_action = self.env.compose_actions_torch(local_actions)
             next_full_obs, _, dones, metadata = self.env.torch_step(physical_action)
+            if self.stage_transition_logger is not None:
+                completed = metadata["completed_stage"]
+                self.stage_transition_logger(
+                    metadata["stage_before"],
+                    metadata["stage_after_event"],
+                    completed >= 0,
+                    source="Training",
+                )
             rewards = self.env.separate_rewards_torch(metadata, local_actions)
             reward_stages = metadata["stage_before"].long().clamp(
                 0, self.num_stages - 1)
@@ -204,12 +239,22 @@ class SeparatePPOTrainer:
             metrics["stage_occupancy"] += current_counts
 
             completed = metadata["completed_stage"].long()
-            valid = completed[(completed >= 0) & (completed < self.num_stages)]
-            if valid.numel():
-                metrics["stage_completed"] += torch.bincount(
-                    valid, minlength=self.num_stages)[:self.num_stages]
-
             physical_done = metadata["physical_done"].bool()
+            stage_successes, stage_failures, stage_attempts = _stage_outcome_counts(
+                completed, physical_done, reward_stages, self.num_stages
+            )
+            metrics["stage_completed"] += stage_successes
+            metrics["stage_failed_attempts"] += stage_failures
+            metrics["stage_attempts"] += stage_attempts
+            valid_completion = (
+                (completed >= 0) & (completed < self.num_stages)
+            )
+            completed_env_ids = ids[valid_completion]
+            completed_stage_ids = completed[valid_completion]
+            metrics["stage_success_env_mask"][
+                completed_stage_ids, completed_env_ids
+            ] = True
+
             success = metadata["task_success"].bool()
             timeout = metadata["timeout"].bool() & physical_done
             failure = physical_done & ~success & ~timeout
@@ -276,13 +321,20 @@ class SeparatePPOTrainer:
 
     def _log_rollout_metrics(self, metrics, transitions, collect_s, update_s, iteration_s):
         self.cumulative_stage_completions += metrics["stage_completed"]
+        self.cumulative_stage_attempts += metrics["stage_attempts"]
 
         steps = max(1, metrics["steps"])
         current = metrics["stage_current"].detach().cpu().tolist()
         mean_counts = (metrics["stage_occupancy"] / steps
                        ).detach().cpu().tolist()
         completed = metrics["stage_completed"].detach().cpu().tolist()
+        failed_attempts = metrics["stage_failed_attempts"].detach().cpu().tolist()
+        stage_attempts = metrics["stage_attempts"].detach().cpu().tolist()
+        successful_envs = metrics["stage_success_env_mask"].sum(
+            dim=1
+        ).detach().cpu().tolist()
         cumulative = self.cumulative_stage_completions.detach().cpu().tolist()
+        cumulative_attempts = self.cumulative_stage_attempts.detach().cpu().tolist()
         stage_samples = metrics["stage_sample_counts"].detach().cpu().tolist()
 
         self.writer.add_scalar("performance/fps_total", transitions / max(iteration_s, 1e-9), self.global_timesteps)
@@ -298,6 +350,32 @@ class SeparatePPOTrainer:
             self.writer.add_scalar(f"stages/mean_active_count/{suffix}", mean_counts[stage], self.global_timesteps)
             self.writer.add_scalar(f"stages/completed_rollout/{suffix}", completed[stage], self.global_timesteps)
             self.writer.add_scalar(f"stages/completed_total/{suffix}", cumulative[stage], self.global_timesteps)
+            self.writer.add_scalar(
+                f"stages/success_count_rollout/{suffix}",
+                completed[stage], self.global_timesteps)
+            self.writer.add_scalar(
+                f"stages/success_env_count_rollout/{suffix}",
+                successful_envs[stage], self.global_timesteps)
+            self.writer.add_scalar(
+                f"stages/success_env_fraction_rollout/{suffix}",
+                successful_envs[stage] / self.num_envs,
+                self.global_timesteps)
+            self.writer.add_scalar(
+                f"stages/failed_attempts_rollout/{suffix}",
+                failed_attempts[stage], self.global_timesteps)
+            self.writer.add_scalar(
+                f"stages/attempt_count_rollout/{suffix}",
+                stage_attempts[stage], self.global_timesteps)
+            if stage_attempts[stage]:
+                self.writer.add_scalar(
+                    f"stages/success_rate_rollout/{suffix}",
+                    completed[stage] / stage_attempts[stage],
+                    self.global_timesteps)
+            if cumulative_attempts[stage]:
+                self.writer.add_scalar(
+                    f"stages/success_rate_total/{suffix}",
+                    cumulative[stage] / cumulative_attempts[stage],
+                    self.global_timesteps)
             self.writer.add_scalar(
                 f"stages/transition_rate_per_sample/{suffix}",
                 completed[stage] / max(1, stage_samples[stage]),
@@ -349,9 +427,16 @@ class SeparatePPOTrainer:
 
         active_text = ", ".join(f"S{i}={int(v)}" for i, v in enumerate(current))
         complete_text = ", ".join(f"S{i}={int(v)}" for i, v in enumerate(completed))
+        success_rate_text = ", ".join(
+            f"S{i}={completed[i] / stage_attempts[i]:.1%}"
+            if stage_attempts[i] else f"S{i}=n/a"
+            for i in range(self.num_stages)
+        )
         log.info(
-            "Stages active [{}], completed [{}], episodes={} (success={}, timeout={}, failure={})",
-            active_text, complete_text, ended, successes, timeouts, failures)
+            "Stages active [{}], completed [{}], success rate [{}], episodes={} "
+            "(success={}, timeout={}, failure={})",
+            active_text, complete_text, success_rate_text,
+            ended, successes, timeouts, failures)
         self.writer.flush()
 
     def _update(self, name, batch: FlatBatch):

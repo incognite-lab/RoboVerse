@@ -5,6 +5,7 @@ import random
 from time import time
 from pathlib import Path
 import torch
+import torch.nn.functional as F
 import threading
 
 from metasim.utils.humanoid_robot_util import (
@@ -21,6 +22,7 @@ from metasim.utils.chair_navigation import (
     chair_back_direction_xy,
     forward_direction_xy,
 )
+from metasim.utils.chairman_grasp import STAGE2_FINGER_JOINT_TARGETS
 try:
     from metasim.sim import BaseSimHandler
 except:
@@ -52,7 +54,7 @@ ORIENTATION_DISTANCE_HANDLE_THRESHOLD = 0.03
 GRASP_DRIFT_THRESHOLD = 0.25
 GRASP_FORCE_THRESHOLD = 0.5
 GRASP_MIN_TIPS_PER_HAND = 2
-GRASP_MIN_CLOSURE = 0.55
+STAGE2_FINGER_JOINT_TOLERANCE = 0.10
 STAGE0_HOLD_STEPS = 10
 STAGE1_HOLD_STEPS = 5
 STAGE2_HOLD_STEPS = 5
@@ -63,24 +65,6 @@ ORI_DOT_PRODUCT_THRESHOLD = 0.9
 CHAIR_PULL_DISTANCE_THRESHOLD = 1.0
 
 ARM_RESTING_THRESHOLD = 0.35
-
-GRASP_FINGER_TARGETS = {
-    "left_hand_thumb_0_joint": 0.396,
-    "left_hand_thumb_1_joint": 0.700,
-    "left_hand_thumb_2_joint": 1.000,
-    "left_hand_middle_0_joint": -1.500,
-    "left_hand_middle_1_joint": -1.700,
-    "left_hand_index_0_joint": -1.500,
-    "left_hand_index_1_joint": -1.700,
-    "right_hand_thumb_0_joint": -0.396,
-    "right_hand_thumb_1_joint": -0.700,
-    "right_hand_thumb_2_joint": -1.000,
-    "right_hand_middle_0_joint": 1.500,
-    "right_hand_middle_1_joint": 1.700,
-    "right_hand_index_0_joint": 1.500,
-    "right_hand_index_1_joint": 1.700,
-}
-
 
 def _held_condition(handler, name, idx, condition, required_steps):
     """Require a checker condition for consecutive control steps."""
@@ -503,6 +487,99 @@ def stege1_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     terminated[idx] = term_common | success_cond
     success[idx] = success_cond & (~term_common)
     return terminated, success
+
+
+def stage2_grasp_pose_status(
+    states: list[EnvState], robot_name: str, idx: torch.Tensor
+) -> dict[str, torch.Tensor]:
+    """Evaluate the position, orientation and finger-pose stage-2 goals."""
+    robot = states.robots[robot_name]
+    chair = states.objects["chair"]
+
+    right_ee_pos = right_palm_position(
+        states, robot_name, ee_name="endeffector"
+    )[idx]
+    left_ee_pos = right_palm_position(
+        states, robot_name, ee_name="left_endeffector"
+    )[idx]
+    right_ee_ori = F.normalize(
+        right_palm_orientation(states, robot_name, ee_name="endeffector")[idx],
+        dim=-1,
+    )
+    left_ee_ori = F.normalize(
+        right_palm_orientation(
+            states, robot_name, ee_name="left_endeffector"
+        )[idx],
+        dim=-1,
+    )
+
+    right_target = chair.body_state[
+        idx, chair.body_names.index("target_hand_right")
+    ]
+    left_target = chair.body_state[
+        idx, chair.body_names.index("target_hand_left")
+    ]
+    right_target_ori = F.normalize(right_target[:, 3:7], dim=-1)
+    left_target_ori = F.normalize(left_target[:, 3:7], dim=-1)
+
+    right_distance = torch.linalg.vector_norm(
+        right_ee_pos - right_target[:, :3], dim=-1
+    )
+    left_distance = torch.linalg.vector_norm(
+        left_ee_pos - left_target[:, :3], dim=-1
+    )
+    hands_near = (
+        (right_distance <= DISTANCE_TO_CHAIR_HANDLE_THRESHOLD)
+        & (left_distance <= DISTANCE_TO_CHAIR_HANDLE_THRESHOLD)
+    )
+    hands_in_recovery_envelope = (
+        (right_distance <= GRASP_DRIFT_THRESHOLD)
+        & (left_distance <= GRASP_DRIFT_THRESHOLD)
+    )
+
+    right_orientation_error = 1.0 - torch.abs(
+        torch.sum(right_target_ori * right_ee_ori, dim=-1)
+    )
+    left_orientation_error = 1.0 - torch.abs(
+        torch.sum(left_target_ori * left_ee_ori, dim=-1)
+    )
+    orientations_correct = (
+        (right_orientation_error <= ORIENTATION_DISTANCE_HANDLE_THRESHOLD)
+        & (left_orientation_error <= ORIENTATION_DISTANCE_HANDLE_THRESHOLD)
+    )
+
+    joint_names = list(robot.joint_names)
+    missing = [
+        name for name in STAGE2_FINGER_JOINT_TARGETS if name not in joint_names
+    ]
+    if missing:
+        raise ValueError(f"Stage 2 checker is missing finger joints: {missing}")
+    ordered_names = list(STAGE2_FINGER_JOINT_TARGETS)
+    finger_indices = torch.tensor(
+        [joint_names.index(name) for name in ordered_names],
+        dtype=torch.long,
+        device=robot.joint_pos.device,
+    )
+    finger_targets = torch.tensor(
+        [STAGE2_FINGER_JOINT_TARGETS[name] for name in ordered_names],
+        dtype=robot.joint_pos.dtype,
+        device=robot.joint_pos.device,
+    ).unsqueeze(0)
+    finger_error = torch.abs(
+        robot.joint_pos.index_select(1, finger_indices)[idx] - finger_targets
+    )
+    fingers_correct = torch.all(
+        finger_error <= STAGE2_FINGER_JOINT_TOLERANCE, dim=-1
+    )
+
+    return {
+        "hands_near": hands_near,
+        "hands_in_recovery_envelope": hands_in_recovery_envelope,
+        "orientations_correct": orientations_correct,
+        "fingers_correct": fingers_correct,
+    }
+
+
 def stege2_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.BoolTensor) -> tuple[torch.BoolTensor, torch.BoolTensor]:
     num_envs = mask.shape[0]
     terminated = torch.zeros(num_envs, dtype=torch.bool, device=mask.device)
@@ -514,48 +591,25 @@ def stege2_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
 
     term_common = common_chairman_checker(states, handler, idx, stage_id=2) | check_movement_chair(states, handler, idx)
 
-    right_ee_pos = right_palm_position(states, handler.robot.name, ee_name="endeffector")[idx]
-    left_ee_pos = right_palm_position(states, handler.robot.name, ee_name="left_endeffector")[idx]
-
-    chair = states.objects["chair"]
-    r_handle_pos = chair.body_state[idx, chair.body_names.index("target_hand_right"), :3]
-    l_handle_pos = chair.body_state[idx, chair.body_names.index("target_hand_left"), :3]
-
-    dist_right = torch.norm(right_ee_pos - r_handle_pos, dim=-1)
-    dist_left = torch.norm(left_ee_pos - l_handle_pos, dim=-1)
-
-    hands_near = (dist_right <= GRASP_DRIFT_THRESHOLD) & (dist_left <= GRASP_DRIFT_THRESHOLD)
-
-    # A contact-only checker can be passed by a brief collision without ever
-    # learning to close the hand. Explicit closure keeps the checker aligned
-    # with CloseGraspReward.
-    joint_names = list(states.robots[handler.robot.name].joint_names)
-    finger_indices = [joint_names.index(name) for name in GRASP_FINGER_TARGETS]
-    finger_targets = torch.tensor(
-        list(GRASP_FINGER_TARGETS.values()),
-        dtype=states.robots[handler.robot.name].joint_pos.dtype,
-        device=mask.device,
+    pose_status = stage2_grasp_pose_status(states, handler.robot.name, idx)
+    success_now = (
+        pose_status["hands_near"]
+        & pose_status["orientations_correct"]
+        & pose_status["fingers_correct"]
     )
-    q_finger = states.robots[handler.robot.name].joint_pos[idx][:, finger_indices]
-    closure_per_joint = torch.clamp(
-        1.0 - torch.abs(q_finger - finger_targets) / torch.clamp(torch.abs(finger_targets), min=0.1),
-        min=0.0,
-        max=1.0,
-    )
-    both_hands_closed = (
-        torch.mean(closure_per_joint[:, :7], dim=-1) >= GRASP_MIN_CLOSURE
-    ) & (
-        torch.mean(closure_per_joint[:, 7:], dim=-1) >= GRASP_MIN_CLOSURE
-    )
-    contacts_ok = get_batch_grasp_status(states, handler, GRASP_FORCE_THRESHOLD, idx)
-    success_now = hands_near & contacts_ok #& both_hands_closed
     success_cond = _held_condition(
         handler, "stage2_success_steps", idx, success_now, STAGE2_HOLD_STEPS
     )
 
     # Briefly leaving the grasp envelope is recoverable and therefore must not
     # reset the episode immediately. The reach/stillness rewards guide it back.
-    drift_failure = _held_seconds(handler, "stage2_drift_failure_steps", idx, ~hands_near, 0.15)
+    drift_failure = _held_seconds(
+        handler,
+        "stage2_drift_failure_steps",
+        idx,
+        ~pose_status["hands_in_recovery_envelope"],
+        0.15,
+    )
     terminated[idx] = term_common | success_cond | drift_failure
     success[idx] = success_cond & (~term_common)
     return terminated, success

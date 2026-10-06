@@ -38,13 +38,24 @@ class ChairmanMultiCenterOfMassRewardTest(unittest.TestCase):
         names = [type(reward).__name__ for reward in cfg.reward_functions]
         index = names.index("UpperBodyCenterOfMassPenalty")
 
-        self.assertEqual(cfg.reward_weights[index], -0.2)
+        self.assertEqual(cfg.reward_weights[index], 0.0)
+        self.assertTrue(all(weight == 0.0 for weight in cfg.reward_weights))
         self.assertEqual(
             cfg.stage_reward_weights[0]["UpperBodyCenterOfMassPenalty"], 0.0
         )
         self.assertEqual(
             cfg.stage_reward_weights[1]["UpperBodyCenterOfMassPenalty"], -0.2
         )
+        for stage in range(cfg.num_policy_stages):
+            self.assertIn(
+                "MultiPolicyStageCompletionReward",
+                cfg.stage_reward_weights[stage],
+            )
+        for stage in range(2, cfg.num_policy_stages):
+            self.assertEqual(
+                cfg.stage_reward_weights[stage]["UpperBodyCenterOfMassPenalty"],
+                -0.2,
+            )
         self.assertNotIn("UprightPenaltyCfg", names)
         self.assertNotIn("WaistStraightReward", names)
         for overrides in cfg.stage_reward_weights.values():

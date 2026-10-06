@@ -11,6 +11,7 @@ from metasim.cfg.objects import ArticulationObjCfg, RigidObjCfg
 from metasim.types import EnvState
 from metasim.utils import configclass
 from metasim.utils import chairman2_geometry as chairman_geometry
+from metasim.utils.chairman_grasp import STAGE2_FINGER_JOINT_TARGETS
 from metasim.utils.chair_navigation import (
     CHAIR_FINAL_DISTANCE,
     chair_back_direction_xy,
@@ -980,7 +981,7 @@ class Stage1HandOrientationReward(HumanoidBaseReward):
         super().__init__(robot_name)
         if not math.isfinite(error_scale) or error_scale <= 0:
             raise ValueError("error_scale must be finite and positive")
-        self.active_stage = 1
+        self.active_stage = [1, 2]
         self.error_scale = float(error_scale)
 
         self.robot_left_hand = "left_endeffector"
@@ -997,7 +998,9 @@ class Stage1HandOrientationReward(HumanoidBaseReward):
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
 
-        stage_mask = self.actual_stage.to(device=device) == self.active_stage
+        stage_mask = _stage_mask(
+            self.actual_stage.to(device=device), self.active_stage
+        )
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
@@ -1169,7 +1172,7 @@ class Stage2HandRetentionReward(HumanoidBaseReward):
     Returns [0, 1] in stage 2 and zero elsewhere; no contact is required.
     """
 
-    def __init__(self, robot_name="g1_with_hands", distance_scale=0.10):
+    def __init__(self, robot_name="g1_with_hands", distance_scale=0.05):
         super().__init__(robot_name)
         if not math.isfinite(distance_scale) or distance_scale <= 0:
             raise ValueError("distance_scale must be finite and positive")
@@ -1496,6 +1499,63 @@ class StayNearAnchorReward(HumanoidBaseReward):
 # =============================================================================
 # STAGE 2
 # =============================================================================
+
+class Stage2FingerJointPositionReward(HumanoidBaseReward):
+    """Exponential reward for matching the complete two-hand grasp pose.
+
+    The reward depends only on the current joint positions.  It is 1.0 at the
+    target pose and approaches 0 exponentially as the mean absolute joint
+    error grows.
+    """
+
+    def __init__(self, robot_name="g1_with_hands", error_scale=0.25):
+        super().__init__(robot_name)
+        if error_scale <= 0.0:
+            raise ValueError("error_scale must be positive")
+        self.active_stages = [2]
+        self.error_scale = float(error_scale)
+        self.finger_targets = dict(STAGE2_FINGER_JOINT_TARGETS)
+        self.finger_indices = None
+        self.target_tensor = None
+
+    def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
+        robot = states.robots[robot_name or self.robot_name]
+        device = robot.joint_pos.device
+        num_envs = robot.joint_pos.shape[0]
+
+        if self.actual_stage is None:
+            return torch.zeros(num_envs, device=device)
+
+        stage_mask = _stage_mask(self.actual_stage.to(device=device), self.active_stages)
+        if not stage_mask.any():
+            return torch.zeros(num_envs, device=device)
+
+        if self.finger_indices is None:
+            joint_names = list(robot.joint_names)
+            missing = [name for name in self.finger_targets if name not in joint_names]
+            if missing:
+                raise ValueError(
+                    f"Stage2FingerJointPositionReward is missing finger joints: {missing}"
+                )
+            ordered_names = list(self.finger_targets)
+            self.finger_indices = torch.tensor(
+                [joint_names.index(name) for name in ordered_names],
+                device=device,
+                dtype=torch.long,
+            )
+            self.target_tensor = torch.tensor(
+                [self.finger_targets[name] for name in ordered_names],
+                device=device,
+                dtype=robot.joint_pos.dtype,
+            ).unsqueeze(0)
+
+        current_positions = robot.joint_pos.index_select(1, self.finger_indices)
+        mean_joint_error = torch.mean(
+            torch.abs(current_positions - self.target_tensor), dim=-1
+        )
+        reward = torch.exp(-mean_joint_error / self.error_scale)
+        return reward * stage_mask.to(dtype=reward.dtype)
+
 
 class CloseGraspReward(HumanoidBaseReward):
     """
@@ -2550,31 +2610,17 @@ class MultiPolicyStageCompletionReward(HumanoidBaseReward):
 # - penalty in <0,1> -> use negative weight
 # =============================================================================
 
-# A fall must be clearly worse than any single successful task step, without
-# creating the critic spikes caused by the previous -1000 value.
-TERMINATION_WEIGHT = -1.0
-
-# General optional penalties / rewards
-DELTA_ACTION_RATE_WEIGHT = -0.2
-DOF_VELOCITY_ACCELERATION_WEIGHT = -0.75
-LOCOMOTION_COMMAND_PENALTY_WEIGHT = -0.2
-UPPER_BODY_COM_PENALTY_WEIGHT = -0.2
-DOF_POSITION_LIMITS_WEIGHT = -0.0
-HUMANLY_DOF_LIMIT_WEIGHT = -0.25
-ARM_RESTING_POSE_PENALTY_WEIGHT = -0.05
-# Every stage-local policy gets the same one-shot completion bonus.
-MULTI_POLICY_STAGE_COMPLETION_WEIGHT = 500.0
-
 # Stage 0: reference velocity dominates; pose and facing only stabilize it.
-STAGE0_ARM_POS_REWARD_WEIGHT = 0.5
-STAGE0_REFERENCE_VELOCITY_REWARD_WEIGHT = 0.5
-FACE_CHAIR_REWARD_WEIGHT = 0.2
 STAGE0_REWARD_WEIGHTS = {
     "TerminationCfg": -10.0,
     "DeltaActionRateCfg": -0.05,
     "DoFVelocityAccelerationCfg": -0.05,
     "LocomotionCommandPenalty": 0.0,
     "UpperBodyCenterOfMassPenalty": 0.0,
+    "Stage0ArmPos": 0.5,
+    "Stage0ReferenceVelocityReward": 0.5,
+    "FaceChairReward": 0.2,
+    "MultiPolicyStageCompletionReward": 500.0,
 }
 
 # Stage 1: only state-based hand distance/orientation shaping, upper-body COM,
@@ -2582,47 +2628,64 @@ STAGE0_REWARD_WEIGHTS = {
 STAGE1_REWARD_WEIGHTS = {
     "TerminationCfg": -10.0,
     "DeltaActionRateCfg": 0.0,
-    "DoFVelocityAccelerationCfg": 0.0,
+    "DoFVelocityAccelerationCfg": -0.05,
     "LocomotionCommandPenalty": -0.3,
     "UpperBodyCenterOfMassPenalty": -0.2,
     "Stage1JointVelocityPenalty": -0.1,
     "Stage1HandDistanceReward": 0.5,
     "Stage1HandOrientationReward": 0.5,
+    "MultiPolicyStageCompletionReward": 500.0,
 }
 
-# Stage 2
-CLOSE_GRASP_REWARD_WEIGHT = 0.1
-FORCE_GRASP_REWARD_WEIGHT = 1.0
-STAGE2_HAND_RETENTION_REWARD_WEIGHT = 0.5
-STAGE2_UPPER_BODY_POSE_RETENTION_REWARD_WEIGHT = 0.0
-# Overrides of shared terms apply only to transitions produced in stage 2.
+# Stage 2: close the fingers while retaining both hands and the upper-body pose.
 STAGE2_REWARD_WEIGHTS = {
     "TerminationCfg": -10.0,
     "DeltaActionRateCfg": -0.05,
-    "DoFVelocityAccelerationCfg": -0.01,
-    "LocomotionCommandPenalty": -0.1,
-    "StayNearAnchorReward": 0.1,
-    "Stage2UpperBodyPoseRetentionReward": 0.1,
+    "DoFVelocityAccelerationCfg": -0.05,
+    "LocomotionCommandPenalty": -0.3,
+    "UpperBodyCenterOfMassPenalty": -0.2,
+    "StayNearAnchorReward": 0.3,
+    "Stage2FingerJointPositionReward": 0.5,
+    "Stage2HandRetentionReward": 1.0,
+    "Stage1HandOrientationReward": 0.5,
+    "MultiPolicyStageCompletionReward": 500.0,
 }
 
-# Stage 3
-MAINTAIN_ANY_GRASP_REWARD_WEIGHT = 0.10
-STAGE3_HAND_DRIFT_PENALTY_WEIGHT = -0.10
-PULL_CHAIR_REWARD_WEIGHT = 0.75
-
-# Stage 4
-PULLED_CHAIR_STILLNESS_PENALTY_WEIGHT = -0.10
-RELEASE_FINGERS_REWARD_WEIGHT = 1.0
-
-# Stage 5
-ARM_DOWN_REWARD_WEIGHT = 1.0
-KEEP_FINGERS_OPEN_PENALTY_WEIGHT = -0.05
-
-LATE_STAGE_REWARD_WEIGHTS = {
+# Stage 3: retain the grasp and pull the chair to its target.
+STAGE3_REWARD_WEIGHTS = {
     "TerminationCfg": -250.0,
     "DeltaActionRateCfg": -0.01,
     "DoFVelocityAccelerationCfg": -0.02,
     "LocomotionCommandPenalty": -0.02,
+    "UpperBodyCenterOfMassPenalty": -0.2,
+    "Stage3HandDriftPenalty": -0.10,
+    "PullChairReward": 0.75,
+    "MultiPolicyStageCompletionReward": 500.0,
+}
+
+# Stage 4: keep the pulled chair still and release the fingers.
+STAGE4_REWARD_WEIGHTS = {
+    "TerminationCfg": -250.0,
+    "DeltaActionRateCfg": -0.01,
+    "DoFVelocityAccelerationCfg": -0.02,
+    "LocomotionCommandPenalty": -0.02,
+    "UpperBodyCenterOfMassPenalty": -0.2,
+    "PulledChairStillnessReward": -0.10,
+    "ReleaseFingersReward": 1.0,
+    "MultiPolicyStageCompletionReward": 500.0,
+}
+
+# Stage 5: keep the chair and fingers still while lowering both arms.
+STAGE5_REWARD_WEIGHTS = {
+    "TerminationCfg": -250.0,
+    "DeltaActionRateCfg": -0.01,
+    "DoFVelocityAccelerationCfg": -0.02,
+    "LocomotionCommandPenalty": -0.02,
+    "UpperBodyCenterOfMassPenalty": -0.2,
+    "PulledChairStillnessReward": -0.10,
+    "ArmDownReward": 1.0,
+    "KeepFingersOpenPenalty": -0.05,
+    "MultiPolicyStageCompletionReward": 500.0,
 }
 # At gamma=.995, postponing success costs 2.5 per step; postponing failure
 # discounts its cost by 1.25. Stages 1..5 keep positive shaping below 2.5
@@ -2663,10 +2726,12 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
     visualize_center_of_mass: bool = False
     num_policy_stages: int = 6
     stage_reward_weights: dict = {
-        0: STAGE0_REWARD_WEIGHTS, 1: STAGE1_REWARD_WEIGHTS,
+        0: STAGE0_REWARD_WEIGHTS,
+        1: STAGE1_REWARD_WEIGHTS,
         2: STAGE2_REWARD_WEIGHTS,
-        3: LATE_STAGE_REWARD_WEIGHTS, 4: LATE_STAGE_REWARD_WEIGHTS,
-        5: LATE_STAGE_REWARD_WEIGHTS,
+        3: STAGE3_REWARD_WEIGHTS,
+        4: STAGE4_REWARD_WEIGHTS,
+        5: STAGE5_REWARD_WEIGHTS,
     }
 
     objects = [
@@ -2682,45 +2747,6 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
 
     traj_filepath = "roboverse_data/trajs/humanoidbench/chair/initial_state_v2.json"
     checker = _ChairManChecker()
-
-    reward_weights = [
-        TERMINATION_WEIGHT,
-        DELTA_ACTION_RATE_WEIGHT,
-        DOF_VELOCITY_ACCELERATION_WEIGHT,
-        LOCOMOTION_COMMAND_PENALTY_WEIGHT,
-        UPPER_BODY_COM_PENALTY_WEIGHT,
-        # DOF_POSITION_LIMITS_WEIGHT,
-        # HUMANLY_DOF_LIMIT_WEIGHT,
-
-        STAGE0_ARM_POS_REWARD_WEIGHT,
-        STAGE0_REFERENCE_VELOCITY_REWARD_WEIGHT,
-        FACE_CHAIR_REWARD_WEIGHT,
-
-        # These functions are weighted only through stage_reward_weights. Zero
-        # placeholders preserve one-to-one alignment with reward_functions.
-        0.0,  # Stage1JointVelocityPenalty
-        0.0,  # Stage1HandDistanceReward
-        0.0,  # Stage1HandOrientationReward
-
-        0.0,  # StayNearAnchorReward (enabled in stage 2 override)
-
-        CLOSE_GRASP_REWARD_WEIGHT,
-        FORCE_GRASP_REWARD_WEIGHT,
-        STAGE2_HAND_RETENTION_REWARD_WEIGHT,
-        STAGE2_UPPER_BODY_POSE_RETENTION_REWARD_WEIGHT,
-
-        MAINTAIN_ANY_GRASP_REWARD_WEIGHT,
-        STAGE3_HAND_DRIFT_PENALTY_WEIGHT,
-        PULL_CHAIR_REWARD_WEIGHT,
-
-        PULLED_CHAIR_STILLNESS_PENALTY_WEIGHT,
-        RELEASE_FINGERS_REWARD_WEIGHT,
-        ARM_DOWN_REWARD_WEIGHT,
-        KEEP_FINGERS_OPEN_PENALTY_WEIGHT,
-
-        # ARM_RESTING_POSE_PENALTY_WEIGHT,
-        MULTI_POLICY_STAGE_COMPLETION_WEIGHT,
-    ]
 
     reward_functions = [
         TerminationCfg(),
@@ -2741,12 +2767,11 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
 
         StayNearAnchorReward(),
 
-        CloseGraspReward(),
-        GraspForceReward(),
+        Stage2FingerJointPositionReward(),
         Stage2HandRetentionReward(),
         Stage2UpperBodyPoseRetentionReward(),
 
-        MaintainAnyGraspReward(),
+        #MaintainAnyGraspReward(),
         Stage3HandDriftPenalty(),
         PullChairReward(),
 
@@ -2758,6 +2783,10 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
         # ArmRestingPosePenaltyCfg(),
         MultiPolicyStageCompletionReward(),
     ]
+    # All active weights are selected from stage_reward_weights. Keeping the
+    # base weights neutral prevents a missing stage entry from leaking a
+    # reward or penalty from another policy stage.
+    reward_weights = [0.0] * len(reward_functions)
 
     def extra_spec(self):
         return {}

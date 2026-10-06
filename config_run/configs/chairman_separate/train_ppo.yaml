@@ -8,6 +8,7 @@ headless: true
 add_table: true
 env_spacing: 4.0
 train_or_eval: train
+log_stage_transitions: true
 
 # Všechny policy se učí celou úlohu od stage 0 až po konečný úspěch.
 reset_to_stage0: false
@@ -89,8 +90,7 @@ policies:
     reward_terms:
       RightOpenFingersReward: 0.5
       CumulativeStageProgressReward: 0.5
-      RightCloseGraspReward: 0.5
-      RightGraspForceReward: 1.5
+      RightStage2FingerJointPositionReward: 1.0
       PolicyDeltaAction: -0.01
   left_fingers:
     action_groups: [left_fingers]
@@ -98,8 +98,7 @@ policies:
     reward_terms:
       LeftOpenFingersReward: 0.5
       CumulativeStageProgressReward: 0.5
-      LeftCloseGraspReward: 0.5
-      LeftGraspForceReward: 1.5
+      LeftStage2FingerJointPositionReward: 1.0
       PolicyDeltaAction: -0.01
   direction:
     action_groups: [direction]

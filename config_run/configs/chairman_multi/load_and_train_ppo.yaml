@@ -7,7 +7,7 @@ robots: [g1_with_hands]
 fix_base_link: false
 task: chairmanmulti #chairmansimplegrpo # use chairmansimplegaussiangrpo for Gaussian-splat visual room
 decimation: 5
-num_envs: 5000
+num_envs: 10000
 headless: true
 add_table: true
 env_spacing: 4.0

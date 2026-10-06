@@ -11,6 +11,7 @@ from metasim.cfg.objects import ArticulationObjCfg, RigidObjCfg
 from metasim.types import EnvState
 from metasim.utils import configclass
 from metasim.utils import chairman2_geometry as chairman_geometry
+from metasim.utils.chairman_grasp import STAGE2_FINGER_JOINT_TARGETS_BY_SIDE
 from metasim.utils.chair_navigation import (
     CHAIR_FINAL_DISTANCE,
     chair_back_direction_xy,
@@ -614,7 +615,7 @@ class Stage0ReferenceVelocityReward(HumanoidBaseReward):
     def __init__(
         self,
         robot_name="g1_with_hands",
-        target_speed=0.5,
+        target_speed=0.8,
         slowdown_distance=0.10,
         velocity_sigma=0.15,
     ):
@@ -626,7 +627,7 @@ class Stage0ReferenceVelocityReward(HumanoidBaseReward):
         if not math.isfinite(velocity_sigma) or velocity_sigma <= 0:
             raise ValueError("velocity_sigma must be finite and positive")
         self.active_stage = 0
-        self.final_distance = CHAIR_FINAL_DISTANCE
+        self.final_distance = CHAIR_FINAL_DISTANCE+0.1
         self.target_speed = float(target_speed)
         self.slowdown_distance = float(slowdown_distance)
         self.velocity_sigma = float(velocity_sigma)
@@ -2726,6 +2727,8 @@ _FINGER_TARGETS = {
     },
 }
 
+_STAGE2_FINGER_TARGETS = STAGE2_FINGER_JOINT_TARGETS_BY_SIDE
+
 
 class _SideReward(HumanoidBaseReward):
     side = None
@@ -3083,6 +3086,58 @@ class RightOpenFingersReward(_SideOpenFingersReward):
     side = "right"
 
 
+class _SideStage2FingerJointPositionReward(_SideReward):
+    """Reward one hand for approaching its complete seven-joint target pose."""
+
+    def __init__(self, robot_name="g1_with_hands", error_scale=0.25):
+        super().__init__(robot_name)
+        if error_scale <= 0.0:
+            raise ValueError("error_scale must be positive")
+        self.error_scale = float(error_scale)
+        self.indices = None
+        self.targets = None
+
+    def __call__(self, states, robot_name=None):
+        robot = states.robots[robot_name or self.robot_name]
+        device = robot.joint_pos.device
+        mask = self.active_mask(device, (2,))
+        if mask is None:
+            return torch.zeros(robot.joint_pos.shape[0], device=device)
+
+        if self.indices is None:
+            joint_names = list(robot.joint_names)
+            target_map = _STAGE2_FINGER_TARGETS[self.side]
+            missing = [name for name in target_map if name not in joint_names]
+            if missing:
+                raise ValueError(
+                    f"{type(self).__name__} is missing finger joints: {missing}"
+                )
+            ordered_names = list(target_map)
+            self.indices = torch.tensor(
+                [joint_names.index(name) for name in ordered_names],
+                dtype=torch.long,
+                device=device,
+            )
+            self.targets = torch.tensor(
+                [target_map[name] for name in ordered_names],
+                dtype=robot.joint_pos.dtype,
+                device=device,
+            ).unsqueeze(0)
+
+        positions = robot.joint_pos.index_select(1, self.indices)
+        mean_joint_error = torch.mean(torch.abs(positions - self.targets), dim=-1)
+        reward = torch.exp(-mean_joint_error / self.error_scale)
+        return reward * mask.to(dtype=reward.dtype)
+
+
+class LeftStage2FingerJointPositionReward(_SideStage2FingerJointPositionReward):
+    side = "left"
+
+
+class RightStage2FingerJointPositionReward(_SideStage2FingerJointPositionReward):
+    side = "right"
+
+
 class _SideCloseGraspReward(_SideReward):
     """Reward closure of this hand independently in stages 2 and 3."""
 
@@ -3244,7 +3299,7 @@ class ChairmanseparateCfg(HumanoidTaskCfg):
     stage_reward_weights: dict = {}
     # Only termination and stage completion contribute to the shared task
     # reward. Separate policies weight every raw term independently in YAML.
-    reward_weights = [-1.0] + [0.0] * 21 + [1.0, 0.0, 0.0]
+    reward_weights = [-1.0] + [0.0] * 19 + [1.0, 0.0, 0.0]
     reward_functions = [
         TerminationCfg(),
         CumulativeStageProgressReward(),
@@ -3264,10 +3319,8 @@ class ChairmanseparateCfg(HumanoidTaskCfg):
         RightArmVelocityPenalty(),
         LeftOpenFingersReward(),
         RightOpenFingersReward(),
-        LeftCloseGraspReward(),
-        RightCloseGraspReward(),
-        LeftGraspForceReward(),
-        RightGraspForceReward(),
+        LeftStage2FingerJointPositionReward(),
+        RightStage2FingerJointPositionReward(),
         MultiPolicyStageCompletionReward(),
         KeepChairStillPenaltyWalk(),
         KeepChairStillPenaltyArms(),

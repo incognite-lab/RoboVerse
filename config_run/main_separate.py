@@ -18,6 +18,34 @@ except ImportError:
     from separate_ppo_trainer import SeparatePPOTrainer, load_policy_router
     from utils import ObsSaver
 
+
+def log_stage_transitions(stage_before, stage_after, changed, source="ChairMan separate"):
+    """Print one compact line for each stage transition present in a batch."""
+    before = torch.as_tensor(stage_before).detach().cpu().numpy().astype(np.int64)
+    after = torch.as_tensor(stage_after).detach().cpu().numpy().astype(np.int64)
+    changed_mask = torch.as_tensor(changed).detach().cpu().numpy().astype(bool)
+    changed_ids = np.flatnonzero(changed_mask)
+    if changed_ids.size == 0:
+        return
+
+    transition_pairs = np.stack((before[changed_ids], after[changed_ids]), axis=1)
+    for old_stage, new_stage in np.unique(transition_pairs, axis=0):
+        pair_ids = changed_ids[
+            (before[changed_ids] == old_stage) & (after[changed_ids] == new_stage)
+        ]
+        shown_ids = ", ".join(str(int(env_id)) for env_id in pair_ids[:20])
+        suffix = ", ..." if pair_ids.size > 20 else ""
+        log.info(
+            "{} stage change {} -> {}: {} env(s) [ids: {}{}]",
+            source,
+            int(old_stage),
+            int(new_stage),
+            int(pair_ids.size),
+            shown_ids,
+            suffix,
+        )
+
+
 def build_env(config):
     if config.get("task") != "chairmanseparate":
         raise ValueError("main_separate.py requires task: chairmanseparate")
@@ -73,6 +101,13 @@ def evaluate(config, env, video=False):
     for step in range(max_steps):
         action = router.predict(obs, deterministic=True)
         obs, reward, done, infos = env.step(action)
+        if bool(config.get("log_stage_transitions", True)):
+            log_stage_transitions(
+                [info.get("stage_before", -1) for info in infos],
+                [info.get("stage_after", -1) for info in infos],
+                [info.get("stage_changed", False) for info in infos],
+                source="Evaluation",
+            )
         returns += np.asarray(reward); lengths += 1
         if saver is not None:
             states = env.env.env.handler.get_states()
@@ -91,7 +126,7 @@ def evaluate(config, env, video=False):
              len(finished_returns), mean_return, success_rate)
 
 def main():
-    config_name = sys.argv[1] if len(sys.argv) == 2 else "chairman_separate/train_ppo"
+    config_name = sys.argv[1] if len(sys.argv) == 2 else "chairman_separate/eval_ppo_video"
     if len(sys.argv) > 2: raise SystemExit("Usage: python config_run/main_separate.py [config/name]")
     config = load_config_from_yaml(config_name)
     log.info("Loaded config {} for policies {}", config_name, POLICY_NAMES)
@@ -99,10 +134,16 @@ def main():
     mode = config.get("train_or_eval", "train")
     try:
         if mode in ("train", "load_and_train"):
+            stage_logger = (
+                log_stage_transitions
+                if bool(config.get("log_stage_transitions", True))
+                else None
+            )
             trainer = SeparatePPOTrainer(
                 env, config,
                 resume_path=config.get("load_model_path") if mode == "load_and_train" else None,
-                resume_checkpoint=config.get("load_model_checkpoint"))
+                resume_checkpoint=config.get("load_model_checkpoint"),
+                stage_transition_logger=stage_logger)
             trainer.learn()
         elif mode == "eval":
             evaluate(config, env, video=False)
