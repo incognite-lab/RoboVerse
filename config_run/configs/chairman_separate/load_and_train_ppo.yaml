@@ -1,0 +1,122 @@
+# Pokracovani treninku vsech sesti ChairMan separate policies.
+sim: genesis
+robots: [g1_with_hands]
+fix_base_link: false
+task: chairmanseparate
+decimation: 5
+num_envs: 10000
+headless: true
+add_table: true
+env_spacing: 4.0
+train_or_eval: load_and_train
+log_stage_transitions: true
+
+# Musi ukazovat na adresar behu obsahujici
+# separate_policy_manifest.json a adresare jednotlivych policies.
+load_model_path: ./config_run/output/ppo_models_separate/run_REPLACE_ME_chairman_separate
+
+# Pokud neni uvedeno, nactou se checkpointy zapsane v manifestu (doporuceno).
+# Pro rucni nacteni musi model_<hodnota>.zip existovat u vsech sesti policies.
+# load_model_checkpoint: 1365120000
+
+# Jde o cilovy CELKOVY pocet prechodu, nikoliv o pocet novych prechodu.
+# Hodnota musi byt vyssi nez global_timesteps v nacitanem manifestu.
+total_timesteps: 5_000_000_000
+
+# Pokracovani vytvori novy run_* adresar a puvodni beh neprepise.
+model_save_path: ./config_run/output/ppo_models_separate
+model_save_freq: 50_000_000
+tensorboard_log: ./config_run/output/ppo_models_separate/tensorboard
+
+# Snapshot curriculum je pouze v RAM a neuklada se do checkpointu. Po restartu
+# se tedy znovu naplni od stage 0, zatimco vahy, optimizer a pocitadla se obnovi.
+reset_to_stage0: false
+use_snapshot_curriculum: true
+snapshot_save_probability: 0.1
+force: false
+
+# Nastaveni rolloutu noveho behu. Architektura a optimizer state se nactou ze
+# ZIP checkpointu; policy layout musi odpovidat ulozenemu manifestu.
+n_steps: 64
+batch_size: 16384
+n_epochs: 4
+gamma: 0.995
+gae_lambda: 0.97
+learning_rate: 0.0003
+learning_schedule: linear
+final_learning_rate: 0.0
+policy_lr_timesteps: 5_000_000_000
+clip_range: 0.2
+ent_coef: 0.002
+vf_coef: 0.5
+max_grad_norm: 0.5
+target_kl: 0.02
+normalize_advantage: true
+log_std_init: -1.0
+net_arch_pivf: true
+net_arch_pi: [64, 64, 64]
+net_arch_vf: [64, 64, 64]
+
+# Policy rozhrani musi zustat stejne jako pri puvodnim treninku. Loader je
+# porovna s manifestem pred zahajenim uceni.
+policies:
+  waist:
+    action_groups: [waist]
+    observation_groups: [joint_positions, robot_body_states, pelvis_velocity, previous_policy_actions]
+    delta_action_scale: 0.25
+    reward_terms:
+      CenteredUpperBodyCOMReward: 1.0
+      CumulativeStageProgressReward: 1.3
+      TerminationCfg: -1.0
+      FaceChairAllStagesReward: 0.3
+      WaistVelocityPenalty: -0.2
+      PolicyDeltaAction: -0.2
+  right_arm:
+    action_groups: [right_arm]
+    observation_groups: [joint_positions, right_hand_task, pelvis_velocity, chair_geometry, stage, previous_policy_actions]
+    reward_terms:
+      RightStage0ArmPoseReward: 1.0
+      CumulativeStageProgressReward: 1.0
+      RightHandDistanceReward: 0.6
+      RightHandOrientationReward: 0.4
+      RightArmVelocityPenalty: -0.1
+      KeepChairStillPenaltyArms: -1.0
+      PolicyDeltaAction: -0.02
+  left_arm:
+    action_groups: [left_arm]
+    observation_groups: [joint_positions, left_hand_task, pelvis_velocity, chair_geometry, stage, previous_policy_actions]
+    reward_terms:
+      LeftStage0ArmPoseReward: 1.0
+      CumulativeStageProgressReward: 1.0
+      LeftHandDistanceReward: 0.6
+      LeftHandOrientationReward: 0.4
+      LeftArmVelocityPenalty: -0.1
+      KeepChairStillPenaltyArms: -1.0
+      PolicyDeltaAction: -0.02
+  right_fingers:
+    action_groups: [right_fingers]
+    observation_groups: [joint_positions, right_hand_task, fingertip_forces, stage, previous_policy_actions]
+    reward_terms:
+      RightOpenFingersReward: 0.5
+      CumulativeStageProgressReward: 0.5
+      RightStage2FingerJointPositionReward: 1.0
+      PolicyDeltaAction: -0.01
+  left_fingers:
+    action_groups: [left_fingers]
+    observation_groups: [joint_positions, left_hand_task, fingertip_forces, stage, previous_policy_actions]
+    reward_terms:
+      LeftOpenFingersReward: 0.5
+      CumulativeStageProgressReward: 0.5
+      LeftStage2FingerJointPositionReward: 1.0
+      PolicyDeltaAction: -0.01
+  direction:
+    action_groups: [direction]
+    observation_groups: [joint_positions, pelvis_velocity, chair_geometry, previous_walk_command, stage, previous_policy_actions]
+    delta_action_scale: 0.15
+    reward_terms:
+      ApproachAndStandReward: 1.0
+      PelvisFacingChairReward: 1.0
+      CumulativeStageProgressReward: 1.0
+      Stage3ReverseVelocityReward: 1.0
+      PolicyDeltaAction: -0.1
+      KeepChairStillPenaltyWalk: -1.0

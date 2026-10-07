@@ -44,7 +44,7 @@ VELOCITY_THRESHOLD = 0.2
 HEIGHT_THRESHOLD = 0.4
 FACING_CHAIR_THRESHOLD = 0.90
 
-HAND_VELOCITY_THRESHOLD = 0.15
+HAND_VELOCITY_THRESHOLD = 0.30
 
 # The target links are reference points near the palms, not tiny physical
 # sockets. Five centimetres defines the stage-1 goal; stages 2/3 have a wider

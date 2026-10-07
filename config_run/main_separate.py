@@ -130,8 +130,13 @@ def main():
     if len(sys.argv) > 2: raise SystemExit("Usage: python config_run/main_separate.py [config/name]")
     config = load_config_from_yaml(config_name)
     log.info("Loaded config {} for policies {}", config_name, POLICY_NAMES)
-    _, env = build_env(config)
     mode = config.get("train_or_eval", "train")
+    if mode == "load_and_train" and not config.get("load_model_path"):
+        raise ValueError(
+            "load_and_train requires load_model_path pointing to a "
+            "ChairMan separate run directory"
+        )
+    _, env = build_env(config)
     try:
         if mode in ("train", "load_and_train"):
             stage_logger = (

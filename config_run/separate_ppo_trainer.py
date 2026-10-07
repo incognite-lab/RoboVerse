@@ -127,6 +127,28 @@ class SeparatePPOTrainer:
                 self.samples[name] = int(saved.get("samples", 0))
                 self.updates[name] = int(saved.get("updates", 0))
                 self.lr_samples[name] = int(saved.get("lr_trained_samples", self.samples[name]))
+            if self.total_timesteps <= self.global_timesteps:
+                self.writer.close()
+                raise ValueError(
+                    "total_timesteps must be greater than the resumed "
+                    f"global_timesteps ({self.global_timesteps:,}); got "
+                    f"{self.total_timesteps:,}"
+                )
+            # Saving is based on transitions learned in this new run. Without
+            # this, a large restored global counter triggers a redundant save
+            # immediately after the first rollout.
+            self.last_save = self.global_timesteps
+            selected = (
+                f"checkpoint {resume_checkpoint}"
+                if resume_checkpoint not in (None, "")
+                else "the checkpoint selected by the manifest"
+            )
+            log.info(
+                "Resumed six separate policies from {} ({}) at {:,}/{:,} "
+                "transitions; new checkpoints will be written to {}",
+                Path(resume_path).expanduser(), selected,
+                self.global_timesteps, self.total_timesteps, self.run_dir,
+            )
         else:
             self.models = {name: _new_model(env, config, name, self.device) for name in self.names}
 
