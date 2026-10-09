@@ -25,10 +25,13 @@ cameras:
        height: 128
        fov: 70.0
        clipping_range: [0.1, 100.0]
+       # pos/look_at are used only for a detached (world-frame) camera.
        pos: [0.0, 0.0, 0.8]
        look_at: [1.0, 0.0, 0.35]
        mount_to: g1_with_hands
        mount_link: head_link
+       # Mounted camera pose in the head_link frame: mount_pos moves it,
+       # mount_quat (w, x, y, z) rotates it; the Nyx viewing axis is local -Z.
        mount_pos: [0.0, 0.0, 0.5]
        mount_quat: [0.5, 0.5, -0.5, -0.5]
        gaussian_splat_path: ./config_run/splat/splat_2.ply

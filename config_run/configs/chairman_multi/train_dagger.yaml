@@ -3,7 +3,7 @@ robots: [g1_with_hands]
 fix_base_link: false
 task: chairmanmulti
 decimation: 5
-num_envs: 100
+num_envs: 200
 headless: true
 add_table: true
 env_spacing: 4.0
@@ -19,20 +19,20 @@ cameras:
        name: camera0
        width: 128
        height: 128
-       fov: 70.0
+       fov: 65.0
        clipping_range: [0.1, 100.0]
-       pos: [0.0, 0.0, 0.8]
-       look_at: [1.0, 0.0, 0.35]
+       #pos: [0.0, 0.0, 0.8]
+       #look_at: [1.0, 0.0, 0.35]
        mount_to: g1_with_hands
        mount_link: head_link
-       mount_pos: [0.0, 0.0, 0.5]
+       mount_pos: [0.08, 0.0, 0.35]
        mount_quat: [0.5, 0.5, -0.5, -0.5]
        gaussian_splat_path: ./config_run/splat/splat_2.ply
        gaussian_position: [0.0, 0.0, 1.5]
        gaussian_rotation_xyzw: [0.0, 0.0, -0.70710678, 0.70710678]
        gaussian_scale: [3.0, 3.0, 3.0]
        spp: 8
-       render_mode: FastPathTracer
+       render_mode: FastPathTracer        #Forward #FastPathTracer #RefPathTracer
        tone_mapper: "Off"
        render_sim_geometry: true
        standalone_floor: false
@@ -71,11 +71,11 @@ tensorboard_log: ./config_run/output/dagger_multi/tensorboard
 # DAgger settings
 #-------------------------------------------
 #potřeba nastavit podle toho jak to zabírá vram
-dagger_store_per_step: 50 #<--
+dagger_store_per_step: 100 #<--
 dagger_train_every: 20
 dagger_updates_per_train: 10
 dagger_batch_size: 512
-dagger_buffer_steps: 3000 #<--
+dagger_buffer_steps: 6000 #<--
 dagger_buffer_device: cuda
 dagger_buffer_pin_memory: true
 beta_start: 1.0
@@ -84,4 +84,4 @@ visualization: false
 
 # Directory produced by main_multi.py train. The teacher router loads all
 # stage_0 ... stage_5 policies from its manifest.
-load_model_path: "./config_run/output/ppo_models_multi/run_2026-09-29_18-28-18_chairmanmulti_concurrent"
+load_model_path: ./config_run/output/ppo_models_multi/run_2026-10-07_17-34-30_chairmanmulti_concurrent

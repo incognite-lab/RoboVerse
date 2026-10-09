@@ -388,8 +388,10 @@ class NyxGaussianSplatRuntime:
 
         cam_pos_t = link_pos + self._quat_rotate_wxyz(link_quat, mount_pos)
         cam_quat = self._quat_multiply_wxyz(link_quat, mount_quat)
-        forward = self._quat_rotate_wxyz(cam_quat, (1.0, 0.0, 0.0))
-        up = self._quat_rotate_wxyz(cam_quat, (0.0, 0.0, 1.0))
+        # Match gs_nyx_plugin's attached-camera convention: optical axis is
+        # local -Z and image up is local +Y.
+        forward = self._quat_rotate_wxyz(cam_quat, (0.0, 0.0, -1.0))
+        up = self._quat_rotate_wxyz(cam_quat, (0.0, 1.0, 0.0))
         lookat_t = cam_pos_t + forward
         return (
             tuple(float(v) for v in cam_pos_t.detach().cpu().tolist()),

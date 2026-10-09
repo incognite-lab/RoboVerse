@@ -53,7 +53,7 @@ class GenesisHandler(BaseSimHandler):
         self._actions_cache: list[Action] = []
         self.object_inst_dict: dict[str, RigidEntity] = {}
         self.camera_inst_dict: dict[str, Camera] = {}
-        self.camera_debug_dots: dict[str, tuple[RigidEntity, object, tuple[float, float, float]]] = {}
+        self.camera_debug_markers: dict[str, dict[str, object]] = {}
         self._nyx_splat = NyxGaussianSplatRuntime()
         self.cached_top_offsets: dict[str, torch.Tensor] = {}
         self._cache_joint_names: dict[str, list[str]] = {}
@@ -189,10 +189,11 @@ class GenesisHandler(BaseSimHandler):
                     objects=self.scenario.objects,
                 )
                 if mount_link is not None:
-                    self._add_camera_debug_dot(
+                    self._add_camera_debug_marker(
                         camera.name,
                         mount_link,
                         getattr(camera, "mount_pos", None) or (0.05, 0.0, 0.0),
+                        getattr(camera, "mount_quat", None) or (1.0, 0.0, 0.0, 0.0),
                     )
                 log.info(f"Nyx Gaussian splat camera '{camera.name}' added")
             elif mount_entity and mount_link:
@@ -210,8 +211,7 @@ class GenesisHandler(BaseSimHandler):
 
                 # Připojení kamery pomocí matice
                 camera_inst.attach(mount_link, offset_T=offset_T)
-                # --- NOVÉ: DEBUGOVACÍ KULIČKA (BEZ ROTACE) ---
-                self._add_camera_debug_dot(camera.name, mount_link, pos)
+                self._add_camera_debug_marker(camera.name, mount_link, pos, quat)
 
                 log.info(f"Camera '{camera.name}' attached to {attached_obj_name}::{attached_link_name}")
             else:
@@ -357,26 +357,66 @@ class GenesisHandler(BaseSimHandler):
             )
         log.info("Genesis actuator properties applied (printed once):\n{}", "\n".join(rows))
 
-    def _add_camera_debug_dot(self, camera_name: str, mount_link, local_pos) -> None:
-        debug_dot = self.scene_inst.add_entity(
-            gs.morphs.Sphere(radius=0.03),
-            surface=gs.surfaces.Default(color=(1.0, 0.0, 0.0, 1.0)),
-            material=gs.materials.Rigid(gravity_compensation=1.0),
-        )
-        self.camera_debug_dots[camera_name] = (debug_dot, mount_link, tuple(float(v) for v in local_pos))
+    def _add_camera_debug_marker(self, camera_name: str, mount_link, local_pos, local_quat) -> None:
+        """Register a viewer-only camera origin and -Z viewing-direction marker."""
+        self.camera_debug_markers[camera_name] = {
+            # Debug meshes can only be created after scene.build(), so they
+            # are initialized lazily in _update_camera_debug_marker().
+            "origin": None,
+            "direction_arrow": None,
+            "link": mount_link,
+            "local_pos": tuple(float(v) for v in local_pos),
+            "local_quat": tuple(float(v) for v in local_quat),
+        }
 
-    def _update_camera_debug_dot(self, camera_name: str, env_ids: list[int] | None = None) -> None:
-        if camera_name not in self.camera_debug_dots:
+    def _update_camera_debug_marker(self, camera_name: str, env_ids: list[int] | None = None) -> None:
+        marker = self.camera_debug_markers.get(camera_name)
+        if marker is None:
             return
 
-        debug_dot, link, local_pos = self.camera_debug_dots[camera_name]
-        link_pos = link.get_pos(envs_idx=env_ids)
-        link_quat = link.get_quat(envs_idx=env_ids)
+        link = marker["link"]
+        # Viewer debug meshes are not simulation entities and therefore do
+        # not receive Genesis' per-environment render offset automatically.
+        # Visualize env 0, which is the environment shown by the viewer.
+        link_pos = link.get_pos(envs_idx=[0])
+        link_quat = link.get_quat(envs_idx=[0])
         link_T = gu.trans_quat_to_T(link_pos, link_quat)
-        pos_t = torch.tensor(local_pos, dtype=gs.tc_float, device=gs.device)
-        pos_homogeneous = torch.nn.functional.pad(pos_t, (0, 1), value=1.0)
-        new_pos = torch.matmul(link_T, pos_homogeneous)[:, :3]
-        debug_dot.set_pos(new_pos, envs_idx=env_ids)
+        local_pos = torch.tensor(marker["local_pos"], dtype=gs.tc_float, device=gs.device)
+        local_quat = torch.tensor(marker["local_quat"], dtype=gs.tc_float, device=gs.device)
+        camera_T = torch.matmul(link_T, gu.trans_quat_to_T(local_pos, local_quat))
+
+        camera_pos = camera_T[:, :3, 3]
+        # Attached Nyx cameras look along local -Z (with local +Y as up).
+        forward = -camera_T[:, :3, 2]
+
+        # Genesis debug arrows point along local +Z, so rotate +Z onto camera -Z.
+        # A 180-degree rotation around local Y keeps this a proper rotation.
+        arrow_to_camera = camera_T.new_tensor(
+            ((-1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, -1.0))
+        )
+        viewer_offset = torch.as_tensor(
+            self.scene_inst.envs_offset[0], dtype=gs.tc_float, device=gs.device
+        )
+        viewer_pos = camera_pos[0] + viewer_offset
+        origin_T = camera_T[0].detach().cpu().numpy()
+        origin_T[:3, 3] = viewer_pos.detach().cpu().numpy()
+        arrow_T = origin_T.copy()
+        arrow_T[:3, :3] = (
+            torch.matmul(camera_T[0, :3, :3], arrow_to_camera).detach().cpu().numpy()
+        )
+
+        if marker["origin"] is None:
+            marker["origin"] = self.scene_inst.draw_debug_sphere(
+                viewer_pos, radius=0.01, color=(1.0, 0.0, 0.0, 1.0)
+            )
+            marker["direction_arrow"] = self.scene_inst.draw_debug_arrow(
+                viewer_pos, vec=0.20 * forward[0], radius=0.004, color=(1.0, 0.85, 0.0, 1.0)
+            )
+        else:
+            self.scene_inst.update_debug_objects(
+                (marker["origin"], marker["direction_arrow"]),
+                (origin_T, arrow_T),
+            )
 
 
     def _build_link_map(self):
@@ -589,7 +629,7 @@ class GenesisHandler(BaseSimHandler):
                     patch_nyx_rigid_solver_compat(self.scene_inst, camera_inst)
                 else:
                     self._nyx_splat.step_standalone_scene(camera.name, self.object_inst_dict, camera_inst)
-                self._update_camera_debug_dot(camera.name, env_ids)
+                self._update_camera_debug_marker(camera.name, env_ids)
                 camera_inst._stale = True
                 rgb = camera_inst.read().rgb
                 self._nyx_splat.show_debug_frame(camera_inst, camera, rgb)
@@ -616,9 +656,7 @@ class GenesisHandler(BaseSimHandler):
             if getattr(camera_inst, "_attached_link", None) is not None:
                 camera_inst.move_to_attach()
 
-                # --- NOVÉ: PŘESUN KULIČKY (JEN POZICE) ---
-                self._update_camera_debug_dot(camera.name, env_ids)
-                # -----------------------------------------
+                self._update_camera_debug_marker(camera.name, env_ids)
 
             # Render obrazu
             rgb, depth, _, _ = camera_inst.render(depth=True)

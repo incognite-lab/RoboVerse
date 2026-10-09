@@ -96,10 +96,10 @@ visualize_reach_waypoints: true
 # When true, load_model_stage_checkpoints must define stages 0 through 5.
 load_model_split_checkpoints: false
 load_model_stage_checkpoints:
-  0: 1264000000
-  1: 1264000000
-  2: 1314560000
-  3: 1314560000
+  0: 1011200000
+  1: 2578560000
+  2: 2578560000
+  3: 2578560000
   #4: 2578560000
  # 5: 2578560000
 # Can point either to one concrete run_*_chairmanmulti_concurrent directory or

@@ -20,20 +20,20 @@ cameras:
        name: camera0
        width: 128
        height: 128
-       fov: 70.0
+       fov: 65.0
        clipping_range: [0.1, 100.0]
-       pos: [0.0, 0.0, 0.8]
-       look_at: [1.0, 0.0, 0.35]
+       #pos: [0.0, 0.0, 0.8]
+       #look_at: [1.0, 0.0, 0.35]
        mount_to: g1_with_hands
        mount_link: head_link
-       mount_pos: [0.0, 0.0, 0.5]
+       mount_pos: [0.08, 0.0, 0.35]
        mount_quat: [0.5, 0.5, -0.5, -0.5]
        gaussian_splat_path: ./config_run/splat/splat_2.ply
        gaussian_position: [0.0, 0.0, 1.5]
        gaussian_rotation_xyzw: [0.0, 0.0, -0.70710678, 0.70710678]
        gaussian_scale: [3.0, 3.0, 3.0]
        spp: 8
-       render_mode: FastPathTracer
+       render_mode: RefPathTracer        #Forward #FastPathTracer #RefPathTracer
        tone_mapper: "Off"
        render_sim_geometry: true
        standalone_floor: false

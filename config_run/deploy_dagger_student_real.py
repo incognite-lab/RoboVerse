@@ -119,13 +119,25 @@ def sim_joint_to_real_name(sim_name: str) -> str:
     return sim_name.removesuffix("_joint")
 
 
-def preprocess_frame(frame_bgr: np.ndarray, width: int, height: int, device: str) -> torch.Tensor:
+def preprocess_frame_2(frame_bgr: np.ndarray, width: int, height: int, device: str) -> torch.Tensor:
     frame = cv2.resize(frame_bgr, (width, height), interpolation=cv2.INTER_AREA)
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     frame_chw = np.ascontiguousarray(frame_rgb.transpose(2, 0, 1))
     tensor = torch.from_numpy(frame_chw).to(device=device, dtype=torch.float32)
     return tensor.unsqueeze(0) / 255.0
+def preprocess_frame(frame_bgr, width, height, device):
+    h, w = frame_bgr.shape[:2]
+    side = min(h, w)
+    x0 = (w - side) // 2
+    y0 = (h - side) // 2
 
+    frame = frame_bgr[y0:y0 + side, x0:x0 + side]
+    frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    frame_chw = np.ascontiguousarray(frame_rgb.transpose(2, 0, 1))
+    tensor = torch.from_numpy(frame_chw).to(device=device, dtype=torch.float32)
+    return tensor.unsqueeze(0) / 255.0
 
 def build_joint_input(
     arm_positions: dict[str, float],
