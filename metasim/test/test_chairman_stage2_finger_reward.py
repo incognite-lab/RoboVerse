@@ -44,14 +44,14 @@ def _states(positions: torch.Tensor):
 
 
 class ChairmanStage2FingerRewardTest(unittest.TestCase):
-    def test_multi_reward_is_exponential_and_stage_two_only(self):
+    def test_multi_reward_is_exponential_in_stages_two_and_three(self):
         positions = torch.stack((TARGETS, TARGETS + 0.25, TARGETS))
         reward = Stage2FingerJointPositionReward(error_scale=0.25)
         reward.actual_stage = torch.tensor([2, 2, 3])
 
         values = reward(_states(positions), ROBOT_NAME)
 
-        expected = torch.tensor([1.0, math.exp(-1.0), 0.0])
+        expected = torch.tensor([1.0, math.exp(-1.0), 1.0])
         self.assertTrue(torch.allclose(values, expected, atol=1e-6))
         self.assertTrue(torch.all((values >= 0.0) & (values <= 1.0)))
 

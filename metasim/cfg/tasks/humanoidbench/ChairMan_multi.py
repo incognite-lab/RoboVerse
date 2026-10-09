@@ -842,6 +842,64 @@ class FaceChairReward(HumanoidBaseReward):
         return alignment_reward * stage_mask.float()
 
 
+class PelvisFacingChairReward(HumanoidBaseReward):
+    """Reward the pelvis forward axis for pointing toward the chair.
+
+    The state-only reward is active in stages 1--4. It is +1 when the pelvis
+    points directly at the chair, zero at ``zero_reward_angle_degrees`` and
+    approaches -1 as it turns sideways or backwards.
+    """
+
+    def __init__(self, robot_name="g1_with_hands",
+                 zero_reward_angle_degrees=30.0):
+        super().__init__(robot_name)
+        if not 0.0 < zero_reward_angle_degrees < 180.0:
+            raise ValueError("zero_reward_angle_degrees must be in (0, 180)")
+        self.active_stages = [1, 2, 3, 4]
+        self.zero_reward_angle = math.radians(zero_reward_angle_degrees)
+
+    def __call__(self, states: list[EnvState],
+                 robot_name: str = None) -> torch.FloatTensor:
+        robot = states.robots[robot_name or self.robot_name]
+        chair = states.objects["chair"]
+        device = robot.body_state.device
+        num_envs = robot.body_state.shape[0]
+        if self.actual_stage is None:
+            return torch.zeros(num_envs, device=device)
+
+        stage_mask = _stage_mask(
+            self.actual_stage.to(device=device), self.active_stages
+        )
+        if not stage_mask.any():
+            return torch.zeros(num_envs, device=device)
+
+        pelvis_idx = robot.body_names.index("pelvis")
+        chair_idx = chair.body_names.index("base_link")
+        pelvis_xy = robot.body_state[:, pelvis_idx, :2]
+        pelvis_quat = robot.body_state[:, pelvis_idx, 3:7]
+        to_chair = chair.body_state[:, chair_idx, :2] - pelvis_xy
+        distance = torch.linalg.vector_norm(to_chair, dim=-1)
+        chair_direction = to_chair / distance.clamp_min(1.0e-6).unsqueeze(-1)
+        pelvis_forward = forward_direction_xy(pelvis_quat)
+
+        alignment = torch.sum(pelvis_forward * chair_direction, dim=-1)
+        cross = (pelvis_forward[:, 0] * chair_direction[:, 1]
+                 - pelvis_forward[:, 1] * chair_direction[:, 0])
+        heading_error = torch.atan2(torch.abs(cross), alignment)
+        reward = 2.0 * torch.exp(
+            -math.log(2.0) * torch.square(
+                heading_error / self.zero_reward_angle
+            )
+        ) - 1.0
+        reward = torch.where(
+            distance > 1.0e-6, reward, torch.zeros_like(reward)
+        )
+        reward = torch.nan_to_num(
+            reward, nan=-1.0, posinf=1.0, neginf=-1.0
+        )
+        return reward * stage_mask.to(dtype=reward.dtype)
+
+
 # =============================================================================
 # STAGE 1
 # =============================================================================
@@ -981,7 +1039,7 @@ class Stage1HandOrientationReward(HumanoidBaseReward):
         super().__init__(robot_name)
         if not math.isfinite(error_scale) or error_scale <= 0:
             raise ValueError("error_scale must be finite and positive")
-        self.active_stage = [1, 2]
+        self.active_stage = [1, 2, 3, 4]
         self.error_scale = float(error_scale)
 
         self.robot_left_hand = "left_endeffector"
@@ -1164,12 +1222,12 @@ class HandTargetStillnessReward(HumanoidBaseReward):
 
 
 class Stage2HandRetentionReward(HumanoidBaseReward):
-    """Keep both palms near the chair targets while learning finger closure.
+    """Keep both palms near the chair targets during stages 2--4.
 
     exp(-(max(left_distance, right_distance) / distance_scale)**2) stays
     positive beyond the stage-1 success radius. The worse hand determines
     the score, so one accurate hand cannot compensate for the other drifting.
-    Returns [0, 1] in stage 2 and zero elsewhere; no contact is required.
+    Returns [0, 1] in stages 2--4 and zero elsewhere; no contact is required.
     """
 
     def __init__(self, robot_name="g1_with_hands", distance_scale=0.05):
@@ -1189,7 +1247,9 @@ class Stage2HandRetentionReward(HumanoidBaseReward):
             robot.body_state[:, hand_ids, :3] - chair.body_state[:, target_ids, :3], dim=-1
         )
         score = torch.exp(-torch.square(distances.max(dim=-1).values / self.distance_scale))
-        return score * (self.actual_stage.to(device=score.device) == 2).to(score.dtype)
+        stage = self.actual_stage.to(device=score.device)
+        active = (stage == 2) | (stage == 3) | (stage == 4)
+        return score * active.to(score.dtype)
 
 
 class Stage2UpperBodyPoseRetentionReward(HumanoidBaseReward):
@@ -1425,7 +1485,7 @@ class PreciseHandTargetReward(HumanoidBaseReward):
 
 class StayNearAnchorReward(HumanoidBaseReward):
     """
-    Stage 1 and 2:
+    Stages 1, 2 and 4:
     Reward for keeping the pelvis near its anchor position.
 
     Output: <0, 1>, where 1 means no drift and 0 means the robot has
@@ -1433,7 +1493,9 @@ class StayNearAnchorReward(HumanoidBaseReward):
     """
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
-        self.active_stages = [1, 2]
+        # Stage 3 deliberately remains excluded because the robot must move
+        # while pulling. On entry to stage 4 a new pelvis anchor is captured.
+        self.active_stages = [1, 2, 4]
 
         self.saved_positions_xy = None
         self.prev_stages = None
@@ -1512,7 +1574,7 @@ class Stage2FingerJointPositionReward(HumanoidBaseReward):
         super().__init__(robot_name)
         if error_scale <= 0.0:
             raise ValueError("error_scale must be positive")
-        self.active_stages = [2]
+        self.active_stages = [2, 3]
         self.error_scale = float(error_scale)
         self.finger_targets = dict(STAGE2_FINGER_JOINT_TARGETS)
         self.finger_indices = None
@@ -2634,6 +2696,7 @@ STAGE1_REWARD_WEIGHTS = {
     "Stage1JointVelocityPenalty": -0.1,
     "Stage1HandDistanceReward": 0.5,
     "Stage1HandOrientationReward": 0.5,
+    "PelvisFacingChairReward": 0.15,
     "MultiPolicyStageCompletionReward": 500.0,
 }
 
@@ -2644,10 +2707,11 @@ STAGE2_REWARD_WEIGHTS = {
     "DoFVelocityAccelerationCfg": -0.05,
     "LocomotionCommandPenalty": -0.3,
     "UpperBodyCenterOfMassPenalty": -0.2,
-    "StayNearAnchorReward": 0.3,
-    "Stage2FingerJointPositionReward": 0.5,
-    "Stage2HandRetentionReward": 1.0,
-    "Stage1HandOrientationReward": 0.5,
+    "StayNearAnchorReward": 0.15,
+    "Stage2FingerJointPositionReward": 0.25,
+    "Stage2HandRetentionReward": 0.5,
+    "Stage1HandOrientationReward": 0.25,
+    "PelvisFacingChairReward": 0.1,
     "MultiPolicyStageCompletionReward": 500.0,
 }
 
@@ -2659,8 +2723,13 @@ STAGE3_REWARD_WEIGHTS = {
     "LocomotionCommandPenalty": -0.02,
     "UpperBodyCenterOfMassPenalty": -0.2,
     "Stage3HandDriftPenalty": -0.10,
-    "PullChairReward": 0.75,
+    "PullChairReward": 1.25,
     "MultiPolicyStageCompletionReward": 500.0,
+    "Stage2FingerJointPositionReward": 0.25,
+    "Stage2HandRetentionReward": 0.25,
+    "Stage1HandOrientationReward": 0.25,
+    "PelvisFacingChairReward": 0.15,
+
 }
 
 # Stage 4: keep the pulled chair still and release the fingers.
@@ -2672,6 +2741,10 @@ STAGE4_REWARD_WEIGHTS = {
     "UpperBodyCenterOfMassPenalty": -0.2,
     "PulledChairStillnessReward": -0.10,
     "ReleaseFingersReward": 1.0,
+    "Stage2HandRetentionReward": 0.15,
+    "Stage1HandOrientationReward": 0.15,
+    "StayNearAnchorReward": 0.15,
+    "PelvisFacingChairReward": 0.15,
     "MultiPolicyStageCompletionReward": 500.0,
 }
 
@@ -2760,6 +2833,7 @@ class ChairmanmultiCfg(HumanoidTaskCfg):
         Stage0ArmPos(),
         Stage0ReferenceVelocityReward(),
         FaceChairReward(),
+        PelvisFacingChairReward(),
 
         Stage1JointVelocityPenalty(),
         Stage1HandDistanceReward(),

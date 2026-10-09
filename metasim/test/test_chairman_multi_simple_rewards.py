@@ -10,6 +10,8 @@ from metasim.cfg.tasks.humanoidbench.ChairMan_multi import (
     Stage1HandDistanceReward,
     Stage1HandOrientationReward,
     Stage1JointVelocityPenalty,
+    Stage2HandRetentionReward,
+    PelvisFacingChairReward,
 )
 
 
@@ -105,6 +107,38 @@ class ChairmanMultiSimpleRewardsTest(unittest.TestCase):
         expected = torch.tensor([1.0, math.exp(-20.0), 0.0])
         self.assertTrue(torch.allclose(first, expected, atol=1e-7))
         self.assertTrue(torch.equal(first, second))
+
+    def test_hand_retention_is_active_in_stages_two_to_four(self):
+        states = _states(4)
+        reward = Stage2HandRetentionReward(distance_scale=0.05)
+        reward.actual_stage = torch.tensor([1, 2, 3, 4])
+
+        values = reward(states, ROBOT_NAME)
+
+        self.assertTrue(torch.equal(values, torch.tensor([0.0, 1.0, 1.0, 1.0])))
+
+    def test_pelvis_facing_reward_is_active_only_in_stages_one_to_four(self):
+        states = _states(6)
+        states.objects["chair"].body_state[:, 0, 0] = 1.0
+        reward = PelvisFacingChairReward(zero_reward_angle_degrees=30.0)
+        reward.actual_stage = torch.arange(6)
+
+        values = reward(states, ROBOT_NAME)
+
+        self.assertTrue(
+            torch.allclose(
+                values, torch.tensor([0.0, 1.0, 1.0, 1.0, 1.0, 0.0]),
+                atol=1e-6,
+            )
+        )
+
+        # A 90-degree right turn of the pelvis must be strongly discouraged.
+        half_sqrt = math.sqrt(0.5)
+        states.robots[ROBOT_NAME].body_state[2, 0, 3:7] = torch.tensor(
+            [half_sqrt, 0.0, 0.0, half_sqrt]
+        )
+        turned_values = reward(states, ROBOT_NAME)
+        self.assertLess(turned_values[2].item(), -0.9)
 
     def test_old_stage0_and_stage1_shaping_is_not_active(self):
         cfg = ChairmanmultiCfg()

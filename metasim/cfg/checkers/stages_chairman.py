@@ -32,10 +32,10 @@ STAGE_TIMEOUTS = {
     # Reference step counts at the original 50 Hz task-control rate.  The
     # checker converts them to the active dt below, so changing simulation
     # decimation no longer halves/doubles the physical time available.
-    0: 400,  # Dojít k židli (8 s)
-    1: 800,  # Reach + orientace + ustálení obou rukou (16 s)
-    2: 400,  # Postupné zavření všech prstů a vytvoření kontaktů (8 s)
-    3: 400,  # Zatažení za židli
+    0: 800,  # Dojít k židli (16 s)
+    1: 400,  # Reach + orientace + ustálení obou rukou (8 s)
+    2: 300,  # Dosažení cílové polohy/orientace rukou a prstů (8 s)
+    3: 800,  # Zatažení za židli
     4: 200,  # Otevření prstů při stabilním postoji (4 s)
     5: 200   # Svěšení rukou (4 s)
 }
@@ -627,24 +627,20 @@ def stege3_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     # Po Stage 2 už je pohyb židle žádoucí, proto zde nepoužíváme check_movement_chair.
     term_common = common_chairman_checker(states, handler, idx, stage_id=3)
 
-    # --- 2. Kontrola Driftu (zda mu neujely ruce z madel) ---
-    right_ee_pos = right_palm_position(states, handler.robot.name, ee_name="endeffector")[idx]
-    left_ee_pos = right_palm_position(states, handler.robot.name, ee_name="left_endeffector")[idx]
+    # --- 2. Stejna kontrola uchopu jako ve Stage 2 ---
+    # Fyzicky kontakt se zidli uz neni soucasti checkeru. Uchop je definovan
+    # polohou a orientaci obou end-effektoru a cilovou polohou vsech prstu.
+    pose_status = stage2_grasp_pose_status(states, handler.robot.name, idx)
+    grasp_pose_correct = (
+        pose_status["hands_near"]
+        & pose_status["orientations_correct"]
+        & pose_status["fingers_correct"]
+    )
+    drift_fail = ~pose_status["hands_in_recovery_envelope"]
 
     chair = states.objects["chair"]
-    r_handle_pos = chair.body_state[idx, chair.body_names.index("target_hand_right"), :3]
-    l_handle_pos = chair.body_state[idx, chair.body_names.index("target_hand_left"), :3]
 
-    dist_right = torch.norm(right_ee_pos - r_handle_pos, dim=-1)
-    dist_left = torch.norm(left_ee_pos - l_handle_pos, dim=-1)
-
-    drift_fail = (dist_right > GRASP_DRIFT_THRESHOLD) | (dist_left > GRASP_DRIFT_THRESHOLD)
-
-    # --- 3. Kontrola úchopu (alespoň 1 prstem každé ruky) ---
-    has_any_grasp = get_batch_any_grasp_status(states, handler, GRASP_FORCE_THRESHOLD, idx)
-    grasp_fail = ~has_any_grasp
-
-    # --- 4. Kontrola posunu židle dozadu ---
+    # --- 3. Kontrola posunu židle dozadu ---
     chair_base_idx = chair.body_names.index("base_link")
     chair_pos = chair.body_state[idx, chair_base_idx, :3]
     initial_chair_pos = torch.tensor([0.75, 0.0, 0.1], device=chair_pos.device)
@@ -655,7 +651,7 @@ def stege3_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     chair_pos_diff = torch.norm(chair_pos - target_chair_pos, dim=-1)
     chair_moved_enough = (pulled_x >= CHAIR_PULL_DISTANCE_THRESHOLD) & (chair_pos_diff <= POS_THRESHOLD)
 
-    # --- 5. Kontrola zastavení robota i židle ---
+    # --- 4. Kontrola zastavení robota i židle ---
     base_link_idx = states.robots[handler.robot.name].body_names.index("pelvis")
     robot_lin_vel = states.robots[handler.robot.name].body_state[idx, base_link_idx, 7:10]
     vel_norm = torch.norm(robot_lin_vel[:, :2], dim=-1)
@@ -664,10 +660,12 @@ def stege3_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     chair_standing_still = torch.norm(chair_lin_vel, dim=-1) < VELOCITY_THRESHOLD
 
     # --- VYHODNOCENÍ ---
-    # Fail: pokud spadne, ujede mu ruka, nebo zcela ztratí kontakt prstů s židlí
+    # Stejne jako ve Stage 2 je kratke opusteni presne cilove pozice
+    # opravitelne. Reset nastane pouze pri padu/timeoutu nebo kdyz ruce zustanou
+    # mimo siroky recovery envelope. Chybejici kontakt uz reset nezpusobuje.
     fail_cond = term_common | _held_seconds(
         handler, "stage3_drift_failure_steps", idx, drift_fail, 0.15
-    ) | _held_seconds(handler, "stage3_grasp_failure_steps", idx, grasp_fail, 0.15)
+    )
 
     # Success requires a short stable hold. Without checking the chair speed,
     # stage 4 could start while the chair was still rolling and fail before its
@@ -675,7 +673,7 @@ def stege3_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     success_now = (
         (~fail_cond)
         & (~drift_fail)
-        & (~grasp_fail)
+        & grasp_pose_correct
         & chair_moved_enough
         & standing_still
         & chair_standing_still
@@ -722,7 +720,16 @@ def stege4_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     # Termination: Pokud robot neudrží stabilitu a začne padat/couvat
     robot_moved = robot_vel_norm > VELOCITY_THRESHOLD
 
-    # --- 4. Kontrola OTEVŘENÍ PRSTŮ ---
+    # --- 4. Ruce musi zustat na pohyblivych targetech zidle ---
+    # Stage 4 uz nevyzaduje zavrenou polohu prstu, proto z pose statusu
+    # pouzivame pouze pozici a orientaci end-effektoru.
+    pose_status = stage2_grasp_pose_status(states, handler.robot.name, idx)
+    hands_retained = (
+        pose_status["hands_near"] & pose_status["orientations_correct"]
+    )
+    hand_drift = ~pose_status["hands_in_recovery_envelope"]
+
+    # --- 5. Kontrola OTEVŘENÍ PRSTŮ ---
     # Automaticky najdeme indexy všech prstů
     joint_names = states.robots[handler.robot.name].joint_names
     finger_keywords = ["thumb", "index", "middle"]
@@ -739,12 +746,20 @@ def stege4_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     fingers_open = max_finger_angle < FINGER_OPEN_THRESHOLD
 
     # --- VYHODNOCENÍ ---
-    # FAIL: Pokud robot spadne, pohne židlí, nebo sám ztratí rovnováhu a začne se hýbat
+    # FAIL: Pokud robot spadne, pohne zidli, sam se zacne pohybovat, nebo ruce
+    # zustanou mimo siroky recovery envelope. Samotne otevreni prstu neni fail.
     motion_failure = _held_seconds(handler, "stage4_motion_failure_steps", idx,
                                    chair_moved | robot_moved, 0.20)
-    fail_cond = term_common | _failure(handler, "chair_displacement", idx, chair_pos_diff > POS_THRESHOLD) | motion_failure
+    hand_drift_failure = _held_seconds(
+        handler, "stage4_hand_drift_failure_steps", idx, hand_drift, 0.15
+    )
+    fail_cond = (term_common
+                 | _failure(handler, "chair_displacement", idx,
+                            chair_pos_diff > POS_THRESHOLD)
+                 | motion_failure | hand_drift_failure)
     success_cond = _held_seconds(handler, "stage4_success_steps", idx,
-        (~fail_cond) & (~chair_moved) & (~robot_moved) & fingers_open, 0.10)
+        (~fail_cond) & (~chair_moved) & (~robot_moved)
+        & hands_retained & fingers_open, 0.10)
 
     # Ukončení a zápis výsledků
     terminated[idx] = fail_cond | success_cond
@@ -959,7 +974,7 @@ def reset_chairman(
         "stage0_success_steps", "stage1_success_steps", "stage2_success_steps",
         "stage3_success_steps",
         "stage2_drift_failure_steps", "stage3_drift_failure_steps",
-        "stage3_grasp_failure_steps", "stage4_motion_failure_steps",
+        "stage4_motion_failure_steps", "stage4_hand_drift_failure_steps",
         "stage5_motion_failure_steps", "stage4_success_steps", "stage5_success_steps",
     ):
         counter = getattr(handler.task, counter_name, None)
@@ -1351,7 +1366,7 @@ def stage0_init(robot_name: str):
         state = {
             "robots": {
                 "g1_with_hands": {
-                    "pos" : torch.tensor([-2.5, 0.0, 0.8]),
+                    "pos" : torch.tensor([robot_x, robot_y, 0.8]),
                     "rot" : torch.tensor([1.0,0.0,0.0,0.0]),
                     "dof_pos": {
                         "left_hip_pitch_joint": -0.1,
@@ -1417,9 +1432,9 @@ def stage0_init(robot_name: str):
                                 0.0
                             ]),
                             "dof_pos":{
-                                "floor_slide_x": 0.75,
-                                "floor_slide_y": 0.0,
-                                "floor_rotate_z": 1.57
+                                "floor_slide_x": chair_x,
+                                "floor_slide_y": chair_y,
+                                "floor_rotate_z": chair_rot
 
 
 

@@ -38,13 +38,39 @@ def _policy_value(config, policy, key, default):
     local = config.get("policies", {}).get(policy, {})
     return local.get(key, config.get(key, default))
 
+
+def _layer_sizes(config, policy, key, default):
+    values = _policy_value(config, policy, key, default)
+    if not isinstance(values, (list, tuple)) or not values:
+        raise ValueError(f"{policy}.{key} must be a non-empty list of layer sizes")
+    if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0
+           for value in values):
+        raise ValueError(f"{policy}.{key} must contain positive integers, got {values!r}")
+    return list(values)
+
+
 def _policy_kwargs(config, policy):
-    if config.get("net_arch_pivf", False):
-        arch = {"pi": _policy_value(config, policy, "net_arch_pi", [128, 128]),
-                "vf": _policy_value(config, policy, "net_arch_vf", [128, 128])}
+    if bool(_policy_value(config, policy, "net_arch_pivf", False)):
+        arch = {
+            "pi": _layer_sizes(config, policy, "net_arch_pi", [128, 128]),
+            "vf": _layer_sizes(config, policy, "net_arch_vf", [128, 128]),
+        }
     else:
-        arch = _policy_value(config, policy, "net_arch", [128, 128])
+        arch = _layer_sizes(config, policy, "net_arch", [128, 128])
     return {"net_arch": arch, "log_std_init": float(_policy_value(config, policy, "log_std_init", -1.0))}
+
+
+def _validate_loaded_architecture(model, config, policy):
+    """A saved SB3 network cannot be resized while its weights are loaded."""
+    requested = _policy_kwargs(config, policy)["net_arch"]
+    loaded = model.policy.net_arch
+    if loaded != requested:
+        raise ValueError(
+            f"Network architecture for {policy} differs from the checkpoint: "
+            f"checkpoint={loaded}, YAML={requested}. Start a new training run "
+            "to change layer sizes, or restore the checkpoint architecture in "
+            "load_and_train_ppo.yaml."
+        )
 
 def _lr(config, policy):
     initial = float(_policy_value(config, policy, "learning_rate", 3e-4))
@@ -120,6 +146,8 @@ class SeparatePPOTrainer:
             paths, manifest = resolve_policy_bundle(resume_path, resume_checkpoint)
             validate_bundle_layout(env, manifest)
             self.models = {name: _load_model(paths[name], env, name, self.device) for name in self.names}
+            for name, model in self.models.items():
+                _validate_loaded_architecture(model, config, name)
             self.global_timesteps = int(manifest.get("global_timesteps", 0))
             self.global_env_steps = int(manifest.get("global_env_steps", 0))
             for name in self.names:
@@ -151,6 +179,10 @@ class SeparatePPOTrainer:
             )
         else:
             self.models = {name: _new_model(env, config, name, self.device) for name in self.names}
+        log.info(
+            "Separate policy network architectures: {}",
+            {name: model.policy.net_arch for name, model in self.models.items()},
+        )
 
     @property
     def progress_remaining(self):
@@ -524,6 +556,7 @@ class SeparatePPOTrainer:
                     "observation_indices": list(self.env.policy_observation_indices[name]),
                     "observation_dim": self.env.policy_observation_spaces[name].shape[0],
                     "uses_action_history": self.env.policy_uses_action_history[name],
+                    "network_architecture": self.models[name].policy.net_arch,
                     "action_names": [self.env.action_names[i] for i in self.env.policy_action_indices[name]]}
                     for name in self.names}}
 

@@ -37,8 +37,8 @@ target_kl: 0.02
 normalize_advantage: true
 log_std_init: -1.0
 net_arch_pivf: true
-net_arch_pi: [64, 64, 64]
-net_arch_vf: [64, 64, 64]
+net_arch_pi: [128, 64, 64]
+net_arch_vf: [128, 64, 64]
 
 # Dostupné observation_groups:
 # joint_positions, robot_body_states, pelvis_velocity, chair_position,
@@ -54,60 +54,85 @@ policies:
   waist:
     action_groups: [waist]
     observation_groups: [joint_positions, robot_body_states, pelvis_velocity, previous_policy_actions]
+    net_arch_pi: [256, 128, 64]
+    net_arch_vf: [256, 128, 64]
     delta_action_scale: 0.25
     reward_terms:
       CenteredUpperBodyCOMReward: 1.0
-      CumulativeStageProgressReward: 1.3
-      TerminationCfg: -1.0
+      TerminationCfg: -10.0
       FaceChairAllStagesReward: 0.3
       WaistVelocityPenalty: -0.2
+      PulledChairStillnessReward: -0.1
       PolicyDeltaAction: -0.2
   right_arm:
     action_groups: [right_arm]
     observation_groups: [joint_positions, right_hand_task, pelvis_velocity, chair_geometry, stage, previous_policy_actions]
+    net_arch_pi: [128, 64, 64]
+    net_arch_vf: [128, 128, 64]
     reward_terms:
       RightStage0ArmPoseReward: 1.0
       CumulativeStageProgressReward: 1.0
       RightHandDistanceReward: 0.6
       RightHandOrientationReward: 0.4
       RightArmVelocityPenalty: -0.1
+      RightStage3HandDriftPenalty: -0.1
+      PullChairReward: 0.25
+      PulledChairStillnessReward: -0.1
       KeepChairStillPenaltyArms: -1.0
       PolicyDeltaAction: -0.02
   left_arm:
     action_groups: [left_arm]
     observation_groups: [joint_positions, left_hand_task, pelvis_velocity, chair_geometry, stage, previous_policy_actions]
+    net_arch_pi: [128, 64, 64]
+    net_arch_vf: [128, 128, 64]
     reward_terms:
       LeftStage0ArmPoseReward: 1.0
       CumulativeStageProgressReward: 1.0
       LeftHandDistanceReward: 0.6
       LeftHandOrientationReward: 0.4
       LeftArmVelocityPenalty: -0.1
+      LeftStage3HandDriftPenalty: -0.1
+      PullChairReward: 0.25
+      PulledChairStillnessReward: -0.1
       KeepChairStillPenaltyArms: -1.0
       PolicyDeltaAction: -0.02
   right_fingers:
     action_groups: [right_fingers]
     observation_groups: [joint_positions, right_hand_task, fingertip_forces, stage, previous_policy_actions]
+    net_arch_pi: [64, 64]
+    net_arch_vf: [128, 64]
     reward_terms:
       RightOpenFingersReward: 0.5
       CumulativeStageProgressReward: 0.5
       RightStage2FingerJointPositionReward: 1.0
+      RightReleaseFingersReward: 1.0
+      PulledChairStillnessReward: -0.1
       PolicyDeltaAction: -0.01
   left_fingers:
     action_groups: [left_fingers]
     observation_groups: [joint_positions, left_hand_task, fingertip_forces, stage, previous_policy_actions]
+    net_arch_pi: [64, 64]
+    net_arch_vf: [128, 64]
     reward_terms:
       LeftOpenFingersReward: 0.5
       CumulativeStageProgressReward: 0.5
       LeftStage2FingerJointPositionReward: 1.0
+      LeftReleaseFingersReward: 1.0
+      PulledChairStillnessReward: -0.1
       PolicyDeltaAction: -0.01
   direction:
     action_groups: [direction]
     observation_groups: [joint_positions, pelvis_velocity, chair_geometry, previous_walk_command, stage, previous_policy_actions]
+    net_arch_pi: [128, 128, 64]
+    net_arch_vf: [256, 128, 64]
     delta_action_scale: 0.15
     reward_terms:
-      ApproachAndStandReward: 1.0
-      PelvisFacingChairReward: 1.0
+      ApproachAndStandReward: 2.0
+      PelvisFacingChairReward: 0.15
       CumulativeStageProgressReward: 1.0
-      Stage3ReverseVelocityReward: 1.0
+      Stage3ReverseVelocityReward: 2.0
+      PullChairReward: 1.25
+      PulledChairStillnessReward: -0.1
+      StayNearAnchorReward: 0.15
       PolicyDeltaAction: -0.1
       KeepChairStillPenaltyWalk: -1.0

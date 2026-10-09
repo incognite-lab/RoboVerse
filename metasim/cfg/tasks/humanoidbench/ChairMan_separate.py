@@ -604,20 +604,26 @@ class Stage0ArmPos(HumanoidBaseReward):
 
 
 class Stage0ReferenceVelocityReward(HumanoidBaseReward):
-    """Track the state-derived XY velocity vector leading to the final pose.
+    """Reward motion toward the final chair pose and stopping at the target.
 
     Farther than ``slowdown_distance`` from the target, the reference speed is
     constant.  During the last ten centimetres it decreases linearly to zero,
     so matching the same vector teaches both approach direction and braking.
-    No previous-step progress or action history enters this task reward.
+
+    The Gaussian tracking term alone is nearly zero for both standing still and
+    walking in the wrong direction.  A signed progress term therefore rewards
+    velocity toward the target and explicitly penalizes velocity away from it.
+    Its influence fades inside the slowdown zone, where velocity tracking must
+    instead reward the robot for coming to a complete stop.
     """
 
     def __init__(
         self,
         robot_name="g1_with_hands",
-        target_speed=0.8,
+        target_speed=0.5,
         slowdown_distance=0.10,
-        velocity_sigma=0.15,
+        velocity_sigma=0.25,
+        progress_weight=0.5,
     ):
         super().__init__(robot_name)
         if not math.isfinite(target_speed) or target_speed < 0:
@@ -626,11 +632,17 @@ class Stage0ReferenceVelocityReward(HumanoidBaseReward):
             raise ValueError("slowdown_distance must be finite and positive")
         if not math.isfinite(velocity_sigma) or velocity_sigma <= 0:
             raise ValueError("velocity_sigma must be finite and positive")
+        if (
+            not math.isfinite(progress_weight)
+            or not 0.0 <= progress_weight <= 1.0
+        ):
+            raise ValueError("progress_weight must be in [0, 1]")
         self.active_stage = 0
-        self.final_distance = CHAIR_FINAL_DISTANCE+0.1
+        self.final_distance = CHAIR_FINAL_DISTANCE
         self.target_speed = float(target_speed)
         self.slowdown_distance = float(slowdown_distance)
         self.velocity_sigma = float(velocity_sigma)
+        self.progress_weight = float(progress_weight)
 
     def __call__(
         self, states: list["EnvState"], robot_name: str = None
@@ -669,9 +681,31 @@ class Stage0ReferenceVelocityReward(HumanoidBaseReward):
         velocity_error = torch.linalg.vector_norm(
             pelvis_state[:, 7:9] - reference_velocity, dim=-1
         )
-        reward = torch.exp(
+        tracking_reward = torch.exp(
             -0.5 * torch.square(velocity_error / self.velocity_sigma)
         )
+
+        # Signed speed along the target direction.  Unlike the Gaussian term,
+        # this distinguishes moving toward the target from moving away from it.
+        toward_speed = torch.sum(
+            pelvis_state[:, 7:9] * target_direction, dim=-1
+        )
+        if self.target_speed > 0.0:
+            signed_progress = torch.clamp(
+                toward_speed / self.target_speed, min=-1.0, max=1.0
+            )
+        else:
+            signed_progress = torch.zeros_like(toward_speed)
+
+        # Far from the target, combine velocity tracking with signed progress.
+        # At the target speed_fraction is zero, leaving pure tracking reward so
+        # that standing still at the final pose still receives reward 1.
+        progress_mix = self.progress_weight * speed_fraction
+        reward = (
+            (1.0 - progress_mix) * tracking_reward
+            + progress_mix * signed_progress
+        )
+        reward = torch.nan_to_num(reward, nan=-1.0, posinf=1.0, neginf=-1.0)
         stage_mask = self.actual_stage.to(device=device) == self.active_stage
         return reward * stage_mask.to(dtype=dtype)
 
@@ -920,7 +954,7 @@ class Stage1JointVelocityPenalty(HumanoidBaseReward):
         ):
             raise ValueError("full_penalty_speed must be greater than speed_limit")
 
-        self.active_stage = 1
+        self.active_stage = [1, 2, 3, 4]
         self.speed_limit = float(speed_limit)
         self.full_penalty_speed = float(full_penalty_speed)
         self.joint_indices = None
@@ -934,7 +968,9 @@ class Stage1JointVelocityPenalty(HumanoidBaseReward):
         if self.actual_stage is None:
             return torch.zeros(num_envs, device=device)
 
-        stage_mask = self.actual_stage.to(device=device) == self.active_stage
+        stage_mask = _stage_mask(
+            self.actual_stage.to(device=device), self.active_stage
+        )
         if not stage_mask.any():
             return torch.zeros(num_envs, device=device)
 
@@ -1213,15 +1249,15 @@ class HandTargetStillnessReward(HumanoidBaseReward):
 
 
 class Stage2HandRetentionReward(HumanoidBaseReward):
-    """Keep both palms near the chair targets while learning finger closure.
+    """Keep both palms near the chair targets during stages 2--4.
 
     exp(-(max(left_distance, right_distance) / distance_scale)**2) stays
     positive beyond the stage-1 success radius. The worse hand determines
     the score, so one accurate hand cannot compensate for the other drifting.
-    Returns [0, 1] in stage 2 and zero elsewhere; no contact is required.
+    Returns [0, 1] in stages 2--4 and zero elsewhere; no contact is required.
     """
 
-    def __init__(self, robot_name="g1_with_hands", distance_scale=0.10):
+    def __init__(self, robot_name="g1_with_hands", distance_scale=0.05):
         super().__init__(robot_name)
         if not math.isfinite(distance_scale) or distance_scale <= 0:
             raise ValueError("distance_scale must be finite and positive")
@@ -1238,7 +1274,9 @@ class Stage2HandRetentionReward(HumanoidBaseReward):
             robot.body_state[:, hand_ids, :3] - chair.body_state[:, target_ids, :3], dim=-1
         )
         score = torch.exp(-torch.square(distances.max(dim=-1).values / self.distance_scale))
-        return score * (self.actual_stage.to(device=score.device) == 2).to(score.dtype)
+        stage = self.actual_stage.to(device=score.device)
+        active = (stage == 2) | (stage == 3) | (stage == 4)
+        return score * active.to(score.dtype)
 
 
 class Stage2UpperBodyPoseRetentionReward(HumanoidBaseReward):
@@ -1474,7 +1512,7 @@ class PreciseHandTargetReward(HumanoidBaseReward):
 
 class StayNearAnchorReward(HumanoidBaseReward):
     """
-    Stage 1 and 2:
+    Stages 1, 2 and 4:
     Reward for keeping the pelvis near its anchor position.
 
     Output: <0, 1>, where 1 means no drift and 0 means the robot has
@@ -1482,7 +1520,9 @@ class StayNearAnchorReward(HumanoidBaseReward):
     """
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
-        self.active_stages = [1, 2]
+        # Stage 3 deliberately remains excluded because the robot must move
+        # while pulling. On entry to stage 4 a new pelvis anchor is captured.
+        self.active_stages = [1, 2, 4]
 
         self.saved_positions_xy = None
         self.prev_stages = None
@@ -2788,7 +2828,7 @@ class RightStage0ArmPoseReward(_SideStage0ArmPoseReward):
 
 
 class _SideHandDistanceReward(_SideReward):
-    """Independent hand-to-target distance reward in stages 1, 2 and 3."""
+    """Independent hand-to-target distance reward in stages 1--4."""
 
     def __init__(self, robot_name="g1_with_hands", distance_scale=0.20):
         super().__init__(robot_name)
@@ -2798,7 +2838,7 @@ class _SideHandDistanceReward(_SideReward):
         robot = states.robots[robot_name or self.robot_name]
         chair = states.objects["chair"]
         device = robot.body_state.device
-        mask = self.active_mask(device, (1, 2, 3))
+        mask = self.active_mask(device, (1, 2, 3, 4))
         if mask is None:
             return torch.zeros(robot.body_state.shape[0], device=device)
         hand = robot.body_state[:, robot.body_names.index(self.hand_name), :3]
@@ -2817,7 +2857,7 @@ class RightHandDistanceReward(_SideHandDistanceReward):
 
 
 class _SideHandOrientationReward(_SideReward):
-    """Independent target-orientation reward in stages 1, 2 and 3."""
+    """Independent target-orientation reward in stages 1--4."""
 
     def __init__(self, robot_name="g1_with_hands", error_scale=0.05):
         super().__init__(robot_name)
@@ -2827,7 +2867,7 @@ class _SideHandOrientationReward(_SideReward):
         robot = states.robots[robot_name or self.robot_name]
         chair = states.objects["chair"]
         device = robot.body_state.device
-        mask = self.active_mask(device, (1, 2, 3))
+        mask = self.active_mask(device, (1, 2, 3, 4))
         if mask is None:
             return torch.zeros(robot.body_state.shape[0], device=device)
         hand_q = torch.nn.functional.normalize(
@@ -2879,6 +2919,44 @@ class LeftArmVelocityPenalty(_SideArmVelocityPenalty):
 
 
 class RightArmVelocityPenalty(_SideArmVelocityPenalty):
+    side = "right"
+
+
+class _SideStage3HandDriftPenalty(_SideReward):
+    """Penalize one palm sliding away from its moving target in stage 3."""
+
+    def __init__(self, robot_name="g1_with_hands", safe_distance=0.04,
+                 failure_distance=0.10):
+        super().__init__(robot_name)
+        self.safe_distance = float(safe_distance)
+        self.failure_distance = float(failure_distance)
+        if not 0.0 <= self.safe_distance < self.failure_distance:
+            raise ValueError(
+                "safe_distance must be non-negative and below failure_distance"
+            )
+
+    def __call__(self, states, robot_name=None):
+        robot = states.robots[robot_name or self.robot_name]
+        chair = states.objects["chair"]
+        device = robot.body_state.device
+        mask = self.active_mask(device, 3)
+        if mask is None:
+            return torch.zeros(robot.body_state.shape[0], device=device)
+        hand = robot.body_state[:, robot.body_names.index(self.hand_name), :3]
+        target = chair.body_state[:, chair.body_names.index(self.target_name), :3]
+        distance = torch.linalg.vector_norm(hand - target, dim=-1)
+        penalty = smoothstep01(
+            (distance - self.safe_distance)
+            / (self.failure_distance - self.safe_distance)
+        )
+        return penalty * mask.to(dtype=penalty.dtype)
+
+
+class LeftStage3HandDriftPenalty(_SideStage3HandDriftPenalty):
+    side = "left"
+
+
+class RightStage3HandDriftPenalty(_SideStage3HandDriftPenalty):
     side = "right"
 
 
@@ -3087,7 +3165,7 @@ class RightOpenFingersReward(_SideOpenFingersReward):
 
 
 class _SideStage2FingerJointPositionReward(_SideReward):
-    """Reward one hand for approaching its complete seven-joint target pose."""
+    """Keep one hand in its complete grasp pose during stages 2 and 3."""
 
     def __init__(self, robot_name="g1_with_hands", error_scale=0.25):
         super().__init__(robot_name)
@@ -3100,7 +3178,7 @@ class _SideStage2FingerJointPositionReward(_SideReward):
     def __call__(self, states, robot_name=None):
         robot = states.robots[robot_name or self.robot_name]
         device = robot.joint_pos.device
-        mask = self.active_mask(device, (2,))
+        mask = self.active_mask(device, (2, 3))
         if mask is None:
             return torch.zeros(robot.joint_pos.shape[0], device=device)
 
@@ -3247,6 +3325,115 @@ class RightGraspForceReward(_SideGraspForceReward):
     side = "right"
 
 
+class _SideReleaseFingersReward(_SideReward):
+    """Signed stage-4 opening reward for the fingers of one hand only."""
+
+    def __init__(self, robot_name="g1_with_hands"):
+        super().__init__(robot_name)
+        self.indices = None
+        self.closed_scale = None
+        self.prev_openness = None
+        self.open_threshold = 0.15
+        self.goal_shaping_angle = 0.30
+        self.progress_scale = 0.04
+        self.velocity_scale = 1.5
+
+    def reset(self, env_ids, states):
+        if self.prev_openness is not None:
+            self.prev_openness[env_ids] = torch.nan
+        if hasattr(super(), "reset"):
+            super().reset(env_ids, states)
+
+    def __call__(self, states, robot_name=None):
+        robot = states.robots[robot_name or self.robot_name]
+        device = robot.joint_pos.device
+        mask = self.active_mask(device, 4)
+        if mask is None:
+            return torch.zeros(robot.joint_pos.shape[0], device=device)
+
+        if self.indices is None:
+            names = list(robot.joint_names)
+            target_map = _FINGER_TARGETS[self.side]
+            ordered = list(target_map)
+            missing = [name for name in ordered if name not in names]
+            if missing:
+                raise ValueError(
+                    f"{type(self).__name__} is missing finger joints: {missing}"
+                )
+            self.indices = torch.tensor(
+                [names.index(name) for name in ordered],
+                dtype=torch.long,
+                device=device,
+            )
+            self.closed_scale = torch.tensor(
+                [abs(target_map[name]) for name in ordered],
+                dtype=robot.joint_pos.dtype,
+                device=device,
+            ).unsqueeze(0)
+
+        positions = robot.joint_pos.index_select(1, self.indices)
+        openness = torch.clamp(
+            1.0 - positions.abs() / self.closed_scale, min=0.0, max=1.0
+        )
+        if (
+            self.prev_openness is None
+            or self.prev_openness.shape != openness.shape
+            or self.prev_openness.device != device
+        ):
+            self.prev_openness = openness.detach().clone()
+            progress_per_joint = torch.zeros_like(openness)
+        else:
+            previous = torch.where(
+                torch.isnan(self.prev_openness), openness, self.prev_openness
+            )
+            progress_per_joint = torch.clamp(
+                (openness - previous) / self.progress_scale,
+                min=-1.0,
+                max=1.0,
+            )
+            self.prev_openness = torch.where(
+                mask.unsqueeze(-1), openness.detach(), self.prev_openness
+            )
+
+        progress_mean = progress_per_joint.mean(dim=-1)
+        progress_worst = torch.topk(
+            progress_per_joint,
+            k=min(4, progress_per_joint.shape[1]),
+            dim=-1,
+            largest=False,
+        ).values.mean(dim=-1)
+        signed_progress = 0.60 * progress_mean + 0.40 * progress_worst
+
+        velocity = robot.joint_vel.index_select(1, self.indices)
+        toward_open = -torch.sign(positions) * velocity
+        signed_motion = torch.mean(
+            torch.clamp(
+                toward_open / self.velocity_scale, min=-1.0, max=1.0
+            )
+            * (1.0 - openness),
+            dim=-1,
+        )
+        max_angle = positions.abs().amax(dim=-1)
+        goal_score = smoothstep01(
+            (self.goal_shaping_angle - max_angle)
+            / (self.goal_shaping_angle - self.open_threshold)
+        )
+        reward = (
+            0.55 * signed_progress
+            + 0.25 * signed_motion
+            + 0.20 * goal_score
+        )
+        return torch.clamp(reward, min=-1.0, max=1.0) * mask.float()
+
+
+class LeftReleaseFingersReward(_SideReleaseFingersReward):
+    side = "left"
+
+
+class RightReleaseFingersReward(_SideReleaseFingersReward):
+    side = "right"
+
+
 # =============================================================================
 # TASK CONFIG
 # =============================================================================
@@ -3297,9 +3484,6 @@ class ChairmanseparateCfg(HumanoidTaskCfg):
     # The shared task reward is intentionally minimal. SeparatePPOTrainer
     # combines the raw terms below with independent YAML weights per policy.
     stage_reward_weights: dict = {}
-    # Only termination and stage completion contribute to the shared task
-    # reward. Separate policies weight every raw term independently in YAML.
-    reward_weights = [-1.0] + [0.0] * 19 + [1.0, 0.0, 0.0]
     reward_functions = [
         TerminationCfg(),
         CumulativeStageProgressReward(),
@@ -3309,6 +3493,13 @@ class ChairmanseparateCfg(HumanoidTaskCfg):
         WaistVelocityPenalty(),
         ApproachAndStandReward(),
         Stage3ReverseVelocityReward(),
+        StayNearAnchorReward(),
+        Stage2HandRetentionReward(),
+        Stage1HandOrientationReward(),
+        Stage3HandDriftPenalty(),
+        PullChairReward(),
+        PulledChairStillnessReward(),
+        ReleaseFingersReward(),
         LeftStage0ArmPoseReward(),
         RightStage0ArmPoseReward(),
         LeftHandDistanceReward(),
@@ -3317,14 +3508,26 @@ class ChairmanseparateCfg(HumanoidTaskCfg):
         RightHandOrientationReward(),
         LeftArmVelocityPenalty(),
         RightArmVelocityPenalty(),
+        LeftStage3HandDriftPenalty(),
+        RightStage3HandDriftPenalty(),
         LeftOpenFingersReward(),
         RightOpenFingersReward(),
         LeftStage2FingerJointPositionReward(),
         RightStage2FingerJointPositionReward(),
-        MultiPolicyStageCompletionReward(),
+        LeftReleaseFingersReward(),
+        RightReleaseFingersReward(),
         KeepChairStillPenaltyWalk(),
         KeepChairStillPenaltyArms(),
+        MultiPolicyStageCompletionReward(),
     ]
+    # Shared task reward remains limited to termination and the one-shot stage
+    # completion event. SeparatePPOTrainer composes every policy reward from
+    # the raw terms above according to YAML.
+    reward_weights = (
+        [-1.0]
+        + [0.0] * (len(reward_functions) - 2)
+        + [1.0]
+    )
 
     def extra_spec(self):
         return {}
