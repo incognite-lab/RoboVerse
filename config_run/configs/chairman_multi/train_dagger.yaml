@@ -3,7 +3,7 @@ robots: [g1_with_hands]
 fix_base_link: false
 task: chairmanmulti
 decimation: 5
-num_envs: 200
+num_envs: 100
 headless: true
 add_table: true
 env_spacing: 4.0
@@ -32,7 +32,7 @@ cameras:
        gaussian_rotation_xyzw: [0.0, 0.0, -0.70710678, 0.70710678]
        gaussian_scale: [3.0, 3.0, 3.0]
        spp: 8
-       render_mode: FastPathTracer        #Forward #FastPathTracer #RefPathTracer
+       render_mode: RefPathTracer        #Forward #FastPathTracer #RefPathTracer
        tone_mapper: "Off"
        render_sim_geometry: true
        standalone_floor: false
@@ -71,11 +71,11 @@ tensorboard_log: ./config_run/output/dagger_multi/tensorboard
 # DAgger settings
 #-------------------------------------------
 #potřeba nastavit podle toho jak to zabírá vram
-dagger_store_per_step: 100 #<--
+dagger_store_per_step: 50 #<--
 dagger_train_every: 20
 dagger_updates_per_train: 10
 dagger_batch_size: 512
-dagger_buffer_steps: 6000 #<--
+dagger_buffer_steps: 3000 #<--
 dagger_buffer_device: cuda
 dagger_buffer_pin_memory: true
 beta_start: 1.0

@@ -72,8 +72,8 @@ policies:
     reward_terms:
       RightStage0ArmPoseReward: 1.0
       CumulativeStageProgressReward: 1.0
-      RightHandDistanceReward: 0.6
-      RightHandOrientationReward: 0.4
+      RightHandDistanceReward: 1.2
+      RightHandOrientationReward: 0.8
       RightArmVelocityPenalty: -0.1
       RightStage3HandDriftPenalty: -0.1
       PullChairReward: 0.25
@@ -88,8 +88,8 @@ policies:
     reward_terms:
       LeftStage0ArmPoseReward: 1.0
       CumulativeStageProgressReward: 1.0
-      LeftHandDistanceReward: 0.6
-      LeftHandOrientationReward: 0.4
+      LeftHandDistanceReward: 1.2
+      LeftHandOrientationReward: 0.8
       LeftArmVelocityPenalty: -0.1
       LeftStage3HandDriftPenalty: -0.1
       PullChairReward: 0.25

@@ -67,6 +67,11 @@ ORI_DOT_PRODUCT_THRESHOLD = 0.9
 CHAIR_PULL_DISTANCE_THRESHOLD = 1.0
 
 ARM_RESTING_THRESHOLD = 0.35
+STAGE0_ROBOT_X_RANGE = (-4.0, -2.0)
+STAGE0_ROBOT_Y_RANGE = (-1.2, 1.2)
+STAGE0_CHAIR_X_RANGE = (0.5, 1.0)
+STAGE0_CHAIR_Y_RANGE = (-0.2, 0.2)
+STAGE0_CHAIR_ROT_RANGE = (1.27, 1.87)
 
 def _held_condition(handler, name, idx, condition, required_steps):
     """Require a checker condition for consecutive control steps."""
@@ -105,7 +110,7 @@ def _curriculum_limit(handler, available):
 # =========================================================
 
 # Pokud True, při startu se načtou snapshoty z disku do RAM bufferu.
-ENABLE_DISK_SNAPSHOT_LOAD = False
+ENABLE_DISK_SNAPSHOT_LOAD = True
 
 # Pokud True, nové snapshoty se budou průběžně zapisovat i na disk.
 ENABLE_DISK_SNAPSHOT_SAVE = True
@@ -855,8 +860,71 @@ def _repeat_packed_state(packed, count: int):
     }
 
 
+def _randomize_stage0_batch(handler: BaseSimHandler, batch) -> None:
+    """Randomize every mobile-G1 stage-0 row directly in the packed batch."""
+    if handler.robot.name != "g1_with_hands":
+        return
+
+    robot = batch[handler.robot.name]
+    count = robot["pos"].shape[0]
+    device = robot["pos"].device
+    dtype = robot["pos"].dtype
+
+    robot_x = torch.empty(count, device=device, dtype=dtype).uniform_(
+        *STAGE0_ROBOT_X_RANGE
+    )
+    robot_y = torch.empty(count, device=device, dtype=dtype).uniform_(
+        *STAGE0_ROBOT_Y_RANGE
+    )
+    robot["pos"][:, 0] = robot_x
+    robot["pos"][:, 1] = robot_y
+
+    # A floating-base Genesis entity also stores its root pose at the start of
+    # qpos. Keep both representations consistent because set_packed_state_batch
+    # installs qpos when it is present.
+    qpos = robot.get("qpos")
+    if qpos is not None and qpos.shape[1] >= 7:
+        qpos[:, 0] = robot_x
+        qpos[:, 1] = robot_y
+
+    chair = batch["chair"]
+    chair_inst = handler.object_inst_dict["chair"]
+    joint_names = [
+        joint.name for joint in chair_inst.joints if joint.name != "root_joint"
+    ]
+    joint_indices = {name: index for index, name in enumerate(joint_names)}
+    required = ("floor_slide_x", "floor_slide_y", "floor_rotate_z")
+    missing = [name for name in required if name not in joint_indices]
+    if missing:
+        raise RuntimeError(f"Chair stage-0 randomization is missing joints: {missing}")
+
+    values = {
+        "floor_slide_x": torch.empty(count, device=device, dtype=dtype).uniform_(
+            *STAGE0_CHAIR_X_RANGE
+        ),
+        "floor_slide_y": torch.empty(count, device=device, dtype=dtype).uniform_(
+            *STAGE0_CHAIR_Y_RANGE
+        ),
+        "floor_rotate_z": torch.empty(count, device=device, dtype=dtype).uniform_(
+            *STAGE0_CHAIR_ROT_RANGE
+        ),
+    }
+    joint_pos = chair["joint_pos"]
+    chair_qpos = chair.get("qpos")
+    qpos_offset = (
+        0
+        if chair_qpos is None or chair_qpos.shape[1] == joint_pos.shape[1]
+        else 7
+    )
+    for name, value in values.items():
+        index = joint_indices[name]
+        joint_pos[:, index] = value
+        if chair_qpos is not None:
+            chair_qpos[:, qpos_offset + index] = value
+
+
 def _cached_stage0_batch(handler: BaseSimHandler, env_ids: torch.Tensor):
-    """Return cached stage 0 tensors, ready for future domain randomization."""
+    """Return a cached stage-0 template randomized independently per reset row."""
     cache_key = (handler.robot.name, str(handler.device))
     cache = getattr(handler, "_chairman_stage0_state_cache", None)
     if cache is None or cache[0] != cache_key:
@@ -864,6 +932,7 @@ def _cached_stage0_batch(handler: BaseSimHandler, env_ids: torch.Tensor):
         handler._chairman_stage0_state_cache = cache
 
     batch = _repeat_packed_state(cache[1], env_ids.numel())
+    _randomize_stage0_batch(handler, batch)
     randomizer = getattr(handler.task, "randomize_chairman_reset_batch", None)
     if callable(randomizer):
         # A future randomizer can modify root poses, qpos and qvel in place;
@@ -1360,11 +1429,11 @@ def stage0_init(robot_name: str):
             }
         }
     elif robot_name == "g1_with_hands":
-        chair_x = random.uniform(0.5, 1.0)
-        chair_y = random.uniform(-0.2, 0.2)
-        chair_rot = random.uniform(1.27, 1.87)
-        robot_x = random.uniform(-4.0, -2.0)
-        robot_y = random.uniform(-1.2, 1.2)
+        chair_x = random.uniform(*STAGE0_CHAIR_X_RANGE)
+        chair_y = random.uniform(*STAGE0_CHAIR_Y_RANGE)
+        chair_rot = random.uniform(*STAGE0_CHAIR_ROT_RANGE)
+        robot_x = random.uniform(*STAGE0_ROBOT_X_RANGE)
+        robot_y = random.uniform(*STAGE0_ROBOT_Y_RANGE)
         state = {
             "robots": {
                 "g1_with_hands": {
