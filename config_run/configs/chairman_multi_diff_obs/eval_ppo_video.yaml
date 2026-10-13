@@ -1,0 +1,7 @@
+base_config: chairman_multi/eval_ppo_video
+sb3_env_file: SB3_chairman_multi_env.py
+seed: 42
+
+# The checkpoint must have been trained with the selected sb3_env_file.
+load_model_path: ./config_run/output/ppo_models_multi_diff_obs/full/RUN_TO_EVALUATE
+video_save_path: ./config_run/output/eval_videos/chairman_multi_diff_obs_full.mp4

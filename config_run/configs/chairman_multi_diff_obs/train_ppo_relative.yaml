@@ -1,0 +1,4 @@
+base_config: chairman_multi_diff_obs/train_ppo
+sb3_env_file: SB3_chairman_multi_relative_env.py
+model_save_path: ./config_run/output/ppo_models_multi_diff_obs/minimal_relative
+tensorboard_log: ./config_run/output/ppo_models_multi_diff_obs/minimal_relative/tensorboard

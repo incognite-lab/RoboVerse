@@ -867,7 +867,8 @@ class _ChairManChecker(BaseChecker):
         from metasim.cfg.checkers.stages_chairman import (
             stege0_chacker, stege1_chacker, stege2_chacker,
             stege3_chacker, stege4_chacker, stege5_chacker,
-            RAM_SNAPSHOT_BUFFER, save_snapshots_chairman
+            RAM_SNAPSHOT_BUFFER, chairman_random_generator,
+            save_snapshots_chairman,
         )
         import random
         import time
@@ -985,7 +986,11 @@ class _ChairManChecker(BaseChecker):
             if save_probability >= 1.0:
                 rand_mask = torch.ones(num_envs, dtype=torch.bool, device=handler.device)
             else:
-                rand_mask = torch.rand(num_envs, device=handler.device) < save_probability
+                rand_mask = torch.rand(
+                    num_envs,
+                    device=handler.device,
+                    generator=chairman_random_generator(handler),
+                ) < save_probability
 
             # A newly reached stage must always get at least one restart
             # snapshot. Afterwards probabilistic reservoir replacement keeps

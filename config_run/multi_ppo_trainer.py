@@ -62,6 +62,28 @@ def _task_version(env):
     return getattr(getattr(scenario, 'task', None), 'task_version', None)
 
 
+def _validate_observation_manifest(manifest: dict, env) -> None:
+    """Reject a checkpoint recorded for a different observation layout."""
+    saved_variant = manifest.get("observation_variant")
+    current_variant = getattr(env, "OBSERVATION_VARIANT", None)
+    if (
+        saved_variant is not None
+        and current_variant is not None
+        and saved_variant != current_variant
+    ):
+        raise ValueError(
+            "Checkpoint observation variant mismatch: "
+            f"saved={saved_variant!r}, configured={current_variant!r}"
+        )
+    saved_dim = manifest.get("observation_dim")
+    current_dim = int(env.observation_space.shape[0])
+    if saved_dim is not None and int(saved_dim) != current_dim:
+        raise ValueError(
+            "Checkpoint observation dimension mismatch: "
+            f"saved={saved_dim}, configured={current_dim}"
+        )
+
+
 def _policy_count(config):
     return int(config.get("num_stage_policies", 5 if config.get("task") == "chairman2" else NUM_STAGE_POLICIES))
 
@@ -381,6 +403,7 @@ class MultiPPOTrainer:
                 expected_task_version=self.task_version,
                 allow_partial=True,
             )
+            _validate_observation_manifest(manifest, env)
             self.models = {
                 stage: _load_stage_model(path, env, self.device)
                 for stage, path in paths.items()
@@ -1442,6 +1465,11 @@ class MultiPPOTrainer:
             "trainer": "concurrent_ragged_multi_ppo",
             "task": self.config.get("task"),
             "task_version": self.task_version,
+            "observation_variant": getattr(
+                self.env, "OBSERVATION_VARIANT", "unspecified"
+            ),
+            "observation_dim": int(self.env.observation_space.shape[0]),
+            "seed": int(self.config.get("seed", 0)),
             "num_stage_policies": self.num_stage_policies,
             "global_timesteps": self.global_timesteps,
             "global_env_steps": self.global_env_steps,
@@ -1738,6 +1766,7 @@ def load_policy_router(
         expected_task_version=_task_version(env),
         allow_partial=allow_partial,
     )
+    _validate_observation_manifest(manifest, env)
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     models = {
         stage: _load_stage_model(path, env, device)

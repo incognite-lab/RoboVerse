@@ -4,10 +4,14 @@ from types import SimpleNamespace
 import torch
 
 from metasim.cfg.tasks.humanoidbench.ChairMan_separate import (
+    ArmStageProgressReward,
     ChairmanseparateCfg,
+    DirectionStageProgressReward,
+    FingerStageProgressReward,
     LeftReleaseFingersReward,
     LeftStage3HandDriftPenalty,
     PulledChairStillnessReward,
+    WaistStageProgressReward,
 )
 
 
@@ -47,6 +51,27 @@ def _states(num_envs=3):
 
 
 class ChairmanSeparateStage34RewardsTest(unittest.TestCase):
+    def test_progress_bonus_changes_only_at_policy_task_milestones(self):
+        states = _states(num_envs=6)
+        stages = torch.arange(6)
+        expected = {
+            WaistStageProgressReward: [0, 0, 0, 0, 1, 1],
+            ArmStageProgressReward: [0, 1, 1, 1, 1, 1],
+            FingerStageProgressReward: [0, 0, 1, 1, 2, 2],
+            DirectionStageProgressReward: [0, 0, 0, 1, 2, 2],
+        }
+
+        for reward_type, values in expected.items():
+            reward = reward_type()
+            reward.actual_stage = stages
+            self.assertTrue(
+                torch.equal(
+                    reward(states, ROBOT_NAME),
+                    torch.tensor(values, dtype=torch.float32),
+                ),
+                reward_type.__name__,
+            )
+
     def test_stage3_hand_drift_is_side_specific_and_stage_masked(self):
         states = _states()
         states.robots[ROBOT_NAME].body_state[:, 1, 0] = 0.11

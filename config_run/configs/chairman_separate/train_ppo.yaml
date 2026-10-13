@@ -59,6 +59,7 @@ policies:
     delta_action_scale: 0.25
     reward_terms:
       CenteredUpperBodyCOMReward: 1.0
+     # WaistStageProgressReward: 1.0
       TerminationCfg: -10.0
       FaceChairAllStagesReward: 0.3
       WaistVelocityPenalty: -0.2
@@ -71,7 +72,7 @@ policies:
     net_arch_vf: [128, 128, 64]
     reward_terms:
       RightStage0ArmPoseReward: 1.0
-      CumulativeStageProgressReward: 1.0
+      ArmStageProgressReward: 1.0
       RightHandDistanceReward: 1.2
       RightHandOrientationReward: 0.8
       RightArmVelocityPenalty: -0.1
@@ -87,7 +88,7 @@ policies:
     net_arch_vf: [128, 128, 64]
     reward_terms:
       LeftStage0ArmPoseReward: 1.0
-      CumulativeStageProgressReward: 1.0
+      ArmStageProgressReward: 1.0
       LeftHandDistanceReward: 1.2
       LeftHandOrientationReward: 0.8
       LeftArmVelocityPenalty: -0.1
@@ -103,7 +104,7 @@ policies:
     net_arch_vf: [128, 64]
     reward_terms:
       RightOpenFingersReward: 0.5
-      CumulativeStageProgressReward: 0.5
+      FingerStageProgressReward: 0.5
       RightStage2FingerJointPositionReward: 1.0
       RightReleaseFingersReward: 1.0
       PulledChairStillnessReward: -0.1
@@ -115,7 +116,7 @@ policies:
     net_arch_vf: [128, 64]
     reward_terms:
       LeftOpenFingersReward: 0.5
-      CumulativeStageProgressReward: 0.5
+      FingerStageProgressReward: 0.5
       LeftStage2FingerJointPositionReward: 1.0
       LeftReleaseFingersReward: 1.0
       PulledChairStillnessReward: -0.1
@@ -129,7 +130,7 @@ policies:
     reward_terms:
       ApproachAndStandReward: 2.0
       PelvisFacingChairReward: 0.15
-      CumulativeStageProgressReward: 1.0
+      DirectionStageProgressReward: 1.0
       Stage3ReverseVelocityReward: 2.0
       PullChairReward: 1.25
       PulledChairStillnessReward: -0.1

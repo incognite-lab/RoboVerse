@@ -45,6 +45,7 @@ class StableBaseline3VecEnv(_ChairmanVecEnv):
     """
 
     NUM_POLICY_STAGES = 6
+    OBSERVATION_VARIANT = "full"
 
     def __init__(self, env):
         self.verbose_motion_diagnostics = bool(

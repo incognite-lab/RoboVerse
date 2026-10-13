@@ -1,0 +1,8 @@
+base_config: chairman_multi/load_and_train_ppo
+sb3_env_file: SB3_chairman_multi_env.py
+seed: 42
+
+# Set both paths to the same observation variant before resuming.
+load_model_path: ./config_run/output/ppo_models_multi_diff_obs/full/RUN_TO_RESUME
+model_save_path: ./config_run/output/ppo_models_multi_diff_obs/full
+tensorboard_log: ./config_run/output/ppo_models_multi_diff_obs/full/tensorboard

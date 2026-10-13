@@ -1,0 +1,8 @@
+# Change this one value to select the observation-space experiment.
+base_config: chairman_multi/train_ppo
+sb3_env_file: SB3_chairman_multi_env.py
+seed: 42
+
+# Keep experiment artifacts separate from the original ChairMan runs.
+model_save_path: ./config_run/output/ppo_models_multi_diff_obs/full
+tensorboard_log: ./config_run/output/ppo_models_multi_diff_obs/full/tensorboard

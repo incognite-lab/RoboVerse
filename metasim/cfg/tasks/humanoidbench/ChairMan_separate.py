@@ -2960,16 +2960,79 @@ class RightStage3HandDriftPenalty(_SideStage3HandDriftPenalty):
     side = "right"
 
 
-class CumulativeStageProgressReward(HumanoidBaseReward):
-    """Persistent progress reward: stage 0 -> 0, stage 1 -> 1, etc."""
+class _PolicyStageProgressReward(HumanoidBaseReward):
+    """Persistent bonus for policy-specific task milestones.
+
+    A value increases only when this policy receives a genuinely new task. It
+    then remains constant until the next task change, so a policy is not
+    rewarded merely because another body part completed a stage.
+    """
+
+    progress_by_stage = ()
+
+    def __init__(self, robot_name="g1_with_hands"):
+        super().__init__(robot_name)
+        self._progress_values = None
+        if len(self.progress_by_stage) != 6:
+            raise ValueError(
+                f"{type(self).__name__}.progress_by_stage must cover stages 0--5"
+            )
+        if any(
+            later < earlier
+            for earlier, later in zip(
+                self.progress_by_stage, self.progress_by_stage[1:]
+            )
+        ):
+            raise ValueError("Policy stage progress must be non-decreasing")
 
     def __call__(self, states, robot_name=None):
         robot = states.robots[robot_name or self.robot_name]
         device = robot.joint_pos.device
         if self.actual_stage is None:
-            return torch.zeros(robot.joint_pos.shape[0], device=device)
-        stage = self.actual_stage.to(device=device).clamp(0, 5)
-        return stage.to(dtype=robot.joint_pos.dtype)
+            return torch.zeros(
+                robot.joint_pos.shape[0],
+                dtype=robot.joint_pos.dtype,
+                device=device,
+            )
+        stage = self.actual_stage.to(device=device).clamp(0, 5).long()
+        if (
+            self._progress_values is None
+            or self._progress_values.device != device
+            or self._progress_values.dtype != robot.joint_pos.dtype
+        ):
+            self._progress_values = torch.tensor(
+                self.progress_by_stage,
+                dtype=robot.joint_pos.dtype,
+                device=device,
+            )
+        return self._progress_values.index_select(0, stage)
+
+
+class WaistStageProgressReward(_PolicyStageProgressReward):
+    """Waist gets a new milestone when stable post-pull holding begins."""
+
+    progress_by_stage = (0, 0, 0, 0, 0, 0)
+
+
+class ArmStageProgressReward(_PolicyStageProgressReward):
+    """Arms change from their stage-0 pose to target tracking in stage 1."""
+
+    # All currently configured stages after stage 0 share the same core task:
+    # keep each hand on its target. Increase the final value only when a real
+    # stage-5 arm-lowering reward is added to the separate architecture.
+    progress_by_stage = (0, 1, 1, 1, 1, 2)
+
+
+class FingerStageProgressReward(_PolicyStageProgressReward):
+    """Fingers switch from open, to grasping, and back to releasing."""
+
+    progress_by_stage = (0, 0, 1, 1, 2, 2)
+
+
+class DirectionStageProgressReward(_PolicyStageProgressReward):
+    """Direction changes from approach, to pulling, to post-pull holding."""
+
+    progress_by_stage = (0, 0, 0, 1, 2, 2)
 
 
 class CenteredUpperBodyCOMReward(HumanoidBaseReward):
@@ -3486,7 +3549,10 @@ class ChairmanseparateCfg(HumanoidTaskCfg):
     stage_reward_weights: dict = {}
     reward_functions = [
         TerminationCfg(),
-        CumulativeStageProgressReward(),
+        WaistStageProgressReward(),
+        ArmStageProgressReward(),
+        FingerStageProgressReward(),
+        DirectionStageProgressReward(),
         CenteredUpperBodyCOMReward(),
         FaceChairAllStagesReward(),
         PelvisFacingChairReward(),

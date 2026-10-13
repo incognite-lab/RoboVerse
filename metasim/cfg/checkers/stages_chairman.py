@@ -73,6 +73,20 @@ STAGE0_CHAIR_X_RANGE = (0.5, 1.0)
 STAGE0_CHAIR_Y_RANGE = (-0.2, 0.2)
 STAGE0_CHAIR_ROT_RANGE = (1.27, 1.87)
 
+
+def chairman_random_generator(handler: BaseSimHandler) -> torch.Generator:
+    """Return the task RNG, isolated from policy initialization/training RNG."""
+    seed = int(getattr(handler.task, "randomization_seed", 0))
+    device = torch.device(handler.device)
+    key = (str(device), seed)
+    cached = getattr(handler, "_chairman_random_generator", None)
+    if cached is None or cached[0] != key:
+        generator = torch.Generator(device=device)
+        generator.manual_seed(seed)
+        cached = (key, generator)
+        handler._chairman_random_generator = cached
+    return cached[1]
+
 def _held_condition(handler, name, idx, condition, required_steps):
     """Require a checker condition for consecutive control steps."""
     num_envs = handler.num_envs if hasattr(handler, "num_envs") else handler.env.num_envs
@@ -110,10 +124,10 @@ def _curriculum_limit(handler, available):
 # =========================================================
 
 # Pokud True, při startu se načtou snapshoty z disku do RAM bufferu.
-ENABLE_DISK_SNAPSHOT_LOAD = True
+ENABLE_DISK_SNAPSHOT_LOAD = False
 
 # Pokud True, nové snapshoty se budou průběžně zapisovat i na disk.
-ENABLE_DISK_SNAPSHOT_SAVE = True
+ENABLE_DISK_SNAPSHOT_SAVE = False
 
 SNAPSHOT_DIR = Path("config_run/snapshots_chair/")
 MAX_SNAPSHOTS = 100
@@ -869,12 +883,13 @@ def _randomize_stage0_batch(handler: BaseSimHandler, batch) -> None:
     count = robot["pos"].shape[0]
     device = robot["pos"].device
     dtype = robot["pos"].dtype
+    generator = chairman_random_generator(handler)
 
     robot_x = torch.empty(count, device=device, dtype=dtype).uniform_(
-        *STAGE0_ROBOT_X_RANGE
+        *STAGE0_ROBOT_X_RANGE, generator=generator
     )
     robot_y = torch.empty(count, device=device, dtype=dtype).uniform_(
-        *STAGE0_ROBOT_Y_RANGE
+        *STAGE0_ROBOT_Y_RANGE, generator=generator
     )
     robot["pos"][:, 0] = robot_x
     robot["pos"][:, 1] = robot_y
@@ -900,13 +915,13 @@ def _randomize_stage0_batch(handler: BaseSimHandler, batch) -> None:
 
     values = {
         "floor_slide_x": torch.empty(count, device=device, dtype=dtype).uniform_(
-            *STAGE0_CHAIR_X_RANGE
+            *STAGE0_CHAIR_X_RANGE, generator=generator
         ),
         "floor_slide_y": torch.empty(count, device=device, dtype=dtype).uniform_(
-            *STAGE0_CHAIR_Y_RANGE
+            *STAGE0_CHAIR_Y_RANGE, generator=generator
         ),
         "floor_rotate_z": torch.empty(count, device=device, dtype=dtype).uniform_(
-            *STAGE0_CHAIR_ROT_RANGE
+            *STAGE0_CHAIR_ROT_RANGE, generator=generator
         ),
     }
     joint_pos = chair["joint_pos"]
@@ -1132,7 +1147,11 @@ def reset_chairman(
         if requested_stage is None:
             max_available_stage = _curriculum_limit(handler, max_available_stage)
             new_stages = torch.randint(
-                0, max_available_stage + 1, (reset_count,), device=handler.device
+                0,
+                max_available_stage + 1,
+                (reset_count,),
+                device=handler.device,
+                generator=chairman_random_generator(handler),
             )
         else:
             new_stages = torch.full(
@@ -1147,7 +1166,11 @@ def reset_chairman(
             first_entity = next(iter(bank.values()))
             bank_size = next(iter(first_entity.values())).shape[0]
             source_ids = torch.randint(
-                0, bank_size, (row_ids.numel(),), device=handler.device
+                0,
+                bank_size,
+                (row_ids.numel(),),
+                device=handler.device,
+                generator=chairman_random_generator(handler),
             )
             _copy_packed_rows(reset_batch, bank, row_ids, source_ids)
 
