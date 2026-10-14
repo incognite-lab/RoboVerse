@@ -8,6 +8,7 @@ headless: true
 add_table: true
 env_spacing: 4.0
 train_or_eval: eval
+eval_start_stage: 0  # 1..5 loads config_run/snapshots_chair/stage_N.
 reset_to_stage0: true
 use_snapshot_curriculum: false
 snapshot_save_probability: 0.0

@@ -49,18 +49,18 @@ HAND_VELOCITY_THRESHOLD = 0.30
 # The target links are reference points near the palms, not tiny physical
 # sockets. Five centimetres defines the stage-1 goal; stages 2/3 have a wider
 # recovery envelope to allow whole-body sway while grasping and pulling.
-DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.07
+DISTANCE_TO_CHAIR_HANDLE_THRESHOLD = 0.05
 ORIENTATION_DISTANCE_HANDLE_THRESHOLD = 0.03
-GRASP_DRIFT_THRESHOLD = 0.25
+GRASP_DRIFT_THRESHOLD = 0.2
 GRASP_FORCE_THRESHOLD = 0.5
 GRASP_MIN_TIPS_PER_HAND = 2
 STAGE2_FINGER_JOINT_TOLERANCE = 0.10
-STAGE0_HOLD_STEPS = 15
-STAGE1_HOLD_STEPS = 10
-STAGE2_HOLD_STEPS = 10
+STAGE0_HOLD_STEPS = 10
+STAGE1_HOLD_STEPS = 3
+STAGE2_HOLD_STEPS = 4
 STAGE3_HOLD_STEPS = 10
-STAGE4_HOLD_STEPS = 10
-STAGE5_HOLD_STEPS = 10
+STAGE4_HOLD_STEPS = 3
+STAGE5_HOLD_STEPS = 5
 
 POS_THRESHOLD = 0.4
 ORI_DOT_PRODUCT_THRESHOLD = 0.9
@@ -124,10 +124,10 @@ def _curriculum_limit(handler, available):
 # =========================================================
 
 # Pokud True, při startu se načtou snapshoty z disku do RAM bufferu.
-ENABLE_DISK_SNAPSHOT_LOAD = False
+ENABLE_DISK_SNAPSHOT_LOAD = True
 
 # Pokud True, nové snapshoty se budou průběžně zapisovat i na disk.
-ENABLE_DISK_SNAPSHOT_SAVE = False
+ENABLE_DISK_SNAPSHOT_SAVE = True
 
 SNAPSHOT_DIR = Path("config_run/snapshots_chair/")
 MAX_SNAPSHOTS = 100
@@ -174,6 +174,36 @@ def init_ram_buffer():
     SNAPSHOT_BUFFER_VERSION += 1
     counts = [len(RAM_SNAPSHOT_BUFFER[s]) for s in range(1, 6)]
     print(f"RAM Buffer načten. Počty snapshotů pro stages 1-5: {counts}")
+
+
+def load_requested_stage_snapshots(stage: int) -> int:
+    """Load an explicitly requested restart stage even with disk curriculum off.
+
+    Ordinary training still follows ENABLE_DISK_SNAPSHOT_LOAD. An explicit
+    eval_start_stage/train_stage needs only its own saved restart states.
+    """
+    global SNAPSHOT_BUFFER_VERSION
+    if RAM_SNAPSHOT_BUFFER[stage]:
+        return len(RAM_SNAPSHOT_BUFFER[stage])
+    stage_dir = SNAPSHOT_DIR / f"stage_{stage}"
+    snapshots = []
+    for path in sorted(stage_dir.glob("*.pkl")):
+        try:
+            with path.open("rb") as handle:
+                snapshot = pickle.load(handle)
+            if not isinstance(snapshot, dict) or not {"robots", "objects"} <= snapshot.keys():
+                raise ValueError("expected robot and object state dictionaries")
+            snapshots.append(snapshot)
+            if len(snapshots) >= MAX_SNAPSHOTS:
+                break
+        except Exception as exc:
+            print(f"Cannot load ChairMan snapshot {path}: {exc}")
+    if snapshots:
+        with LOCK:
+            RAM_SNAPSHOT_BUFFER[stage].extend(snapshots)
+            SNAPSHOT_BUFFER_VERSION += 1
+        print(f"Loaded {len(snapshots)} restart snapshots for requested stage {stage} from {stage_dir}")
+    return len(RAM_SNAPSHOT_BUFFER[stage])
 
 
 def _sync_to_disk_worker(stage, snapshot_data, snapshot_idx):
@@ -1096,6 +1126,8 @@ def reset_chairman(
             raise ValueError(
                 f"{stage_option} must be between 0 and 5, got {requested_stage}"
             )
+        if requested_stage > 0:
+            load_requested_stage_snapshots(requested_stage)
         if requested_stage > 0 and not RAM_SNAPSHOT_BUFFER[requested_stage]:
             stage_dir = SNAPSHOT_DIR / f"stage_{requested_stage}"
             raise RuntimeError(

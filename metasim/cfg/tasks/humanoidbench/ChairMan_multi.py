@@ -2694,7 +2694,7 @@ STAGE1_REWARD_WEIGHTS = {
     "LocomotionCommandPenalty": -0.3,
     "UpperBodyCenterOfMassPenalty": -0.2,
     "Stage1JointVelocityPenalty": -0.1,
-    "Stage1HandDistanceReward": 0.5,
+    "Stage1HandDistanceReward": 1.5,
     "Stage1HandOrientationReward": 0.5,
     "PelvisFacingChairReward": 0.15,
     "MultiPolicyStageCompletionReward": 500.0,

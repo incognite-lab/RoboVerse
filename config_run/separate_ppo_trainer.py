@@ -14,9 +14,11 @@ from torch.utils.tensorboard import SummaryWriter
 try:
     from .multi_ppo_trainer import FlatBatch, RaggedStageRollout, StageStep
     from .SB3_chairman_separate import POLICY_NAMES
+    from .separate_finger_training import FingerPoseSupervision, constrain_action_std, reset_finger_actor
 except ImportError:
     from multi_ppo_trainer import FlatBatch, RaggedStageRollout, StageStep
     from SB3_chairman_separate import POLICY_NAMES
+    from separate_finger_training import FingerPoseSupervision, constrain_action_std, reset_finger_actor
 
 MANIFEST_NAME = "separate_policy_manifest.json"
 
@@ -179,6 +181,28 @@ class SeparatePPOTrainer:
             )
         else:
             self.models = {name: _new_model(env, config, name, self.device) for name in self.names}
+        self.finger_supervision = {}
+        for name, model in self.models.items():
+            spec = config.get("policies", {}).get(name, {})
+            # PPO.load restores the checkpoint's ent_coef; apply an explicit
+            # YAML override so resumed fingers really stop maximizing entropy.
+            if "ent_coef" in spec:
+                model.ent_coef = float(spec["ent_coef"])
+            if resume_path and spec.get("reset_finger_actor_on_resume", False):
+                if name not in ("left_fingers", "right_fingers"):
+                    raise ValueError("reset_finger_actor_on_resume only applies to finger policies")
+                reset_finger_actor(model)
+                log.info("{}: reinitialized failed finger actor; kept critic and other policies", name)
+            constrain_action_std(model, spec, reset=bool(
+                resume_path and spec.get("reset_action_std_on_resume", False)))
+            coefficient = float(spec.get("finger_pose_supervision_coef", 0.0))
+            if not np.isfinite(coefficient) or coefficient < 0:
+                raise ValueError("finger_pose_supervision_coef must be non-negative and finite")
+            if coefficient:
+                objective = FingerPoseSupervision(
+                    env, name, stage_only=spec.get("finger_pose_stage_only", False))
+                objective.constrain_actor(model.policy)
+                self.finger_supervision[name] = objective
         log.info(
             "Separate policy network architectures: {}",
             {name: model.policy.net_arch for name, model in self.models.items()},
@@ -195,6 +219,36 @@ class SeparatePPOTrainer:
     def _synchronize_device(self):
         if self.torch_device.type == "cuda":
             torch.cuda.synchronize(self.torch_device)
+
+    def _warmup_fingers(self, full_obs):
+        observations = self.env.policy_observations_torch(full_obs)
+        for name, objective in self.finger_supervision.items():
+            spec = self.config["policies"][name]
+            steps = int(spec.get("finger_pose_warmup_steps", 0))
+            if steps < 0:
+                raise ValueError("finger_pose_warmup_steps must be non-negative")
+            if not steps:
+                continue
+            model = self.models[name]
+            policy = model.policy
+            policy.set_training_mode(True)
+            rate = float(spec.get("finger_pose_warmup_learning_rate", 0.001))
+            if not np.isfinite(rate) or rate <= 0:
+                raise ValueError("finger_pose_warmup_learning_rate must be positive and finite")
+            update_learning_rate(policy.optimizer, rate)
+            obs = observations[name].detach()
+            for _ in range(steps):
+                indices = torch.randint(len(obs), (512,), device=obs.device)
+                loss = objective.loss(policy, obs[indices])
+                policy.optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(policy.parameters(), model.max_grad_norm)
+                policy.optimizer.step()
+                constrain_action_std(model, spec)
+                objective.constrain_actor(policy)
+            policy.set_training_mode(False)
+            self.writer.add_scalar(f"{name}/train/pose_warmup_loss", float(loss.detach()), self.global_timesteps)
+            log.info("{} finger pose warmup: {} steps, loss={:.6f}", name, steps, float(loss.detach()))
 
     def _collect(self, full_obs):
         rollouts = {name: RaggedStageRollout(
@@ -502,6 +556,8 @@ class SeparatePPOTrainer:
         clip = float(model.clip_range(self.progress_remaining))
         losses, policy_losses, value_losses = [], [], []
         entropy_losses, kls, clip_fractions = [], [], []
+        pose_losses = []
+        spec = self.config.get("policies", {}).get(name, {})
         for _ in range(int(_policy_value(self.config, name, "n_epochs", self.n_epochs))):
             order = torch.randperm(len(batch), device=self.torch_device)
             for start in range(0, len(batch), self.batch_size):
@@ -516,6 +572,12 @@ class SeparatePPOTrainer:
                 value_loss = F.mse_loss(batch.returns[idx], values.flatten())
                 entropy_loss = -log_prob.mean() if entropy is None else -entropy.mean()
                 loss = policy_loss + model.vf_coef * value_loss + model.ent_coef * entropy_loss
+                objective = self.finger_supervision.get(name)
+                if objective is not None:
+                    pose_loss = 0.5 * (
+                        objective.loss(policy, batch.observations[idx], augmented=False)
+                        + objective.loss(policy, batch.observations[idx]))
+                    loss = loss + float(spec["finger_pose_supervision_coef"]) * pose_loss
                 with torch.no_grad():
                     log_ratio = log_prob - batch.old_log_prob[idx]
                     kl = ((torch.exp(log_ratio) - 1) - log_ratio).mean()
@@ -524,6 +586,10 @@ class SeparatePPOTrainer:
                 policy.optimizer.zero_grad(set_to_none=True); loss.backward()
                 torch.nn.utils.clip_grad_norm_(policy.parameters(), model.max_grad_norm)
                 policy.optimizer.step()
+                constrain_action_std(model, spec)
+                if objective is not None:
+                    objective.constrain_actor(policy)
+                    pose_losses.append(pose_loss.detach())
                 losses.append(loss.detach())
                 policy_losses.append(policy_loss.detach())
                 value_losses.append(value_loss.detach())
@@ -540,11 +606,25 @@ class SeparatePPOTrainer:
         self.writer.add_scalar(f"{name}/train/approx_kl", float(torch.stack(kls).mean()) if kls else 0, self.global_timesteps)
         self.writer.add_scalar(f"{name}/train/clip_fraction", float(torch.stack(clip_fractions).mean()) if clip_fractions else 0, self.global_timesteps)
         self.writer.add_scalar(f"{name}/train/learning_rate", lr, self.global_timesteps)
+        if pose_losses:
+            self.writer.add_scalar(f"{name}/train/pose_supervision_loss", float(torch.stack(pose_losses).mean()), self.global_timesteps)
+            with torch.no_grad():
+                probe = objective.augment(batch.observations[:1024])
+                mean = policy.get_distribution(probe).distribution.mean
+                errors = (mean - objective.targets(probe)).abs().mean(1)
+                stages = probe.index_select(1, objective.stage_indices).argmax(1)
+                for stage in range(6):
+                    mask = stages == stage
+                    if mask.any():
+                        self.writer.add_scalar(
+                            f"{name}/train/pose_probe_mae/stage_{stage}",
+                            float(errors[mask].mean()), self.global_timesteps)
         if hasattr(policy, "log_std"):
             self.writer.add_scalar(
                 f"{name}/train/action_std",
                 float(policy.log_std.detach().exp().mean()),
                 self.global_timesteps)
+            self.writer.add_scalar(f"{name}/train/action_std_max", float(policy.log_std.detach().exp().max()), self.global_timesteps)
 
     def _manifest(self, paths):
         return {"format_version": 1, "trainer": "simultaneous_separate_ppo",
@@ -557,6 +637,13 @@ class SeparatePPOTrainer:
                     "observation_dim": self.env.policy_observation_spaces[name].shape[0],
                     "uses_action_history": self.env.policy_uses_action_history[name],
                     "network_architecture": self.models[name].policy.net_arch,
+                    "finger_training": {
+                        key: self.config.get("policies", {}).get(name, {}).get(key)
+                        for key in (
+                            "finger_pose_supervision_coef", "finger_pose_stage_only",
+                            "finger_pose_warmup_steps", "reset_finger_actor_on_resume",
+                            "action_std_min", "action_std_max", "reset_action_std_on_resume")
+                    } if name in self.finger_supervision else None,
                     "action_names": [self.env.action_names[i] for i in self.env.policy_action_indices[name]]}
                     for name in self.names}}
 
@@ -574,6 +661,7 @@ class SeparatePPOTrainer:
         save_freq = int(self.config.get("model_save_freq", 1_000_000))
         log.info("Training six simultaneous policies {} on {} envs", self.names, self.num_envs)
         try:
+            self._warmup_fingers(full_obs)
             while self.global_timesteps < self.total_timesteps:
                 self._synchronize_device()
                 started = time.perf_counter()

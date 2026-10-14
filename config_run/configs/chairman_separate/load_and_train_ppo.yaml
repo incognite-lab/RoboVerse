@@ -13,7 +13,7 @@ log_stage_transitions: true
 
 # Musi ukazovat na adresar behu obsahujici
 # separate_policy_manifest.json a adresare jednotlivych policies.
-load_model_path: ./config_run/output/ppo_models_separate/run_REPLACE_ME_chairman_separate
+load_model_path: ./config_run/output/ppo_models_separate/run_2026-10-13_14-26-28_chairman_separate
 
 # Pokud neni uvedeno, nactou se checkpointy zapsane v manifestu (doporuceno).
 # Pro rucni nacteni musi model_<hodnota>.zip existovat u vsech sesti policies.
@@ -21,9 +21,12 @@ load_model_path: ./config_run/output/ppo_models_separate/run_REPLACE_ME_chairman
 
 # Jde o cilovy CELKOVY pocet prechodu, nikoliv o pocet novych prechodu.
 # Hodnota musi byt vyssi nez global_timesteps v nacitanem manifestu.
-total_timesteps: 5_000_000_000
+total_timesteps: 10_000_000_000
 
 # Pokracovani vytvori novy run_* adresar a puvodni beh neprepise.
+# Oprava stareho modelu: reset_finger_actor_on_resume resetuje jen actory
+# prstu. Pri pozdejsim navazani na uz opraveny model nastavte tento prepinac
+# u obou rukou na false, aby se naucene actory prstu zachovaly.
 model_save_path: ./config_run/output/ppo_models_separate
 model_save_freq: 50_000_000
 tensorboard_log: ./config_run/output/ppo_models_separate/tensorboard
@@ -111,6 +114,17 @@ policies:
     observation_groups: [joint_positions, right_hand_task, fingertip_forces, stage, previous_policy_actions]
     net_arch_pi: [64, 64]
     net_arch_vf: [128, 64]
+    # The saved log_std is explicitly reset, not just its initializer changed.
+    ent_coef: 0.0
+    log_std_init: -3.0
+    action_std_min: 0.02
+    action_std_max: 0.10
+    reset_action_std_on_resume: true
+    reset_finger_actor_on_resume: true
+    finger_pose_supervision_coef: 5.0
+    finger_pose_stage_only: true  # disable for future contact-dependent finger tasks
+    finger_pose_warmup_steps: 500
+    finger_pose_warmup_learning_rate: 0.001
     reward_terms:
       RightOpenFingersReward: 0.5
       FingerStageProgressReward: 0.5
@@ -123,6 +137,16 @@ policies:
     observation_groups: [joint_positions, left_hand_task, fingertip_forces, stage, previous_policy_actions]
     net_arch_pi: [64, 64]
     net_arch_vf: [128, 64]
+    ent_coef: 0.0
+    log_std_init: -3.0
+    action_std_min: 0.02
+    action_std_max: 0.10
+    reset_action_std_on_resume: true
+    reset_finger_actor_on_resume: true
+    finger_pose_supervision_coef: 5.0
+    finger_pose_stage_only: true
+    finger_pose_warmup_steps: 500
+    finger_pose_warmup_learning_rate: 0.001
     reward_terms:
       LeftOpenFingersReward: 0.5
       FingerStageProgressReward: 0.5

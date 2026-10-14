@@ -102,6 +102,17 @@ policies:
     observation_groups: [joint_positions, right_hand_task, fingertip_forces, stage, previous_policy_actions]
     net_arch_pi: [64, 64]
     net_arch_vf: [128, 64]
+    # PPO + known stage pose: open in 0/1/4/5, grasp in 2/3.
+    ent_coef: 0.0
+    log_std_init: -3.0  # ~0.05 rad: small enough for the 0.10 rad grasp tolerance
+    action_std_min: 0.02
+    action_std_max: 0.10
+    reset_action_std_on_resume: true
+    reset_finger_actor_on_resume: true
+    finger_pose_supervision_coef: 5.0
+    finger_pose_stage_only: true  # fixed pose depends on stage; critic uses full obs
+    finger_pose_warmup_steps: 500
+    finger_pose_warmup_learning_rate: 0.001
     reward_terms:
       RightOpenFingersReward: 0.5
       FingerStageProgressReward: 0.5
@@ -114,6 +125,16 @@ policies:
     observation_groups: [joint_positions, left_hand_task, fingertip_forces, stage, previous_policy_actions]
     net_arch_pi: [64, 64]
     net_arch_vf: [128, 64]
+    ent_coef: 0.0
+    log_std_init: -3.0
+    action_std_min: 0.02
+    action_std_max: 0.10
+    reset_action_std_on_resume: true
+    reset_finger_actor_on_resume: true
+    finger_pose_supervision_coef: 5.0
+    finger_pose_stage_only: true
+    finger_pose_warmup_steps: 500
+    finger_pose_warmup_learning_rate: 0.001
     reward_terms:
       LeftOpenFingersReward: 0.5
       FingerStageProgressReward: 0.5

@@ -74,7 +74,13 @@ def build_env(config):
     scenario.task.verbose_motion_diagnostics = bool(config.get("verbose_motion_diagnostics", False))
     scenario.task.visualize_reach_waypoints = bool(config.get("visualize_reach_waypoints", False))
     scenario.task.visualize_center_of_mass = bool(config.get("visualize_center_of_mass", False))
-    #scenario.dagger = 1
+    mode = config.get("train_or_eval", "train")
+    if mode in ("train_dagger", "load_and_train_dagger"):
+        # Training does not need task reward calculation, but checkers and
+        # stage transitions remain active for the six-policy teacher.
+        scenario.dagger = 1
+    elif mode in ("eval_dagger", "eval_dagger_video"):
+        scenario.dagger = 2
     if scenario.robots[0].name != "g1_with_hands" or scenario.robots[0].fix_base_link:
         raise ValueError("Separate ChairMan requires mobile g1_with_hands and fix_base_link: false")
     base = MetaSimVecEnv(scenario, task_name=config["task"],
@@ -136,7 +142,7 @@ def main():
             "load_and_train requires load_model_path pointing to a "
             "ChairMan separate run directory"
         )
-    _, env = build_env(config)
+    base, env = build_env(config)
     try:
         if mode in ("train", "load_and_train"):
             stage_logger = (
@@ -154,6 +160,17 @@ def main():
             evaluate(config, env, video=False)
         elif mode == "eval_video":
             evaluate(config, env, video=True)
+        elif mode in (
+            "train_dagger",
+            "load_and_train_dagger",
+            "eval_dagger",
+            "eval_dagger_video",
+        ):
+            try:
+                from .separate_dagger import run_dagger
+            except ImportError:
+                from separate_dagger import run_dagger
+            run_dagger(config, base, env)
         else:
             raise ValueError(f"Unsupported separate-policy mode: {mode}")
     finally:
