@@ -74,7 +74,7 @@ beta_decay: 0.99999
 
 # Directory produced by main_separate.py train. All six policies are loaded
 # from separate_policy_manifest.json and compose one teacher action.
-expert_model_path: ./config_run/output/ppo_models_separate/run_2026-10-12_15-46-34_chairman_separate
+expert_model_path: ./config_run/output/ppo_models_separate/run_2026-10-14_19-34-03_chairman_separate
 # load_model_checkpoint: 50000000
 
 policies:
