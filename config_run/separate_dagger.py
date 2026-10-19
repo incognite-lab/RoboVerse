@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import csv
+from datetime import datetime, timezone
+import json
 import os
 import random
 import re
@@ -18,11 +20,15 @@ try:
     )
     from .dagger_vp.dagger_trainer import DAggerBuffer, train_dagger_step
     from .dagger_vp.student_net import VisionStudent
+    from .dagger_vp.metrics import DaggerMetrics, HardwareMonitor
+    from .dagger_vp.beta_schedule import beta_at_step, dagger_target_steps
     from .separate_ppo_trainer import load_policy_router
 except ImportError:
     from dagger_vp.checkpoint import load_dagger_checkpoint, save_dagger_checkpoint
     from dagger_vp.dagger_trainer import DAggerBuffer, train_dagger_step
     from dagger_vp.student_net import VisionStudent
+    from dagger_vp.metrics import DaggerMetrics, HardwareMonitor
+    from dagger_vp.beta_schedule import beta_at_step, dagger_target_steps
     from separate_ppo_trainer import load_policy_router
 
 
@@ -41,12 +47,16 @@ def _student_dimensions(env):
 
 
 def _student_inputs(metasim_env, observation, device, num_joints, camera_name):
-    states = metasim_env.env.handler.get_states()
-    if camera_name not in states.cameras:
+    handler = metasim_env.env.handler
+    if getattr(getattr(handler, "scenario", None), "defer_camera_rendering", False):
+        cameras = handler.get_camera_states()
+    else:
+        cameras = handler.get_states().cameras
+    if camera_name not in cameras:
         raise KeyError(
-            f"DAgger camera {camera_name!r} is unavailable; choose from {sorted(states.cameras)}"
+            f"DAgger camera {camera_name!r} is unavailable; choose from {sorted(cameras)}"
         )
-    rgb = states.cameras[camera_name].rgb
+    rgb = cameras[camera_name].rgb
     if rgb.ndim != 4 or rgb.shape[-1] < 3:
         raise ValueError(f"Expected NHWC RGB camera tensor, got {tuple(rgb.shape)}")
     rgb = rgb[..., :3].to(device=device)
@@ -114,7 +124,7 @@ def train_dagger(config, metasim_env, env):
     )
     mode = config.get("train_or_eval")
     start_step = 0
-    beta = float(config.get("beta_start", 1.0))
+    beta = beta_at_step(config, 0)
     if mode == "load_and_train_dagger":
         checkpoint = config.get("load_student_path")
         if not checkpoint:
@@ -127,6 +137,7 @@ def train_dagger(config, metasim_env, env):
             checkpoint, start_step, beta,
         )
 
+    end_step = dagger_target_steps(config, start_step)
     camera_name = str(config.get("dagger_camera_name", "camera0"))
     observation = env.reset()
     first_uint8, _, _ = _student_inputs(
@@ -162,15 +173,19 @@ def train_dagger(config, metasim_env, env):
     ))
     log_dir.mkdir(parents=True, exist_ok=True)
     save_dir.mkdir(parents=True, exist_ok=True)
-    writer = SummaryWriter(str(log_dir))
+    run_name = datetime.now(timezone.utc).strftime("run_%Y%m%dT%H%M%SZ") + f"_{os.getpid()}"
+    writer = SummaryWriter(str(log_dir / run_name))
+    writer.add_text("Run/config", "```json\n" + json.dumps(config, indent=2, default=str) + "\n```", start_step)
+    log.info("DAgger TensorBoard run: {}", log_dir / run_name)
 
-    iterations = int(config.get("total_timesteps", 100_000))
-    end_step = start_step + iterations
+    iterations = end_step - start_step
     save_frequency = int(config.get("model_save_freq", 5000))
     train_every = int(config.get("dagger_train_every", 20))
     updates_per_train = int(config.get("dagger_updates_per_train", 10))
     batch_size = int(config.get("dagger_batch_size", 512))
-    beta_decay = float(config.get("beta_decay", 0.9995))
+    log_every = int(config.get("dagger_log_every", 100))
+    if log_every <= 0:
+        raise ValueError("dagger_log_every must be positive")
     if iterations <= 0 or train_every <= 0 or updates_per_train <= 0:
         raise ValueError("DAgger iteration and update counts must be positive")
     if store_per_step <= 0 or store_per_step > env.num_envs:
@@ -181,6 +196,20 @@ def train_dagger(config, metasim_env, env):
     completed_total = successful_total = 0
     completed_recent = successful_recent = 0
     next_step = start_step
+    handler = metasim_env.env.handler
+    control_dt = float(handler.scene_inst.dt) * int(handler.scenario.decimation)
+    metrics = DaggerMetrics(env.get_current_stages(), env.NUM_POLICY_STAGES, control_dt)
+    hardware = HardwareMonitor(device, interval=config.get("dagger_gpu_poll_seconds", 10))
+    writer.add_text(
+        "Run/metric_definitions",
+        "Counters restart per run, including resume. Stage completions count observed attempts; "
+        "curriculum starts do not count as completions. Durations start at stage entry/reset, "
+        "not at the saved snapshot's original history. Success includes teacher/student mixing "
+        "and curriculum resets; this is not student-only evaluation from stage 0. "
+        "Timing is wall time with asynchronous GPU attribution; no extra CUDA synchronization. "
+        "GPU device metrics include other processes; torch memory metrics describe this process.",
+        start_step,
+    )
     log.info(
         "Starting separate-teacher DAgger: steps={}..{}, image_shape={}, "
         "buffer={} samples on {}",
@@ -189,26 +218,39 @@ def train_dagger(config, metasim_env, env):
     )
     try:
         for step in range(start_step, end_step):
-            images_uint8, images, joints = _student_inputs(
-                metasim_env, observation, device, num_joints, camera_name
-            )
-            with torch.no_grad():
-                expert_actions = teacher.predict(observation, deterministic=True)
-                expert_tensor = torch.as_tensor(
-                    expert_actions, dtype=torch.float32, device=device
+            with metrics.measure("camera_and_inputs"):
+                images_uint8, images, joints = _student_inputs(
+                    metasim_env, observation, device, num_joints, camera_name
                 )
-                student.eval()
-                student_tensor = student(images, joints)
-                student_actions = student_tensor.cpu().numpy()
+            with metrics.measure("inference_and_actions"):
+                with torch.no_grad():
+                    expert_actions = teacher.predict(observation, deterministic=True)
+                    expert_tensor = torch.as_tensor(
+                        expert_actions, dtype=torch.float32, device=device
+                    )
+                    student.eval()
+                    student_tensor = student(images, joints)
+                    student_actions = student_tensor.cpu().numpy()
 
-            execute_expert = random.random() < beta
-            actions = expert_actions if execute_expert else student_actions
-            actions = np.clip(actions, env.action_space.low, env.action_space.high)
-            buffer.add_batch(
-                images_uint8, joints, expert_tensor, store_count=store_per_step
-            )
-            observation, rewards, dones, infos = env.step(actions)
+                metrics.record_predictions(student_actions, expert_actions, env.action_space.low, env.action_space.high)
+                execute_expert = random.random() < beta
+                actions = expert_actions if execute_expert else student_actions
+                actions = np.clip(actions, env.action_space.low, env.action_space.high)
+            with metrics.measure("buffer_store"):
+                buffer.add_batch(
+                    images_uint8, joints, expert_tensor, store_count=store_per_step
+                )
+            with metrics.measure("env_step"):
+                observation, rewards, dones, infos = env.step(actions)
 
+            failure_masks = {}
+            if np.any(dones):
+                sources = getattr(handler.task, "failure_masks", {})
+                if sources:
+                    names = list(sources)
+                    rows = torch.stack([sources[name] for name in names]).detach().cpu().numpy()
+                    failure_masks = dict(zip(names, rows))
+            metrics.observe(dones, infos, store_per_step, execute_expert, failure_masks)
             completed = int(np.count_nonzero(dones))
             successful = sum(
                 int(info.get("is_success", False))
@@ -221,10 +263,12 @@ def train_dagger(config, metasim_env, env):
             successful_recent += successful
 
             if step > start_step and step % train_every == 0:
-                losses = [
-                    train_dagger_step(student, optimizer, buffer, batch_size)
-                    for _ in range(updates_per_train)
-                ]
+                with metrics.measure("student_updates"):
+                    losses = [
+                        train_dagger_step(student, optimizer, buffer, batch_size)
+                        for _ in range(updates_per_train)
+                    ]
+                metrics.record_updates(losses, min(batch_size, buffer.size))
                 mean_loss = float(np.mean(losses)) if losses else 0.0
                 total_rate = successful_total / max(1, completed_total)
                 recent_rate = successful_recent / max(1, completed_recent)
@@ -253,20 +297,30 @@ def train_dagger(config, metasim_env, env):
                 )
                 completed_recent = successful_recent = 0
 
-            beta = max(0.0, beta * beta_decay)
+            beta = beta_at_step(config, step + 1)
             next_step = step + 1
+            if metrics.steps % log_every == 0:
+                with metrics.measure("logging"):
+                    metrics.write(writer, next_step, buffer, beta, optimizer.param_groups[0]["lr"], hardware, end_step)
             if save_frequency > 0 and step > start_step and step % save_frequency == 0:
                 path = save_dir / f"student_model_step_{step}.pth"
-                save_dagger_checkpoint(
-                    str(path), student, optimizer, next_step, beta
-                )
+                with metrics.measure("checkpoint"):
+                    save_dagger_checkpoint(
+                        str(path), student, optimizer, next_step, beta
+                    )
                 log.info("Saved DAgger checkpoint to {}", path)
     finally:
         final_path = save_dir / "student_model_final.pth"
-        save_dagger_checkpoint(
-            str(final_path), student, optimizer, next_step, beta
-        )
-        writer.close()
+        try:
+            with metrics.measure("checkpoint"):
+                save_dagger_checkpoint(
+                    str(final_path), student, optimizer, next_step, beta
+                )
+            if metrics.steps > metrics.last_steps:
+                metrics.write(writer, next_step, buffer, beta, optimizer.param_groups[0]["lr"], hardware, end_step)
+        finally:
+            hardware.close()
+            writer.close()
         log.info("Saved final DAgger student to {}", final_path)
 
 

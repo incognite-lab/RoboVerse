@@ -99,3 +99,35 @@ def test_mapping_api_uses_named_joint_order():
     )
     assert tuple(targets) == G1MotionPolicy.JOINT_NAMES
     assert all(np.isfinite(value) for value in targets.values())
+
+
+def test_cuda_scripted_lstm_is_packed_and_preserves_actions_across_resets():
+    import warnings
+    import unittest
+    import torch
+
+    if not torch.cuda.is_available():
+        raise unittest.SkipTest('requires CUDA and matching cuDNN')
+    try:
+        torch.backends.cudnn.version()
+    except RuntimeError as exc:
+        raise unittest.SkipTest(f'incompatible cuDNN: {exc}')
+    reference = torch.jit.load(str(POLICY_PATH), map_location='cuda').eval()
+    observation = torch.zeros((1, G1MotionPolicy.NUM_OBSERVATIONS), device='cuda')
+    with torch.inference_mode(), warnings.catch_warnings():
+        warnings.simplefilter('ignore', UserWarning)
+        expected = reference(observation).clone()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        policy = make_policy(device='cuda')
+        with torch.inference_mode():
+            actual = policy._policy(observation)
+        torch.testing.assert_close(actual, expected)
+        for batch in (3, 3, 1, 4):
+            policy.predict_joint_positions_torch(**standing_inputs(batch_size=batch))
+            policy.reset([0])
+        policy.reset()
+        policy.predict_joint_positions_torch(**standing_inputs(batch_size=4))
+    assert not any('contiguous chunk' in str(w.message) for w in caught)
+    weights = policy._policy.memory._flat_weights
+    assert len({w.untyped_storage().data_ptr() for w in weights}) == 1

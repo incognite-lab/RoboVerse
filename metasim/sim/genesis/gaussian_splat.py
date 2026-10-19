@@ -50,6 +50,63 @@ def _patch_genesis_engine_namespace_for_nyx_import() -> None:
     setattr(entities_mod, "base_entity", base_entity_mod)
 
 
+def _render_nyx_camera_batch(sensor) -> None:
+    """Prepare all camera poses together, preserving Nyx's serial render order.
+
+    Nyx owns single-environment geometry/output buffers. Keep update_scene,
+    render (including its synchronization), and image copy in their original
+    order; only the independent pose calculations are batched.
+    """
+    metadata = sensor._shared_metadata
+    sensors = metadata.sensors or [sensor]
+    renderer = metadata.renderer
+    scene = sensor._manager._sim.scene
+    num_envs = max(sensor._manager._sim._B, 1)
+    scene.visualizer.update_visual_states()
+
+    poses = []
+    for camera in sensors:
+        if camera._link is not None:
+            camera.move_to_attach()
+        if camera._attached_pos is not None:
+            values = (camera._attached_pos, camera._attached_lookat, camera._attached_up)
+        else:
+            values = (camera._options.pos, camera._options.lookat, camera._options.up)
+        pos, lookat, up = [
+            torch.as_tensor(value, dtype=torch.float32,
+                            device=renderer._cam_pos_tensor_cuda.device).expand(num_envs, 3)
+            for value in values
+        ]
+        transform = gu.pos_lookat_up_to_T(pos, lookat, up)
+        quat = gu.R_to_quat(transform[..., :3, :3])
+        poses.append((camera, pos, quat))
+
+    renderer.update()
+    for env_idx in range(num_envs):
+        for camera, pos, quat in poses:
+            renderer._cam_pos_tensor_cuda[camera._camera_idx].copy_(pos[env_idx])
+            renderer._cam_rot_tensor_cuda[camera._camera_idx].copy_(quat[env_idx])
+        renderer.update_scene(env_idx)
+        for camera in sensors:
+            rgb = renderer.render(camera_index=camera._camera_idx)
+            metadata.image_cache[camera._idx][env_idx] = rgb
+
+    for camera in sensors:
+        camera._stale = False
+    metadata.last_render_timestep = scene.t
+
+
+def patch_nyx_camera_batch_rendering() -> None:
+    """Install the repo-owned adapter; do not modify site-packages on disk."""
+    _patch_genesis_engine_namespace_for_nyx_import()
+    from gs_nyx_plugin.nyx_camera_sensor import NyxCameraSensor
+
+    if not getattr(NyxCameraSensor, "_metasim_batch_camera_patch", False):
+        NyxCameraSensor._metasim_original_render_current_state = NyxCameraSensor._render_current_state
+        NyxCameraSensor._render_current_state = _render_nyx_camera_batch
+        NyxCameraSensor._metasim_batch_camera_patch = True
+
+
 def patch_nyx_renderer_for_genesis_vgeom_api() -> None:
     try:
         _patch_genesis_engine_namespace_for_nyx_import()
@@ -465,6 +522,7 @@ class NyxGaussianSplatRuntime:
     ):
         ensure_nyx_available()
         patch_nyx_renderer_for_genesis_vgeom_api()
+        patch_nyx_camera_batch_rendering()
 
         splat_path = os.path.abspath(camera.gaussian_splat_path)
         if not os.path.exists(splat_path):

@@ -64,6 +64,8 @@ class ScenarioCfg:
     """environment spacing for parallel environments"""
     env_spacing: float = 1.0
     dagger: int = 0
+    defer_camera_rendering: bool = False
+    """Genesis: read physics states without rendering; request cameras explicitly."""
 
     def __post_init__(self):
         """Post-initialization configuration."""

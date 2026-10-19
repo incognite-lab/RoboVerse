@@ -10,6 +10,7 @@ position targets in radians.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import logging
 from pathlib import Path
 from typing import Optional, Union
 
@@ -132,6 +133,7 @@ class G1MotionPolicy:
 
         self._policy = torch.jit.load(str(self.policy_path), map_location=self.device)
         self._policy.eval()
+        self._compact_recurrent_weights()
         self._batch_size = 1
         self._previous_action = np.zeros((1, self.NUM_ACTIONS), dtype=np.float32)
         self._elapsed_time = np.zeros(1, dtype=np.float32)
@@ -154,6 +156,30 @@ class G1MotionPolicy:
     def batch_size(self) -> int:
         """Current number of independently tracked robot environments."""
         return self._batch_size
+
+    def _compact_recurrent_weights(self) -> None:
+        """Restore cuDNN's packed layout after loading a scripted LSTM on CUDA.
+
+        TorchScript preserves the RNN attributes but does not export the
+        Python flatten_parameters method. Use PyTorch's implementation on
+        those attributes once, before the first inference, without changing
+        any weight values or replacing the recurrent controller.
+        """
+        if self.device.type != "cuda":
+            return
+        for name, module in self._policy.named_modules():
+            if getattr(module, "original_name", None) not in ("LSTM", "GRU", "RNN"):
+                continue
+            if not all(hasattr(module, attr) for attr in ("_flat_weights", "_flat_weights_names", "mode")):
+                continue
+            try:
+                torch.nn.RNNBase.flatten_parameters(module)
+            except (RuntimeError, AttributeError, TypeError) as exc:
+                # Keep the original inference path usable, and report the
+                # actual environment problem rather than suppressing warnings.
+                logging.getLogger(__name__).warning(
+                    "Could not compact motion policy RNN %s: %s. Check the PyTorch/cuDNN environment.", name, exc
+                )
 
     def reset(self, env_ids: Optional[Sequence[int]] = None) -> None:
         """Reset LSTM memory, previous action, and gait phase.

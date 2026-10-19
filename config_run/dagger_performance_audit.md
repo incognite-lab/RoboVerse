@@ -122,3 +122,67 @@ celková spotřeba Genesis a Nyx.
 Raw profily pro srovnání 100 env: `config_run/output/dagger_profile/n100_baseline.prof`
 a `n100.prof`; logy `n100.log` a `n100_fixed.log`. Výsledek pro 200 env je v
 `config_run/output/dagger_profile/n200_fixed/`, pro 50 env v `n50_fixed/`.
+
+## Navazující optimalizace kamer
+
+Dávková příprava pozic a orientací kamer a odložení snímků do okamžiku,
+kdy je student skutečně spotřebuje, jsou implementované v repozitáři.
+Instalované soubory `gs_nyx_plugin` se na disku nemění; adaptér se zapojí
+při vytváření kamery. Nativní Nyx renderování stále postupuje po prostředích,
+včetně původní synchronizace a kopie snímku před opětovným použitím bufferu.
+
+Kontrolované srovnání na stejné RTX 3060: 100 env, 45 kroků, batch 512,
+RefPathTracer, 128×128, SPP 8, stejný teacher a seed:
+
+| Varianta | Celý krátký trénink | Renderů dávky | Jednotlivých snímků |
+|---|---:|---:|---:|
+| Před úpravou kamer, po předchozích opravách solveru a stavů | 23,47 s | 54 | 5 400 |
+| Dávkové pozice/orientace kamer | 19,76 s | 54 | 5 400 |
+| Dávkové pozice + odložené vykreslení | 18,30 s | 45 | 4 500 |
+
+Celkem další **1,28× zrychlení**, přibližně 22 % ušetřeného času.
+Samotná příprava matic kamer se místo 5 400 jednotlivých volání prováděla
+54 dávkovými voláními (s odložením 45). Nejde o odhad z vytížení GPU, ale
+skutečně dokončené krátké DAgger tréninky. Neověřují výslednou úspěšnost
+studenta ani rychlost na L40S.
+
+`ScenarioCfg.defer_camera_rendering` je obecně vypnuté. `main_separate.py`
+je zapíná pro Genesis při `train_dagger/load_and_train_dagger`, s možností
+vypnutí přes `dagger_defer_camera_rendering: false`. L40 config obsahuje
+explicitní `true`. PPO a evaluace nadále používají původní způsob čtení
+kamer; dávkový výpočet transformací Nyx využívají také.
+
+Při odloženém vykreslení obsahuje běžný `get_states()` fyzikální stav bez
+kamer. `_student_inputs` si vyžádá `get_camera_states()`, které aktualizuje
+fyziku, vykreslí a kešuje snímek do dalšího obnovení fyzikálního stavu.
+Po resetu se keš invaliduje i bez změny `scene.t` a obnoví se vizuální
+geometrie přes `force_render=True`. Student tak dostává obraz až po dokončení
+resetů. Nezavádí se opakování starého snímku mezi různými kroky simulace.
+Čas kamer se v profileru přesunul z `env_step` do `student_inputs`; pro
+porovnání rychlosti je rozhodující celkový čas tréninku.
+
+Přepínač `--eager-cameras` v `profile_dagger.py` umožňuje porovnat variantu
+s vykreslováním během čtení fyzikálních stavů. Souhrny a profily jsou v
+`config_run/output/dagger_profile/camera_before/`, `camera_batch_only/`
+a `camera_batch_deferred/`.
+
+Regresní test `test_nyx_camera_batch.py` porovnává transformace s původním
+výpočtem pro statickou i připojenou kameru, více prostředí a sdílený výstupní
+buffer. Skutečný test resetů/geometrie s lokálními assety se spouští takto:
+
+```bash
+RUN_GENESIS_CAMERA_TESTS=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+  python -m unittest metasim.test.test_genesis_deferred_camera
+```
+
+SPP zůstává 8. Snížení SPP ani skutečný nativní batch renderer nejsou součástí
+této změny. Nativní batch by musel přijmout více stavů scén/kamer a vrátit
+`[N,H,W,3]` bez sériové obsluhy každého prostředí z Pythonu; náklady na výpočet
+všech pixelů zůstanou, ale část přípravy a spouštění práce by se mohla sdílet.
+
+Ověření této úpravy: prošlo 8 rychlých testů a samostatně skutečný Genesis/Nyx
+GPU test. Ten kontroluje, že několik resetů nevyvolá render, opakované čtení
+stejného stavu využije keš a posun robota o 0,25 m při stejném `scene.t`
+aktualizuje kameru i geometrické buffery rendereru. Zároveň porovnává skutečné
+vstupní buffery kamery/geometrie s původní renderovací cestou Nyx. Nejde o test
+bitové shody pixelů stochastického rendereru.

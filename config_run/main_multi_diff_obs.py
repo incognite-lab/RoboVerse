@@ -2318,8 +2318,10 @@ def main():
             lr=config.get("learning_rate", 3e-4)
         )
 
+        from dagger_vp.beta_schedule import beta_at_step, dagger_target_steps
+
         start_step = 0
-        beta = config.get("beta_start", 1.0)
+        beta = beta_at_step(config, 0)
         if resume_dagger:
             start_step, beta = load_dagger_checkpoint(
                 student_checkpoint_path, student_model, optimizer, device, config
@@ -2329,6 +2331,8 @@ def main():
                 f"{start_step}, beta={beta}. Replay buffer, environment and "
                 "success counters start fresh."
             )
+
+        end_step = dagger_target_steps(config, start_step)
 
         dagger_buffer_device = config.get("dagger_buffer_device", "cpu")
         dagger_buffer_pin_memory = config.get(
@@ -2352,10 +2356,7 @@ def main():
             f"pin_memory: {buffer.pin_memory}"
         )
 
-        total_iterations = config.get("total_timesteps", 100_000)
-        end_step = start_step + total_iterations
         next_step = start_step
-        beta_decay = config.get("beta_decay", 0.9995)
 
         store_per_step = config.get("dagger_store_per_step", 32)
         train_every = config.get("dagger_train_every", 20)
@@ -2566,7 +2567,7 @@ def main():
                 recent_successful_envs = 0
 
             # Save the state for the next iteration, including an ESC stop.
-            beta = max(0.0, beta * beta_decay)
+            beta = beta_at_step(config, step + 1)
             next_step = step + 1
 
             if VIZUALIZATION and step % 5 == 0:

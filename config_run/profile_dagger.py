@@ -32,9 +32,14 @@ def main():
     parser.add_argument("--buffer-steps", type=int, default=100)
     parser.add_argument("--render-mode", choices=("RefPathTracer", "FastPathTracer"))
     parser.add_argument("--spp", type=int)
+    parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument("--scale-collection", action="store_true",
+                        help="Store all envs and scale batch/replay/beta consistently with the config")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--cprofile", action="store_true")
     parser.add_argument("--verify-body-states", action="store_true")
+    parser.add_argument("--eager-cameras", action="store_true",
+                        help="Render during physics state reads, for comparison with deferred rendering")
     args = parser.parse_args()
     if min(args.num_envs, args.steps, args.buffer_steps) <= 0 or args.warmup < 0:
         parser.error("env count, steps and buffer steps must be positive; warmup nonnegative")
@@ -47,6 +52,9 @@ def main():
     output = args.output or ROOT / "config_run/output/dagger_profile" / time.strftime("%Y%m%d_%H%M%S")
     output.mkdir(parents=True, exist_ok=False)
     config = load_config_from_yaml(args.config)
+    if args.scale_collection:
+        from config_run.dagger_vp.scaling import scale_dagger_config
+        config = scale_dagger_config(config, args.num_envs)
     config.update(
         num_envs=args.num_envs,
         train_or_eval="train_dagger",
@@ -58,6 +66,13 @@ def main():
         tensorboard_log=str(output / "tensorboard"),
         log_termination_reasons=False,
         snapshot_save_probability=0.0,
+        dagger_defer_camera_rendering=not args.eager_cameras,
+        dagger_log_every=args.log_every,
+        # Benchmark renderer/learning throughput under a fixed expert rollout;
+        # a short run must not accelerate the production beta schedule to zero.
+        beta_schedule="linear",
+        beta_start=1.0,
+        beta_end=1.0,
     )
     for camera in config.get("cameras", {}).values():
         if args.render_mode:
@@ -148,6 +163,16 @@ def main():
             "cprofile": args.cprofile,
             "timers_inclusive_do_not_sum": timers,
         }
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+        event_run = next((output / "tensorboard").iterdir())
+        events = EventAccumulator(str(event_run), size_guidance={"scalars": 0})
+        events.Reload()
+        rates = events.Scalars("Speed/stored_samples_per_second")
+        # Discard initial warmup/first optimizer work and the final short window.
+        from config_run.dagger_vp.scaling import steady_sample_rate
+        summary["steady_stored_samples_per_second"] = steady_sample_rate(rates, args.log_every)
+        summary["store_per_step"] = config["dagger_store_per_step"]
+        summary["batch_size"] = config["dagger_batch_size"]
         (output / "summary.json").write_text(json.dumps(summary, indent=2))
         print(json.dumps(summary, indent=2), flush=True)
         print(f"Results: {output}", flush=True)

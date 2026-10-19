@@ -79,6 +79,10 @@ def build_env(config):
         # Training does not need task reward calculation, but checkers and
         # stage transitions remain active for the six-policy teacher.
         scenario.dagger = 1
+        scenario.defer_camera_rendering = (
+            config.get("sim", "genesis") == "genesis"
+            and bool(config.get("dagger_defer_camera_rendering", True))
+        )
     elif mode in ("eval_dagger", "eval_dagger_video"):
         scenario.dagger = 2
     if scenario.robots[0].name != "g1_with_hands" or scenario.robots[0].fix_base_link:

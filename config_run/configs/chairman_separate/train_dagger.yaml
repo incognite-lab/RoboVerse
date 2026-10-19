@@ -60,6 +60,9 @@ learning_rate: 0.0003
 model_save_path: ./config_run/output/dagger_separate
 model_save_freq: 10000
 tensorboard_log: ./config_run/output/dagger_separate/tensorboard
+# Rich stage, throughput and hardware metrics. GPU polling runs in a background thread.
+dagger_log_every: 100
+dagger_gpu_poll_seconds: 10
 
 dagger_camera_name: camera0
 dagger_store_per_step: 50
@@ -69,8 +72,11 @@ dagger_batch_size: 512
 dagger_buffer_steps: 3000
 dagger_buffer_device: cuda
 dagger_buffer_pin_memory: true
+# Linear in absolute vector steps: 1 at step 0, 0 at total_timesteps.
+# Resume recalculates beta from the checkpoint step, including old exponential runs.
+beta_schedule: linear
 beta_start: 1.0
-beta_decay: 0.99999
+beta_end: 0.0
 
 # Directory produced by main_separate.py train. All six policies are loaded
 # from separate_policy_manifest.json and compose one teacher action.

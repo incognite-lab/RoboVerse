@@ -55,6 +55,7 @@ class GenesisHandler(BaseSimHandler):
         self.camera_inst_dict: dict[str, Camera] = {}
         self.camera_debug_markers: dict[str, dict[str, object]] = {}
         self._nyx_splat = NyxGaussianSplatRuntime()
+        self._camera_states_cache = None
         self.cached_top_offsets: dict[str, torch.Tensor] = {}
         self._cache_joint_names: dict[str, list[str]] = {}
 
@@ -518,6 +519,9 @@ class GenesisHandler(BaseSimHandler):
 
 
     def _get_states(self, env_ids: list[int] | None = None) -> list[EnvState]:
+        # All fresh physics-state reads, including resets at the same scene.t,
+        # invalidate the deferred camera snapshot.
+        self._camera_states_cache = None
         extra = {
             "global_link_map": self.global_link_map,
             "num_bodies_per_env": self.num_bodies_per_env,
@@ -611,15 +615,41 @@ class GenesisHandler(BaseSimHandler):
             )
             robot_states[obj.name] = state
 
-        # camera_states = {}
-        # for camera in self.cameras:
-        #     camera_inst = self.camera_inst_dict[camera.name]
-        #     rgb, depth, _, _ = camera_inst.render(depth=True)
-        #     state = CameraState(
-        #         rgb=torch.from_numpy(rgb.copy()).unsqueeze(0).repeat_interleave(self.num_envs, dim=0),  # XXX
-        #         depth=torch.from_numpy(depth.copy()).unsqueeze(0).repeat_interleave(self.num_envs, dim=0),  # XXX
-        #     )
-        #     camera_states[camera.name] = state
+        camera_states = (
+            {} if self.scenario.defer_camera_rendering else self.get_camera_states(env_ids)
+        )
+        sensors = {}
+        for sensor in self.scenario.sensors:
+            if isinstance(sensor, GyroSensorCfg):
+                gyro_data = sensor.get_data(robot_states,envs_ids=env_ids)  # shape (num_envs, 3)
+                gyro_tensor = torch.tensor(gyro_data, dtype=torch.float32).unsqueeze(0)
+                sensors[sensor.name] = gyro_tensor
+            elif isinstance(sensor, CommandCfg):
+                command_data = sensor.get_command()
+                #command_tensor = torch.tensor(command_data, dtype=torch.float32).unsqueeze(1)
+                sensors[sensor.name] = command_data
+            else:
+                log.warning(f"Unknown sensor type: {sensor.cfg_type}, skipping...")
+
+        return TensorState(objects=object_states, robots=robot_states, cameras=camera_states, sensors=sensors, extras=extra)
+
+
+    def get_camera_states(self, env_ids=None):
+        """Render the current state once, after physics/checker/reset processing.
+
+        Deferred mode deliberately returns no images from get_states(). The
+        image consumer calls this method, which refreshes physics first if
+        needed and reuses the image until the next physics-state invalidation.
+        """
+        if self.scenario.defer_camera_rendering:
+            self.get_states()
+            if self._camera_states_cache is not None:
+                return self._camera_states_cache
+            # A reset can change geometry without advancing scene.t. Bypass
+            # the visualizer's timestamp cache before Nyx reads transforms.
+            self.scene_inst.visualizer.update_visual_states(force_render=True)
+        if env_ids is None:
+            env_ids = list(range(self.num_envs))
         camera_states = {}
         for camera in self.cameras:
             camera_inst = self.camera_inst_dict[camera.name]
@@ -666,21 +696,8 @@ class GenesisHandler(BaseSimHandler):
                 depth=torch.from_numpy(depth.copy()).unsqueeze(0).repeat_interleave(self.num_envs, dim=0),
             )
             camera_states[camera.name] = state
-        sensors = {}
-        for sensor in self.scenario.sensors:
-            if isinstance(sensor, GyroSensorCfg):
-                gyro_data = sensor.get_data(robot_states,envs_ids=env_ids)  # shape (num_envs, 3)
-                gyro_tensor = torch.tensor(gyro_data, dtype=torch.float32).unsqueeze(0)
-                sensors[sensor.name] = gyro_tensor
-            elif isinstance(sensor, CommandCfg):
-                command_data = sensor.get_command()
-                #command_tensor = torch.tensor(command_data, dtype=torch.float32).unsqueeze(1)
-                sensors[sensor.name] = command_data
-            else:
-                log.warning(f"Unknown sensor type: {sensor.cfg_type}, skipping...")
-
-        return TensorState(objects=object_states, robots=robot_states, cameras=camera_states, sensors=sensors, extras=extra)
-
+        self._camera_states_cache = camera_states
+        return camera_states
 
     def get_body_names(self, obj_name: str, sort: bool = False) -> list[str]:
         if isinstance(self.object_dict[obj_name], ArticulationObjCfg):

@@ -5,6 +5,7 @@ import re
 
 import torch
 from loguru import logger as log
+from .beta_schedule import beta_at_step
 
 
 def save_dagger_checkpoint(path, student, optimizer, next_step, beta):
@@ -29,7 +30,12 @@ def load_dagger_checkpoint(path, student, optimizer, device, config):
         checkpoint = torch.load(training_path, map_location=device, weights_only=True)
         student.load_state_dict(checkpoint["student_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        return int(checkpoint["next_step"]), float(checkpoint["beta"])
+        next_step = int(checkpoint["next_step"])
+        # The configured schedule owns beta, including migration from old
+        # checkpoints which stored an exponentially decayed mixing ratio.
+        beta = beta_at_step(config, next_step)
+        log.info("Restored DAgger step {}; recalculated beta={} from configured schedule", next_step, beta)
+        return next_step, beta
 
     student.load_state_dict(torch.load(path, map_location=device, weights_only=True))
     match = re.fullmatch(r"student_model_step_(\d+)\.pth", os.path.basename(path))
@@ -37,7 +43,7 @@ def load_dagger_checkpoint(path, student, optimizer, device, config):
     next_step = config.get("dagger_resume_step", int(match.group(1)) + 1 if match else 0)
     if not isinstance(next_step, int) or isinstance(next_step, bool) or next_step < 0:
         raise ValueError("dagger_resume_step must be a non-negative integer")
-    beta = max(0.0, config.get("beta_start", 1.0) * config.get("beta_decay", 0.9995) ** next_step)
+    beta = beta_at_step(config, next_step)
     log.warning(
         "Legacy DAgger checkpoint: optimizer starts fresh; next step={} and beta={}. "
         "Set dagger_resume_step for a final or renamed legacy checkpoint.",
