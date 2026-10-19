@@ -142,6 +142,17 @@ def _patch_one_nyx_rigid_solver(rigid_solver) -> bool:
     if rigid_solver is None:
         return False
 
+    # New Genesis exposes geometry through public getters instead of the old
+    # vgeoms_state/vverts_state fields. Our renderer adapter already uses these
+    # getters. Reinitializing fields will never create the legacy attributes
+    # on this API, and used to rebuild/upload the entire mesh on every frame.
+    if (
+        not hasattr(rigid_solver, "vgeoms_state")
+        and hasattr(rigid_solver, "get_vgeoms_pos")
+        and hasattr(rigid_solver, "get_vgeoms_quat")
+    ):
+        return True
+
     if not hasattr(rigid_solver, "vgeoms_state") and hasattr(rigid_solver, "_init_vgeom_fields"):
         try:
             rigid_solver._init_vgeom_fields()

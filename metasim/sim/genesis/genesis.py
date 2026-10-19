@@ -694,12 +694,14 @@ class GenesisHandler(BaseSimHandler):
 
     def get_body_states(self, obj_name: str, envs_idx: list[int] | None = None) -> torch.Tensor | None:
         if isinstance(self.object_dict[obj_name], ArticulationObjCfg):
-            links = self.object_inst_dict[obj_name].links
-            # Collect all states for all links in a batched way
-            pos = torch.stack([b.get_pos(envs_idx=envs_idx) for b in links], dim=1)      # [num_envs, n_links, 3]
-            quat = torch.stack([b.get_quat(envs_idx=envs_idx) for b in links], dim=1)     # [num_envs, n_links, 4]
-            vel = torch.stack([b.get_vel(envs_idx=envs_idx) for b in links], dim=1)       # [num_envs, n_links, 3]
-            ang = torch.stack([b.get_ang(envs_idx=envs_idx) for b in links], dim=1)       # [num_envs, n_links, 3]
+            entity = self.object_inst_dict[obj_name]
+            # Entity getters preserve entity.links order and the same reference
+            # frames as the individual link getters, with four batched reads
+            # instead of four reads (and GPU launches) for every link.
+            pos = entity.get_links_pos(envs_idx=envs_idx)
+            quat = entity.get_links_quat(envs_idx=envs_idx)
+            vel = entity.get_links_vel(envs_idx=envs_idx)
+            ang = entity.get_links_ang(envs_idx=envs_idx)
             # Concatenate along last dimension: [pos, quat, vel, ang] -> [3+4+3+3=13]
             body_states = torch.cat([pos, quat, vel, ang], dim=-1)                        # [num_envs, n_links, 13]
             return body_states
