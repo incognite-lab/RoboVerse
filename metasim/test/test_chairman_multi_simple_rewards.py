@@ -15,6 +15,9 @@ from metasim.cfg.tasks.humanoidbench.ChairMan_multi import (
 )
 
 
+from metasim.utils.chair_navigation import CHAIR_FINAL_DISTANCE
+
+
 ROBOT_NAME = "g1_with_hands"
 
 
@@ -49,8 +52,8 @@ class ChairmanMultiSimpleRewardsTest(unittest.TestCase):
         states = _states(4)
         pelvis = states.robots[ROBOT_NAME].body_state[:, 0]
 
-        # With an identity chair quaternion the target is at y=0.77 m.
-        pelvis[:, 1] = torch.tensor([0.0, 0.72, 0.77, 0.0])
+        # With an identity chair quaternion the target lies on positive Y.
+        pelvis[:, 1] = torch.tensor([0.0, CHAIR_FINAL_DISTANCE - 0.05, CHAIR_FINAL_DISTANCE, 0.0])
         pelvis[:, 7:9] = torch.tensor(
             [[0.0, 0.5], [0.0, 0.25], [0.0, 0.0], [0.0, 0.0]]
         )
@@ -59,8 +62,10 @@ class ChairmanMultiSimpleRewardsTest(unittest.TestCase):
         reward.actual_stage = torch.zeros(4, dtype=torch.long)
         values = reward(states, ROBOT_NAME)
 
-        self.assertTrue(torch.allclose(values[:3], torch.ones(3), atol=1e-6))
-        self.assertLess(values[3].item(), 0.01)
+        self.assertTrue(torch.allclose(
+            values[:3], torch.tensor([1.0, 0.875, 1.0]), atol=1e-6
+        ))
+        self.assertAlmostEqual(values[3].item(), 0.5 * math.exp(-2.0), places=6)
 
     def test_stage1_joint_speed_has_a_free_threshold(self):
         states = _states(4)
@@ -117,7 +122,7 @@ class ChairmanMultiSimpleRewardsTest(unittest.TestCase):
 
         self.assertTrue(torch.equal(values, torch.tensor([0.0, 1.0, 1.0, 1.0])))
 
-    def test_pelvis_facing_reward_is_active_only_in_stages_one_to_four(self):
+    def test_pelvis_facing_reward_is_active_in_all_six_stages(self):
         states = _states(6)
         states.objects["chair"].body_state[:, 0, 0] = 1.0
         reward = PelvisFacingChairReward(zero_reward_angle_degrees=30.0)
@@ -127,7 +132,7 @@ class ChairmanMultiSimpleRewardsTest(unittest.TestCase):
 
         self.assertTrue(
             torch.allclose(
-                values, torch.tensor([0.0, 1.0, 1.0, 1.0, 1.0, 0.0]),
+                values, torch.ones(6),
                 atol=1e-6,
             )
         )

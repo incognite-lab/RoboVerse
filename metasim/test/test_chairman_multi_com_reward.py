@@ -36,15 +36,15 @@ class ChairmanMultiCenterOfMassRewardTest(unittest.TestCase):
     def test_com_penalty_and_neutral_stage0_waist_pose(self) -> None:
         cfg = ChairmanmultiCfg()
         names = [type(reward).__name__ for reward in cfg.reward_functions]
-        index = names.index("UpperBodyCenterOfMassPenalty")
+        index = names.index("CenteredUpperBodyCOMReward")
 
         self.assertEqual(cfg.reward_weights[index], 0.0)
         self.assertTrue(all(weight == 0.0 for weight in cfg.reward_weights))
         self.assertEqual(
-            cfg.stage_reward_weights[0]["UpperBodyCenterOfMassPenalty"], 0.0
+            cfg.stage_reward_weights[0]["CenteredUpperBodyCOMReward"], 0.25
         )
         self.assertEqual(
-            cfg.stage_reward_weights[1]["UpperBodyCenterOfMassPenalty"], -0.2
+            cfg.stage_reward_weights[1]["CenteredUpperBodyCOMReward"], 0.25
         )
         for stage in range(cfg.num_policy_stages):
             self.assertIn(
@@ -53,8 +53,8 @@ class ChairmanMultiCenterOfMassRewardTest(unittest.TestCase):
             )
         for stage in range(2, cfg.num_policy_stages):
             self.assertEqual(
-                cfg.stage_reward_weights[stage]["UpperBodyCenterOfMassPenalty"],
-                -0.2,
+                cfg.stage_reward_weights[stage]["CenteredUpperBodyCOMReward"],
+                0.25,
             )
         self.assertNotIn("UprightPenaltyCfg", names)
         self.assertNotIn("WaistStraightReward", names)

@@ -56,11 +56,11 @@ use_snapshot_curriculum: false
 snapshot_save_probability: 0.0
 dagger_camera_name: camera0
 
-load_model_path: ./config_run/output/dagger_separate/student_model_step_140000.pth
-video_save_path: ./config_run/output/eval_videos/chairman_dagger_separate.mp4
+load_model_path: ./config_run/output/dagger_separate_l40_tuned_20261019T143059Z/student_model_step_57500.pth
+video_save_path: ./config_run/output/eval_videos/chairman_dagger_separate_l40_tuned_20261019T143059Z.mp4
 video_fps: 30
 video_slowdown: 1
-eval_episodes: 1
+eval_episodes: 4
 eval_max_steps: 6000
 
 policies:

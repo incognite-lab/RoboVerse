@@ -79,7 +79,8 @@ class ChairmanStage2FingerRewardTest(unittest.TestCase):
         multi_cfg = ChairmanmultiCfg()
         multi_names = [type(reward).__name__ for reward in multi_cfg.reward_functions]
         self.assertEqual(len(multi_cfg.reward_weights), len(multi_names))
-        self.assertIn("Stage2FingerJointPositionReward", multi_names)
+        self.assertIn("LeftStage2FingerJointPositionReward", multi_names)
+        self.assertIn("RightStage2FingerJointPositionReward", multi_names)
         self.assertNotIn("CloseGraspReward", multi_names)
         self.assertNotIn("GraspForceReward", multi_names)
 
