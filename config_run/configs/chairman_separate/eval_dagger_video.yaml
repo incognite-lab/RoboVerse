@@ -23,7 +23,7 @@ cameras:
       mount_link: head_link
       mount_pos: [0.08, 0.0, 0.35]
       mount_quat: [0.5, 0.5, -0.5, -0.5]
-      gaussian_splat_path: ./config_run/splat/splat_2.ply
+      gaussian_splat_path: ./config_run/splat/splat_2_fixed.ply
       gaussian_position: [0.0, 0.0, 1.5]
       gaussian_rotation_xyzw: [0.0, 0.0, -0.70710678, 0.70710678]
       gaussian_scale: [3.0, 3.0, 3.0]
@@ -56,9 +56,9 @@ use_snapshot_curriculum: false
 snapshot_save_probability: 0.0
 dagger_camera_name: camera0
 
-load_model_path: ./config_run/output/dagger_separate_l40_tuned_20261019T143059Z/student_model_step_57500.pth
-video_save_path: ./config_run/output/eval_videos/chairman_dagger_separate_l40_tuned_20261019T143059Z.mp4
-video_fps: 30
+load_model_path: ./config_run/output/dagger_separate_l40_tuned_20261019T143059Z/student_model_final.pth
+video_save_path: ./config_run/output/eval_videos/final.mp4
+video_fps: 20
 video_slowdown: 1
 eval_episodes: 4
 eval_max_steps: 6000
