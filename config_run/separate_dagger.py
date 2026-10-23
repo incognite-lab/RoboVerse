@@ -38,11 +38,9 @@ def _device():
 
 def _student_dimensions(env):
     num_actions = int(env.action_space.shape[0])
-    num_joints = num_actions - 3
+    num_joints = len(env.robot_joint_names)
     if num_joints <= 0:
-        raise ValueError(
-            f"Expected joint actions followed by three walking commands, got {num_actions} actions"
-        )
+        raise ValueError("DAgger student requires robot joint positions")
     return num_actions, num_joints
 
 
@@ -64,13 +62,14 @@ def _student_inputs(metasim_env, observation, device, num_joints, camera_name):
     images = images_uint8.float() / 255.0
 
     observation = np.asarray(observation)
-    end = num_joints + 3
-    if observation.ndim != 2 or observation.shape[1] < end:
+    if observation.ndim != 2 or observation.shape[1] < num_joints:
         raise ValueError(
-            f"Full observation shape {observation.shape} cannot provide joint slice [3:{end}]"
+            f"Full observation shape {observation.shape} cannot provide joint slice [0:{num_joints}]"
         )
+    # MetaSim observations start with all joint positions in simulator order,
+    # including the legs. Task features follow this joint-position block.
     joints = torch.as_tensor(
-        observation[:, 3:end], dtype=torch.float32, device=device
+        observation[:, :num_joints], dtype=torch.float32, device=device
     )
     return images_uint8, images, joints
 
