@@ -6,6 +6,7 @@ import math
 from typing import Literal
 
 from metasim.utils.configclass import configclass
+from metasim.utils.camera_projection import make_camera_projection, resolve_camera_fovs
 
 
 def _tuple_or_none(value, length: int, name: str):
@@ -106,7 +107,11 @@ class NyxGaussianSplatCameraCfg(PinholeCameraCfg):
     gaussian_z_up: bool = True
     """Splat transform in Genesis/Nerfstudio Z-up coordinates."""
     fov: float | None = None
-    """Optional vertical field of view in degrees. Defaults to PinholeCameraCfg.vertical_fov."""
+    """Legacy alias for fov_vertical, in degrees."""
+    fov_horizontal: float | None = None
+    """Horizontal FOV in degrees; if omitted, derive from vertical FOV and output aspect ratio."""
+    fov_vertical: float | None = None
+    """Vertical FOV in degrees; if omitted, derive from horizontal FOV or use legacy fov."""
     spp: int = 16
     render_mode: str = "FastPathTracer"
     tone_mapper: str | None = "Off"
@@ -132,6 +137,8 @@ class NyxGaussianSplatCameraCfg(PinholeCameraCfg):
 
     def __post_init__(self):
         super().__post_init__()
+        # Validate the projection early, before allocating renderer resources.
+        _ = self.render_projection
         self.gaussian_position = _tuple_or_none(self.gaussian_position, 3, "gaussian_position")
         self.gaussian_rotation_xyzw = _tuple_or_none(self.gaussian_rotation_xyzw, 4, "gaussian_rotation_xyzw")
         self.gaussian_scale = _tuple_or_none(self.gaussian_scale, 3, "gaussian_scale")
@@ -143,6 +150,29 @@ class NyxGaussianSplatCameraCfg(PinholeCameraCfg):
             raise ValueError("gaussian_splat_path must point to a .ply or .spz file")
         if self.debug_control_target not in ("camera", "splat"):
             raise ValueError("debug_control_target must be 'camera' or 'splat'")
+
+    def _resolved_fovs(self):
+        return resolve_camera_fovs(
+            self.width, self.height, horizontal=self.fov_horizontal,
+            vertical=self.fov_vertical, legacy_vertical=self.fov,
+            default_horizontal=PinholeCameraCfg.horizontal_fov.fget(self),
+        )
+
+    @property
+    def horizontal_fov(self):
+        return self._resolved_fovs()[0]
+
+    @property
+    def vertical_fov(self):
+        return self._resolved_fovs()[1]
+
+    @property
+    def render_projection(self):
+        return make_camera_projection(self.width, self.height, *self._resolved_fovs())
+
+    @property
+    def intrinsics(self):
+        return self.render_projection.intrinsics
 
 
 REALSENSE_CAMERA = PinholeCameraCfg(

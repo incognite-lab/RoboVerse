@@ -27,6 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from config_run.dagger_vp.student_net import VisionStudent  # noqa: E402
+from config_run.student_vision import center_crop_bounds  # noqa: E402
 
 
 SERVER_URL = "http://192.168.124.101:8080"
@@ -127,11 +128,9 @@ def preprocess_frame_2(frame_bgr: np.ndarray, width: int, height: int, device: s
     return tensor.unsqueeze(0) / 255.0
 def preprocess_frame(frame_bgr, width, height, device):
     h, w = frame_bgr.shape[:2]
-    side = min(h, w)
-    x0 = (w - side) // 2
-    y0 = (h - side) // 2
+    y0, x0, crop_height, crop_width = center_crop_bounds(h, w, (height, width))
 
-    frame = frame_bgr[y0:y0 + side, x0:x0 + side]
+    frame = frame_bgr[y0:y0 + crop_height, x0:x0 + crop_width]
     frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)

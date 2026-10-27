@@ -75,7 +75,7 @@ def build_env(config):
     scenario.task.visualize_reach_waypoints = bool(config.get("visualize_reach_waypoints", False))
     scenario.task.visualize_center_of_mass = bool(config.get("visualize_center_of_mass", False))
     mode = config.get("train_or_eval", "train")
-    if mode in ("train_dagger", "load_and_train_dagger"):
+    if mode in ("train_dagger", "load_and_train_dagger", "train_dagger_new", "load_and_train_dagger_new"):
         # Training does not need task reward calculation, but checkers and
         # stage transitions remain active for the six-policy teacher.
         scenario.dagger = 1
@@ -83,7 +83,7 @@ def build_env(config):
             config.get("sim", "genesis") == "genesis"
             and bool(config.get("dagger_defer_camera_rendering", True))
         )
-    elif mode in ("eval_dagger", "eval_dagger_video"):
+    elif mode in ("eval_dagger", "eval_dagger_video", "eval_dagger_new", "eval_dagger_new_video"):
         scenario.dagger = 2
     if scenario.robots[0].name != "g1_with_hands" or scenario.robots[0].fix_base_link:
         raise ValueError("Separate ChairMan requires mobile g1_with_hands and fix_base_link: false")
@@ -136,9 +136,15 @@ def evaluate(config, env, video=False):
              len(finished_returns), mean_return, success_rate)
 
 def main():
-    config_name = sys.argv[1] if len(sys.argv) == 2 else "chairman_separate/eval_ppo_video"
+    config_name = sys.argv[1] if len(sys.argv) == 2 else "chairman_separate/train_dagger"
     if len(sys.argv) > 2: raise SystemExit("Usage: python config_run/main_separate.py [config/name]")
     config = load_config_from_yaml(config_name)
+    if "dagger_torch_threads" in config:
+        threads = int(config["dagger_torch_threads"])
+        if threads <= 0:
+            raise ValueError("dagger_torch_threads must be positive")
+        torch.set_num_threads(threads)
+        torch.set_num_interop_threads(1)
     log.info("Loaded config {} for policies {}", config_name, POLICY_NAMES)
     mode = config.get("train_or_eval", "train")
     if mode == "load_and_train" and not config.get("load_model_path"):
@@ -164,6 +170,12 @@ def main():
             evaluate(config, env, video=False)
         elif mode == "eval_video":
             evaluate(config, env, video=True)
+        elif mode in ("train_dagger_new", "load_and_train_dagger_new", "eval_dagger_new", "eval_dagger_new_video"):
+            try:
+                from .dagger_recurrent.runner import run_dagger
+            except ImportError:
+                from dagger_recurrent.runner import run_dagger
+            run_dagger(config, base, env)
         elif mode in (
             "train_dagger",
             "load_and_train_dagger",

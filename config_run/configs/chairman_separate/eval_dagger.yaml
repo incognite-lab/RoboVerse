@@ -15,9 +15,12 @@ cameras:
     type: NyxGaussianSplatCameraCfg
     params:
       name: camera0
-      width: 128
-      height: 128
-      fov: 70.0
+      # Full raw render 640x360 -> student, no crop or image downsampling.
+      width: 640
+      height: 360
+      # Approximate full-frame D455 FOV; the student sees the entire frame.
+      fov_vertical: 58.71550708558255
+      fov_horizontal: 90.0
       clipping_range: [0.1, 100.0]
       pos: [0.0, 0.0, 0.8]
       look_at: [1.0, 0.0, 0.35]
@@ -57,6 +60,9 @@ reset_to_stage0: true
 use_snapshot_curriculum: false
 snapshot_save_probability: 0.0
 dagger_camera_name: camera0
+# Student image dimensions (width x height), shared by train and evaluation.
+dagger_image_width: 640
+dagger_image_height: 360
 
 load_model_path: ./config_run/output/dagger_separate
 eval_episodes: 100

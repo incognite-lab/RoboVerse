@@ -25,17 +25,18 @@ class _CameraHandler:
 
 class ChairmanSeparateDaggerTest(unittest.TestCase):
     def test_student_inputs_include_all_joints_and_exclude_task_features(self):
-        rgb = torch.arange(2 * 4 * 5 * 4, dtype=torch.uint8).reshape(2, 4, 5, 4)
+        rgb = torch.randint(256, (2, 360, 640, 4), dtype=torch.uint8)
         metasim_env = SimpleNamespace(
             env=SimpleNamespace(handler=_CameraHandler(rgb))
         )
         observation = np.arange(2 * 50, dtype=np.float32).reshape(2, 50)
 
         images_uint8, images, joints = _student_inputs(
-            metasim_env, observation, "cpu", num_joints=43, camera_name="camera0"
+            metasim_env, observation, "cpu", num_joints=43, camera_name="camera0",
+            image_size=(360, 640),
         )
 
-        self.assertEqual(images_uint8.shape, (2, 3, 4, 5))
+        self.assertEqual(images_uint8.shape, (2, 3, 360, 640))
         self.assertTrue(torch.equal(
             images_uint8, rgb[..., :3].permute(0, 3, 1, 2)
         ))
@@ -51,11 +52,11 @@ class ChairmanSeparateDaggerTest(unittest.TestCase):
         student, num_actions, num_joints = _new_student(env, "cpu")
         self.assertEqual((num_actions, num_joints), (34, 43))
         buffer = DAggerBuffer(
-            max_samples=2, img_shape=(3, 128, 128),
+            max_samples=2, img_shape=(3, 360, 640),
             num_joints=num_joints, num_actions=num_actions, device="cpu",
         )
         buffer.add_batch(
-            torch.zeros(2, 3, 128, 128, dtype=torch.uint8),
+            torch.zeros(2, 3, 360, 640, dtype=torch.uint8),
             torch.randn(2, 43), torch.randn(2, 34),
         )
         optimizer = torch.optim.Adam(student.parameters())
@@ -86,9 +87,9 @@ class ChairmanSeparateDaggerTest(unittest.TestCase):
     def test_configs_define_six_policy_teacher_and_camera(self):
         root = Path("config_run/configs/chairman_separate")
         expected_modes = {
-            "train_dagger.yaml": "train_dagger",
-            "eval_dagger.yaml": "eval_dagger",
-            "eval_dagger_video.yaml": "eval_dagger_video",
+            "train_dagger.yaml": ("train_dagger", "train_dagger_new"),
+            "eval_dagger.yaml": ("eval_dagger", "eval_dagger_new"),
+            "eval_dagger_video.yaml": ("eval_dagger_video", "eval_dagger_new_video"),
         }
         expected_policies = {
             "waist", "right_arm", "left_arm", "right_fingers",
@@ -101,7 +102,7 @@ class ChairmanSeparateDaggerTest(unittest.TestCase):
                     (root / filename).read_text(encoding="utf-8")
                 )
                 self.assertEqual(config["task"], "chairmanseparate")
-                self.assertEqual(config["train_or_eval"], mode)
+                self.assertIn(config["train_or_eval"], mode)
                 self.assertEqual(set(config["policies"]), expected_policies)
                 self.assertEqual(
                     config["cameras"]["camera1"]["params"]["name"],

@@ -7,6 +7,7 @@ from collections import OrderedDict
 import torch
 from torch import nn
 from torchvision.models import ResNet18_Weights, resnet18
+from torch.utils.checkpoint import checkpoint
 
 
 # Matches SB3_chairman_env.upper_body_joint_names, followed by walk commands.
@@ -25,8 +26,8 @@ class RecurrentVisionStudent(nn.Module):
     """Consume one step or a batch-first sequence and return actions + memory.
 
     RGB is float RGB in [0, 1]. Proprioception consists of all joint angles
-    [rad], joint velocities [rad/s], body-frame angular velocity [rad/s] plus
-    projected unit gravity (six IMU features), and the previous *executed*
+    [rad], joint velocities [rad/s], IMU-frame angular velocity [rad/s] plus
+    projected unit gravity in imu_in_pelvis (six IMU features), and the previous *executed*
     34-action vector in the environment's physical units.
 
     Single step: images [B,3,H,W], other inputs [B,D], reset_mask [B].
@@ -46,6 +47,8 @@ class RecurrentVisionStudent(nn.Module):
         num_layers: int = 1,
         proprio_embedding_size: int = 128,
         pretrained_visual: bool = False,
+        visual_batch_size: int = 0,
+        checkpoint_visual: bool = True,
     ):
         super().__init__()
         if min(num_joints, hidden_size, num_layers, proprio_embedding_size) <= 0:
@@ -53,6 +56,10 @@ class RecurrentVisionStudent(nn.Module):
         self.num_joints = num_joints
         self.hidden_size = hidden_size
         self.num_layers = num_layers
+        if visual_batch_size < 0:
+            raise ValueError("visual_batch_size must be nonnegative (0 means no chunking)")
+        self.visual_batch_size = visual_batch_size
+        self.checkpoint_visual = checkpoint_visual
         self.proprio_dim = 2 * num_joints + self.imu_dim + self.num_actions
 
         # No download by default. Opting into ImageNet weights may download them.
@@ -157,7 +164,19 @@ class RecurrentVisionStudent(nn.Module):
             raise ValueError("Hidden state shape must be [num_layers,B,hidden_size]")
 
         rgb = images.reshape(-1, *images.shape[-3:])
-        visual = self.visual_encoder((rgb - self.image_mean) / self.image_std)
+        # ResNet convolutions consume the FULL image (e.g. 360x640), without
+        # an input resize. Adaptive global pooling still yields 512 features.
+        # Bound peak encoder memory independently of env/sequence batch size.
+        chunk_size = self.visual_batch_size or rgb.shape[0]
+        visual_chunks = []
+        for chunk in rgb.split(chunk_size):
+            normalized = (chunk - self.image_mean) / self.image_std
+            if self.visual_batch_size and self.checkpoint_visual and self.training and torch.is_grad_enabled():
+                encoded = checkpoint(self.visual_encoder, normalized, use_reentrant=False)
+            else:
+                encoded = self.visual_encoder(normalized)
+            visual_chunks.append(encoded)
+        visual = torch.cat(visual_chunks, dim=0)
         proprio = torch.cat((joint_positions, joint_velocities, imu, previous_actions), dim=-1)
         proprio = self.proprio_encoder((proprio - self.proprio_mean) / self.proprio_std)
         fused = torch.cat(

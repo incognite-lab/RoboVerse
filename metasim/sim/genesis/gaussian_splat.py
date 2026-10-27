@@ -295,6 +295,7 @@ def patch_nyx_rigid_solver_compat(scene_inst, camera_inst=None) -> None:
 class NyxGaussianSplatRuntime:
     def __init__(self):
         self.splat_assets: dict[str, object] = {}
+        self.camera_projections: dict[str, object] = {}
         self.splat_z_up: dict[str, bool] = {}
         self.standalone_scenes: dict[str, object] = {}
         self.standalone_entities: dict[str, dict[str, object]] = {}
@@ -553,9 +554,11 @@ class NyxGaussianSplatRuntime:
                 f"using look_at={tuple(float(v) for v in lookat)}."
             )
 
+        projection = camera.render_projection
+        self.camera_projections[camera.name] = projection
         options = {
-            "res": (camera.width, camera.height),
-            "fov": camera.fov if camera.fov is not None else camera.vertical_fov,
+            "res": (projection.render_width, projection.render_height),
+            "fov": projection.vertical_fov,
             "near": camera.clipping_range[0],
             "far": camera.clipping_range[1],
             "spp": camera.spp,
@@ -631,6 +634,10 @@ class NyxGaussianSplatRuntime:
         }
         self.debug_control_targets[camera.name] = camera.debug_control_target
         return camera_inst
+
+    def project_camera_rgb(self, camera_name, rgb):
+        """Expose requested output resolution and both requested FOV axes."""
+        return self.camera_projections[camera_name].resample_rgb(rgb)
 
     def step_standalone_scene(
         self,

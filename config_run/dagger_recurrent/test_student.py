@@ -117,6 +117,38 @@ class RecurrentStudentTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.model.set_proprio_normalization(torch.zeros(126), torch.zeros(126))
 
+    def test_full_640_by_360_reaches_resnet_and_trains_with_chunked_checkpointing(self):
+        self.model.visual_batch_size = 1
+        values = list(self.inputs(batch=1, steps=2))
+        values[0] = torch.rand(1, 2, 3, 360, 640)
+        observed = []
+        handle = self.model.visual_encoder.conv1.register_forward_pre_hook(
+            lambda module, args: observed.append(tuple(args[0].shape)))
+        self.model.train()
+        actions, hidden = self.model(*values)
+        self.assertEqual(actions.shape, (1, 2, 34))
+        self.assertEqual(hidden.shape, (1, 1, 32))
+        actions.square().mean().backward()
+        handle.remove()
+        self.assertTrue(observed)
+        self.assertTrue(all(shape == (1, 3, 360, 640) for shape in observed))
+        grad = self.model.visual_encoder.conv1.weight.grad
+        self.assertTrue(torch.isfinite(grad).all())
+        self.assertGreater(grad.abs().sum().item(), 0)
+        checkpointed_gradient = grad.clone()
+        self.model.zero_grad(set_to_none=True)
+        self.model.checkpoint_visual = False
+        without_checkpoint, _ = self.model(*values)
+        without_checkpoint.square().mean().backward()
+        torch.testing.assert_close(actions, without_checkpoint, atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(checkpointed_gradient, self.model.visual_encoder.conv1.weight.grad,
+                                   atol=1e-7, rtol=1e-4)
+        with torch.no_grad():
+            chunked, _ = self.model(*values)
+            self.model.visual_batch_size = 0
+            full, _ = self.model(*values)
+        torch.testing.assert_close(chunked, full, atol=1e-5, rtol=1e-5)
+
 
 if __name__ == "__main__":
     unittest.main()

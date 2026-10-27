@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import argparse
 import cProfile
+from copy import deepcopy
 import json
 from pathlib import Path
 import pstats
 import random
 import sys
 import time
+from statistics import mean
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -26,10 +28,20 @@ sys.path.insert(0, str(ROOT / "config_run"))
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="chairman_separate/train_dagger")
-    parser.add_argument("--num-envs", type=int, default=100)
+    parser.add_argument("--config-file", type=Path, help="Use an exact generated candidate YAML")
+    parser.add_argument("--num-envs", type=int)
+    parser.add_argument("--student", choices=("auto", "legacy", "recurrent"), default="auto")
+    parser.add_argument("--sequence-batch-size", type=int)
+    parser.add_argument("--sequence-length", type=int)
+    parser.add_argument("--burn-in", type=int)
+    parser.add_argument("--updates-per-train", type=int)
+    parser.add_argument("--train-every", type=int)
+    parser.add_argument("--threads", type=int)
+    parser.add_argument("--replay-device", choices=("cpu", "cuda"))
+    parser.add_argument("--quiet", action="store_true", help="Suppress repetitive asset INFO logs")
     parser.add_argument("--steps", type=int, default=101)
     parser.add_argument("--warmup", type=int, default=3)
-    parser.add_argument("--buffer-steps", type=int, default=100)
+    parser.add_argument("--buffer-steps", type=int)
     parser.add_argument("--render-mode", choices=("RefPathTracer", "FastPathTracer"))
     parser.add_argument("--spp", type=int)
     parser.add_argument("--log-every", type=int, default=100)
@@ -41,26 +53,41 @@ def main():
     parser.add_argument("--eager-cameras", action="store_true",
                         help="Render during physics state reads, for comparison with deferred rendering")
     args = parser.parse_args()
-    if min(args.num_envs, args.steps, args.buffer_steps) <= 0 or args.warmup < 0:
+    if any(value is not None and value <= 0 for value in (args.num_envs, args.steps, args.buffer_steps, args.threads)) or args.warmup < 0:
         parser.error("env count, steps and buffer steps must be positive; warmup nonnegative")
 
     import numpy as np
     import torch
     from main_separate import build_env, load_config_from_yaml
     import separate_dagger
+    import yaml
+    config = yaml.safe_load(args.config_file.read_text()) if args.config_file else load_config_from_yaml(args.config)
+    if args.student == "auto":
+        args.student = "recurrent" if "_new" in config.get("train_or_eval", "") else "legacy"
+    args.num_envs = args.num_envs or int(config["num_envs"])
+    args.threads = args.threads or int(config.get("dagger_torch_threads", 4))
+    if args.quiet:
+        from loguru import logger
+        logger.remove()
+        logger.add(sys.stderr, level="WARNING")
+    if args.student == "recurrent":
+        from config_run.dagger_recurrent import runner as training_module
+    else:
+        training_module = separate_dagger
+    torch.set_num_threads(args.threads)
+    torch.set_num_interop_threads(1)
 
     output = args.output or ROOT / "config_run/output/dagger_profile" / time.strftime("%Y%m%d_%H%M%S")
     output.mkdir(parents=True, exist_ok=False)
-    config = load_config_from_yaml(args.config)
     if args.scale_collection:
         from config_run.dagger_vp.scaling import scale_dagger_config
         config = scale_dagger_config(config, args.num_envs)
     config.update(
         num_envs=args.num_envs,
-        train_or_eval="train_dagger",
+        train_or_eval="train_dagger_new" if args.student == "recurrent" else "train_dagger",
+        headless=True,
         total_timesteps=args.steps,
         dagger_store_per_step=min(args.num_envs, int(config.get("dagger_store_per_step", 32))),
-        dagger_buffer_steps=args.buffer_steps,
         model_save_freq=0,
         model_save_path=str(output / "student"),
         tensorboard_log=str(output / "tensorboard"),
@@ -68,18 +95,37 @@ def main():
         snapshot_save_probability=0.0,
         dagger_defer_camera_rendering=not args.eager_cameras,
         dagger_log_every=args.log_every,
+        dagger_gpu_poll_seconds=1,
         # Benchmark renderer/learning throughput under a fixed expert rollout;
         # a short run must not accelerate the production beta schedule to zero.
         beta_schedule="linear",
         beta_start=1.0,
         beta_end=1.0,
     )
+    if args.buffer_steps is not None:
+        config['dagger_buffer_steps'] = args.buffer_steps
+    if args.student == "recurrent":
+        for key, value in (("dagger_new_batch_size", args.sequence_batch_size),
+                           ("dagger_new_sequence_length", args.sequence_length),
+                           ("dagger_new_burn_in", args.burn_in),
+                           ("dagger_new_buffer_device", args.replay_device)):
+            if value is not None:
+                config[key] = value
+    elif args.replay_device is not None:
+        config['dagger_buffer_device'] = args.replay_device
+    if args.updates_per_train is not None:
+        config["dagger_updates_per_train"] = args.updates_per_train
+    if args.train_every is not None:
+        config["dagger_train_every"] = args.train_every
     for camera in config.get("cameras", {}).values():
         if args.render_mode:
             camera["params"]["render_mode"] = args.render_mode
         if args.spp is not None:
             camera["params"]["spp"] = args.spp
     (output / "config.json").write_text(json.dumps(config, indent=2))
+    # build_env replaces robot config strings with configuration objects.
+    # Keep the exact serializable input, rather than a reference it mutates.
+    effective_config = deepcopy(config)
 
     torch.manual_seed(0)
     np.random.seed(0)
@@ -89,6 +135,14 @@ def main():
     build_seconds = time.perf_counter() - start
     timers = {}
     originals = []
+    monitors = []
+    original_monitor = training_module.HardwareMonitor
+    originals.append((training_module, 'HardwareMonitor', original_monitor))
+    def monitored(device, interval=10.):
+        monitor = original_monitor(device, interval=1., retain_samples=True)
+        monitors.append(monitor)
+        return monitor
+    training_module.HardwareMonitor = monitored
 
     def measure(obj, name, label):
         original = getattr(obj, name)
@@ -138,12 +192,16 @@ def main():
         measure(handler, "get_body_states", "body_states")
         for name, camera in handler.camera_inst_dict.items():
             measure(camera, "read", f"camera_read/{name}")
-        measure(separate_dagger, "_student_inputs", "student_inputs")
-        measure(separate_dagger, "train_dagger_step", "student_update")
+        if args.student == "recurrent":
+            measure(training_module.StudentInputs, "read", "student_inputs")
+            measure(training_module, "train_sequence_step", "student_update")
+        else:
+            measure(separate_dagger, "_student_inputs", "student_inputs")
+            measure(separate_dagger, "train_dagger_step", "student_update")
         if profile:
             profile.enable()
         start = time.perf_counter()
-        separate_dagger.train_dagger(config, base, env)
+        training_module.train_dagger(config, base, env)
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         seconds = time.perf_counter() - start
@@ -161,10 +219,16 @@ def main():
             "transitions_per_second": args.steps * args.num_envs / seconds,
             "peak_torch_cuda_bytes": torch.cuda.max_memory_allocated() if torch.cuda.is_available() else 0,
             "cprofile": args.cprofile,
+            "student": args.student,
+            "image_shape": [3, int(config.get('dagger_image_height', 128)), int(config.get('dagger_image_width', 128))],
+            "effective_config": effective_config,
             "timers_inclusive_do_not_sum": timers,
         }
         from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
-        event_run = next((output / "tensorboard").iterdir())
+        event_root = output / "tensorboard"
+        if args.student == "recurrent":
+            event_root = event_root / "recurrent"
+        event_run = next(event_root.iterdir())
         events = EventAccumulator(str(event_run), size_guidance={"scalars": 0})
         events.Reload()
         rates = events.Scalars("Speed/stored_samples_per_second")
@@ -173,6 +237,29 @@ def main():
         summary["steady_stored_samples_per_second"] = steady_sample_rate(rates, args.log_every)
         summary["store_per_step"] = config["dagger_store_per_step"]
         summary["batch_size"] = config["dagger_batch_size"]
+        hardware = [sample for monitor in monitors for sample in (monitor.samples or [])]
+        summary['hardware_samples'] = hardware
+        summary['gpu_total_bytes'] = torch.cuda.get_device_properties(0).total_memory if torch.cuda.is_available() else 0
+        summary['peak_torch_reserved_bytes'] = torch.cuda.max_memory_reserved() if torch.cuda.is_available() else 0
+        summary['sampled_peak_device_memory_bytes'] = max(
+            (sample.get('GPU/device_memory_used_mib', 0) * 2**20 for sample in hardware), default=None)
+        # Use actual per-window learning progress to reject collection-only wins.
+        tags = events.Tags()['scalars']
+        for tag, key in (("Speed/trained_samples_per_second", "steady_trained_samples_per_second"),
+                         ("Student/window_mse_loss", "steady_mse_loss")):
+            summary[key] = steady_sample_rate(events.Scalars(tag), args.log_every) if tag in tags else None
+        summary['mean_gpu_utilization_percent'] = mean(
+            [s['GPU/utilization_percent'] for s in hardware if 'GPU/utilization_percent' in s]
+        ) if any('GPU/utilization_percent' in s for s in hardware) else None
+        summary['student_update_calls'] = timers.get('student_update', {}).get('calls', 0)
+        if args.student == "recurrent":
+            summary["sequence_batch_size"] = config.get('dagger_new_batch_size', 8)
+            summary["sequence_length"] = config.get('dagger_new_sequence_length', 16)
+            summary["burn_in"] = config.get('dagger_new_burn_in', 8)
+            for tag in ("Speed/vector_steps_per_second", "Speed/trained_samples_per_second",
+                        "GPU/utilization_percent", "GPU/device_memory_used_mib", "Student/window_mse_loss"):
+                if tag in events.Tags()["scalars"]:
+                    summary[tag] = [{"step": event.step, "value": event.value} for event in events.Scalars(tag)]
         (output / "summary.json").write_text(json.dumps(summary, indent=2))
         print(json.dumps(summary, indent=2), flush=True)
         print(f"Results: {output}", flush=True)

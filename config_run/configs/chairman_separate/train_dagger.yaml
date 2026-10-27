@@ -3,11 +3,11 @@ robots: [g1_with_hands]
 fix_base_link: false
 task: chairmanseparate
 decimation: 5
-num_envs: 100
+num_envs: 80
 headless: true
 add_table: true
 env_spacing: 4.0
-train_or_eval: train_dagger
+train_or_eval: train_dagger_new
 
 # Same head-mounted Nyx scene used by chairman_multi DAgger.
 cameras:
@@ -15,9 +15,12 @@ cameras:
     type: NyxGaussianSplatCameraCfg
     params:
       name: camera0
-      width: 128
-      height: 128
-      fov: 65.0
+      # Full raw render 640x360 -> student, no crop or image downsampling.
+      width: 640
+      height: 360
+      # Approximate full-frame D455 FOV; the student sees the entire frame.
+      fov_vertical: 58.71550708558255
+      fov_horizontal: 90.0
       clipping_range: [0.1, 100.0]
       mount_to: g1_with_hands
       mount_link: head_link
@@ -65,13 +68,21 @@ dagger_log_every: 100
 dagger_gpu_poll_seconds: 10
 
 dagger_camera_name: camera0
-dagger_store_per_step: 50
+# Student image dimensions (width x height), shared by train and evaluation.
+dagger_image_width: 640
+dagger_image_height: 360
+dagger_store_per_step: 8
 dagger_train_every: 20
 dagger_updates_per_train: 10
-dagger_batch_size: 512
-dagger_buffer_steps: 3000
-dagger_buffer_device: cuda
-dagger_buffer_pin_memory: true
+dagger_batch_size: 8
+dagger_buffer_steps: 512
+dagger_buffer_device: cpu
+dagger_buffer_pin_memory: false
+# 512 steps x 8 envs x 640x360 RGB uint8 ~= 2.64 GiB of images in RAM.
+dagger_new_buffer_device: cpu
+dagger_new_batch_size: 2
+# Encoder chunks + activation recomputation bound ResNet training VRAM.
+dagger_new_visual_batch_size: 4
 # Linear in absolute vector steps: 1 at step 0, 0 at total_timesteps.
 # Resume recalculates beta from the checkpoint step, including old exponential runs.
 beta_schedule: linear
@@ -80,7 +91,7 @@ beta_end: 0.0
 
 # Directory produced by main_separate.py train. All six policies are loaded
 # from separate_policy_manifest.json and compose one teacher action.
-expert_model_path: ./config_run/output/ppo_models_separate/run_2026-10-14_19-34-03_chairman_separate
+expert_model_path: ./config_run/output/ppo_models_separate/run_2026-10-14_19-21-47_chairman_separate
 # load_model_checkpoint: 50000000
 
 policies:

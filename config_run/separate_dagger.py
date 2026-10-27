@@ -14,6 +14,7 @@ import torch
 from loguru import logger as log
 
 try:
+    from .student_vision import image_size_from_config, preprocess_student_rgb
     from .dagger_vp.checkpoint import (
         load_dagger_checkpoint,
         save_dagger_checkpoint,
@@ -24,6 +25,7 @@ try:
     from .dagger_vp.beta_schedule import beta_at_step, dagger_target_steps
     from .separate_ppo_trainer import load_policy_router
 except ImportError:
+    from student_vision import image_size_from_config, preprocess_student_rgb
     from dagger_vp.checkpoint import load_dagger_checkpoint, save_dagger_checkpoint
     from dagger_vp.dagger_trainer import DAggerBuffer, train_dagger_step
     from dagger_vp.student_net import VisionStudent
@@ -44,7 +46,7 @@ def _student_dimensions(env):
     return num_actions, num_joints
 
 
-def _student_inputs(metasim_env, observation, device, num_joints, camera_name):
+def _student_inputs(metasim_env, observation, device, num_joints, camera_name, image_size=(128, 128)):
     handler = metasim_env.env.handler
     if getattr(getattr(handler, "scenario", None), "defer_camera_rendering", False):
         cameras = handler.get_camera_states()
@@ -57,8 +59,7 @@ def _student_inputs(metasim_env, observation, device, num_joints, camera_name):
     rgb = cameras[camera_name].rgb
     if rgb.ndim != 4 or rgb.shape[-1] < 3:
         raise ValueError(f"Expected NHWC RGB camera tensor, got {tuple(rgb.shape)}")
-    rgb = rgb[..., :3].to(device=device)
-    images_uint8 = rgb.permute(0, 3, 1, 2).contiguous().to(torch.uint8)
+    images_uint8 = preprocess_student_rgb(rgb, device=device, output_size=image_size)
     images = images_uint8.float() / 255.0
 
     observation = np.asarray(observation)
@@ -140,7 +141,7 @@ def train_dagger(config, metasim_env, env):
     camera_name = str(config.get("dagger_camera_name", "camera0"))
     observation = env.reset()
     first_uint8, _, _ = _student_inputs(
-        metasim_env, observation, device, num_joints, camera_name
+        metasim_env, observation, device, num_joints, camera_name, image_size_from_config(config)
     )
     image_shape = tuple(int(value) for value in first_uint8.shape[1:])
     buffer_device = str(config.get("dagger_buffer_device", "cpu"))
@@ -219,7 +220,7 @@ def train_dagger(config, metasim_env, env):
         for step in range(start_step, end_step):
             with metrics.measure("camera_and_inputs"):
                 images_uint8, images, joints = _student_inputs(
-                    metasim_env, observation, device, num_joints, camera_name
+                    metasim_env, observation, device, num_joints, camera_name, image_size_from_config(config)
                 )
             with metrics.measure("inference_and_actions"):
                 with torch.no_grad():
@@ -342,7 +343,7 @@ def eval_dagger_video(config, metasim_env, env):
     video_path.parent.mkdir(parents=True, exist_ok=True)
 
     images_uint8, _, _ = _student_inputs(
-        metasim_env, observation, device, num_joints, camera_name
+        metasim_env, observation, device, num_joints, camera_name, image_size_from_config(config)
     )
     height, width = images_uint8.shape[-2:]
     writer = cv2.VideoWriter(
@@ -356,7 +357,7 @@ def eval_dagger_video(config, metasim_env, env):
     try:
         for step in range(max_steps):
             images_uint8, images, joints = _student_inputs(
-                metasim_env, observation, device, num_joints, camera_name
+                metasim_env, observation, device, num_joints, camera_name, image_size_from_config(config)
             )
             frame = images_uint8[0].permute(1, 2, 0).cpu().numpy()
             frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
@@ -428,7 +429,7 @@ def eval_dagger(config, metasim_env, env):
 
         for _ in range(max_steps):
             _, images, joints = _student_inputs(
-                metasim_env, observation, device, num_joints, camera_name
+                metasim_env, observation, device, num_joints, camera_name, image_size_from_config(config)
             )
             stages = np.clip(env.get_current_stages(), 0, num_stages - 1)
             with torch.no_grad():

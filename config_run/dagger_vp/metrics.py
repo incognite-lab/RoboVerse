@@ -17,11 +17,12 @@ import torch
 class HardwareMonitor:
     """Poll nvidia-smi off the training thread, selecting the actual CUDA UUID."""
 
-    def __init__(self, device, interval=10.0):
+    def __init__(self, device, interval=10.0, retain_samples=False):
         self.device = torch.device(device)
         self.interval = max(1.0, float(interval))
         self._sample = {}
         self._sample_time = None
+        self.samples = [] if retain_samples else None
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
@@ -73,6 +74,8 @@ class HardwareMonitor:
             with self._lock:
                 self._sample = sample
                 self._sample_time = time.perf_counter()
+                if self.samples is not None and sample:
+                    self.samples.append(dict(time=self._sample_time, **sample))
             self._stop.wait(self.interval)
 
     def snapshot(self):

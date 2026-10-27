@@ -4,10 +4,10 @@ fix_base_link: false
 task: chairmanseparate
 decimation: 5
 num_envs: 1
-headless: false
+headless: true
 add_table: true
 env_spacing: 4.0
-train_or_eval: eval_dagger_video
+train_or_eval: eval_dagger_new_video
 eval_start_stage: 0  # 1..5 loads config_run/snapshots_chair/stage_N.
 
 cameras:
@@ -15,15 +15,17 @@ cameras:
     type: NyxGaussianSplatCameraCfg
     params:
       name: camera0
-      width: 128
-      height: 128
-      fov: 65.0
+      width: 640
+      height: 360
+      # Approximate full-frame D455 FOV; the student sees the entire frame.
+      fov_vertical: 58.71550708558255
+      fov_horizontal: 90.0
       clipping_range: [0.1, 100.0]
       mount_to: g1_with_hands
       mount_link: head_link
       mount_pos: [0.08, 0.0, 0.35]
       mount_quat: [0.5, 0.5, -0.5, -0.5]
-      gaussian_splat_path: ./config_run/splat/splat_2_fixed.ply
+      gaussian_splat_path: ./config_run/splat/splat_2.ply
       gaussian_position: [0.0, 0.0, 1.5]
       gaussian_rotation_xyzw: [0.0, 0.0, -0.70710678, 0.70710678]
       gaussian_scale: [3.0, 3.0, 3.0]
@@ -55,13 +57,16 @@ reset_to_stage0: true
 use_snapshot_curriculum: false
 snapshot_save_probability: 0.0
 dagger_camera_name: camera0
+# Student image dimensions (width x height), shared by train and evaluation.
+dagger_image_width: 640
+dagger_image_height: 360
 
-load_model_path: ./config_run/output/dagger_separate_l40_tuned_20261019T143059Z/student_model_step_48000.pth
-video_save_path: ./config_run/output/eval_videos/new_env.mp4
+load_model_path: ./config_run/output/dagger_separate/recurrent/student_model_step_699999.pth
+video_save_path: ./config_run/output/eval_videos/new_method.mp4
 video_fps: 20
 video_slowdown: 1
-eval_episodes: 1
-eval_max_steps: 6000
+eval_episodes: 10
+eval_max_steps: 10
 
 policies:
   waist: {action_groups: [waist], observation_groups: [joint_positions, robot_body_states, pelvis_velocity, previous_policy_actions]}

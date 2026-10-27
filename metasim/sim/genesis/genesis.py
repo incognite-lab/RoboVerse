@@ -662,6 +662,7 @@ class GenesisHandler(BaseSimHandler):
                 self._update_camera_debug_marker(camera.name, env_ids)
                 camera_inst._stale = True
                 rgb = camera_inst.read().rgb
+                rgb = self._nyx_splat.project_camera_rgb(camera.name, rgb)
                 self._nyx_splat.show_debug_frame(camera_inst, camera, rgb)
                 if rgb.dim() == 3:
                     rgb = rgb.unsqueeze(0)
