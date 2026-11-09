@@ -75,3 +75,6 @@ policies:
   right_fingers: {action_groups: [right_fingers], observation_groups: [joint_positions, right_hand_task, fingertip_forces, stage, previous_policy_actions]}
   left_fingers: {action_groups: [left_fingers], observation_groups: [joint_positions, left_hand_task, fingertip_forces, stage, previous_policy_actions]}
   direction: {action_groups: [direction], observation_groups: [joint_positions, pelvis_velocity, chair_geometry, previous_walk_command, stage, previous_policy_actions]}
+
+# Same partial-task goal as the current recurrent training configs.
+dagger_target_stage: 4

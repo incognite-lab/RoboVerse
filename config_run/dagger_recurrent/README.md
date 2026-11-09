@@ -115,19 +115,40 @@ Teacher se načítá z manifestu; `model_final.zip` má v použitém bundle
 - `reset_to_stage0: false` a `use_snapshot_curriculum: true` dovolují obnovovat
   pokročilé fáze. Snapshot musí být dostupný; samy tyto volby nevytvoří
   kvalitní demonstraci fáze, kterou teacher nezvládá.
-- `beta_schedule: evaluation`: beta začíná na 1. Po warmupu 5000 kroků
-  ji `dagger_beta_after_warmup: 0.9` omezí na 0,9, aby se začala sbírat i data
-  ze stavů vyvolaných studentskými akcemi. Chráněné teacherovy sloty nadále
-  provádějí výhradně teacherovy akce. Další snížení o 0,1 vyžaduje dvě čistě
-  studentské evaluace s úspěšností alespoň 80 %. Dvě neúspěšné evaluace vracejí
-  beta o 0,1 výš, nejvýše však na uvedený strop po warmupu. Nastavení stropu 1
-  tento úvodní sběr studentských stavů vypne.
-  Evaluace běží každých 5000 kroků od fáze 0 a mají pevné kvóty epizod pro
-  předem určená prostředí; rychlá selhání nemohou vytlačit pomalé úspěchy.
-  Po evaluaci se trénovací simulace i GRU explicitně resetují.
-- `dagger_teacher_baseline: true`: před tréninkem se změří čistý teacher.
-  Při nulové úspěšnosti se trénink zastaví s výsledky v JSONL, místo aby
-  automaticky předpokládal funkční demonstrátor.
+- `beta_schedule: stage_sawtooth` je nyní ve všech čtyřech train configách.
+  `dagger_target_stage: 4` znamená stages 0–4 **včetně**: dokončení stage 4
+  ukončí úspěšnou epizodu, stage 5 se do curriculum nevybírá. Eval configy mají
+  stejný cíl. Šest souborů teacherových politik se stále načítá jako celek.
+- Prvních `dagger_teacher_warmup_steps: 5000` vektorových kroků řídí teacher.
+  Na konci se jednou změří a zmrazí jeho reference samostatně pro každou stage.
+  U stages 1–4 se začíná ze snapshotu a epizoda končí dokončením měřené stage.
+  Reference je v `teacher_stage_reference.json`, `.pth` a v checkpointu.
+  Úspěšnost celého prefixu je diagnostika; nulová úspěšnost nezastaví distilaci.
+- Potom beta klesá o 0,001 za vektorový krok (`dagger_beta_decay_steps: 1000`).
+  Každých `dagger_eval_every: 500` kroků se změří čistý student po stages.
+  Pokud u některé stage zaostává za teacherovou referencí o **více než 0,1**,
+  beta jednou vzroste o 0,1 (nejvýše na 1) a pokles se pozastaví na 500 kroků.
+  Více špatných stages neznamená více zvýšení za stejné měření. Pauza se
+  neprodlužuje, pokud zvýšení na horní mezi už nebylo možné. Bez korekcí beta
+  dosáhne nuly po 1000 krocích od warmupu; s korekcemi později.
+- Platné porovnání vyžaduje alespoň 30 dokončených pokusů u teachera i studenta;
+  standardně se měří 32 epizod na stage. Nedostupný snapshot, nedostatek pokusů
+  nebo dosažení vnějšího limitu evaluace znamená neznámý výsledek a nevyvolá
+  korekci. Přirozený timeout epizody je selhání. Limit je 6000 kroků na kohortu.
+  Neznámé teacherovy reference se automaticky nedoplňují; sleduj warningy.
+- Probes používají **samostatný proces se scénou s 32 envy**. Načítají stejné
+  teacherovy váhy a před měřením dostanou aktuální studentské váhy. Mají vlastní
+  historii, resetování i renderer (Nyx obsahuje globální singletony). Tréninkové epizody, replay a GRU
+  zůstávají během evaluací nedotčené. Přidává to paměťovou a časovou režii.
+  Každých 2500 kroků po warmupu se navíc měří studentský prefix 0–4.
+- Resume zachová referenci, warmup, beta i zbývající pauzu; warmup nezačíná
+  znovu. Změna regulátoru nebo cílové stage při resume je odmítnuta.
+  Starší `beta_schedule: evaluation` zůstává podporovaný pro staré běhy.
+
+Tyto lokální stage probes měří schopnost provést fázi ze snapshotu. Úspěch
+souvislého průchodu 0–4 ověřuje zvlášť prefixová evaluace; úspěch jednotlivých
+stages jej sám nedokazuje. Hodnoty 30/32 a tolerance 0,1 jsou praktické nastavení,
+nikoli statistická záruka. Chráněných 25 % teacherových slotů zůstává i při beta=0.
 
 TensorBoard odděluje `Evaluation/teacher/*`, `Evaluation/student/*`,
 `Health/*`, `Replay/stage_N_teacher_windows` a `Student/trained_to_stored_ratio`.
@@ -475,3 +496,6 @@ Pipeline testy používají falešné fyzikální prostředí a malý obrazový 
 ověřují routing režimů, DAgger příznaky prostředí, převod senzorů, kontinuitu
 replay po přetečení, resety, trénink/resume/evaluaci/video a kontrolu metadat.
 Nenahrazují plný rollout s Genesis/Nyx a skutečným PPO teacherem.
+
+Ověření nové stage bety a krátký GPU integrační test jsou popsané v
+[VALIDATION_STAGE_BETA_20261109.md](VALIDATION_STAGE_BETA_20261109.md).

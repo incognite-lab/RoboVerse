@@ -22,6 +22,8 @@ from .inputs import IMU_BODY_NAME, RolloutState, StudentInputs
 from .student_net import ACTION_GROUP_SIZES, RecurrentVisionStudent
 from .evaluation import EvaluationBeta, evaluate_policy, evaluation_resets
 from .finetuning import VisualFineTuning
+from .stage_beta import StageSawtoothBeta, stage_measurement
+from .stage_probe import StageProbeProcess
 
 try:
     from ..student_vision import image_size_from_config
@@ -35,6 +37,21 @@ except ImportError:  # python config_run/main_separate.py ...
     from dagger_vp.metrics import DaggerMetrics, HardwareMonitor
     from separate_dagger import _device, _student_checkpoints
     from separate_ppo_trainer import load_policy_router
+
+
+def build_stage_evaluation_env(config):
+    """Independent small scene: periodic probes must not reset training episodes."""
+    try:
+        from ..main_separate import build_env
+    except ImportError:
+        from main_separate import build_env
+    settings = deepcopy(config)
+    settings.update(num_envs=int(config.get('dagger_stage_eval_num_envs',32)),
+                    train_or_eval='train_dagger_new',headless=True,eval_start_stage=0,
+                    dagger_target_stage=int(config.get('dagger_target_stage',4)),
+                    reset_to_stage0=False,use_snapshot_curriculum=True,snapshot_save_probability=0.,
+                    dagger_defer_camera_rendering=True,log_termination_reasons=False)
+    return build_env(settings)
 
 
 def validate_action_layout(env):
@@ -72,6 +89,15 @@ def validate_camera_config(metadata, config):
 def train_dagger(config, base, env):
     device = _device()
     validate_action_layout(env)
+    stage_beta = config.get('beta_schedule') == 'stage_sawtooth'
+    target_stage = config.get('dagger_target_stage', 4 if stage_beta else None)
+    if target_stage is not None and (isinstance(target_stage,bool) or not isinstance(target_stage,int)
+                                     or not 0 <= target_stage <= 5):
+        raise ValueError('dagger_target_stage must be an integer from 0 to 5')
+    task = getattr(base.env.handler,'task',None)
+    if task is not None and target_stage is not None:
+        task.dagger_target_stage = target_stage
+        task.curriculum_max_stage = target_stage
     sequence_length = int(config.get("dagger_new_sequence_length", 16))
     burn_in = int(config.get("dagger_new_burn_in", 8))
     batch_size = int(config.get("dagger_new_batch_size", min(8, max(1, int(config.get("dagger_batch_size", 512))
@@ -118,6 +144,8 @@ def train_dagger(config, base, env):
                 and bool(config['dagger_new_pretrained_visual']) != bool(metadata.get('pretrained_visual', False))):
             raise ValueError("Cannot change pretrained ResNet initialization on resume; start a new student instead")
         camera_name = metadata["camera_name"]
+        if 'target_stage' in metadata and metadata['target_stage'] != target_stage:
+            raise ValueError('Cannot change dagger_target_stage on resume')
     else:
         camera_name = str(config.get("dagger_camera_name", "camera0"))
         kwargs = model_kwargs(config, len(env.robot_joint_names))
@@ -134,6 +162,7 @@ def train_dagger(config, base, env):
                         action_names=list(env.action_names), imu_layout=IMU_LAYOUT, imu_body_name=IMU_BODY_NAME,
                         camera_name=camera_name, control_dt=control_dt(base),
                         pretrained_visual=bool(config.get('dagger_new_pretrained_visual', False)))
+    metadata['target_stage'] = target_stage
     visual_training = VisualFineTuning(student, config, pretrained=metadata.get('pretrained_visual', False),
                                        saved=metadata.get('visual_finetuning'))
     optimizer = visual_training.make_optimizer(float(config.get('dagger_new_weight_decay', 1e-4)))
@@ -186,12 +215,24 @@ def train_dagger(config, base, env):
         raise ValueError("dagger_teacher_anchor_fraction must be in [0,1)")
     anchors = selected[:max(1, math.ceil(store_count * anchor_fraction))] if anchor_fraction else selected[:0]
     gated_beta = config.get("beta_schedule", "evaluation") == "evaluation"
-    controller = EvaluationBeta(config, metadata.get('beta_controller'), start_step) if gated_beta else None
+    if (not stage_beta and metadata.get('beta_controller', {}).get('mode') == StageSawtoothBeta.mode):
+        raise ValueError('Cannot change beta controller on resume; start a new run')
+    if stage_beta:
+        controller = StageSawtoothBeta(config, metadata.get('beta_controller'), start_step)
+    else:
+        controller = EvaluationBeta(config, metadata.get('beta_controller'), start_step) if gated_beta else None
     def current_beta(step):
         return controller.beta_at_step(step) if controller is not None else beta_at_step(config, step)
-    eval_every = int(config.get("dagger_eval_every", 5000 if gated_beta else 0))
-    if gated_beta and eval_every <= 0:
+    eval_every = int(config.get("dagger_eval_every", 500 if stage_beta else 5000 if gated_beta else 0))
+    if (gated_beta or stage_beta) and eval_every <= 0:
         raise ValueError("Evaluation-gated beta requires dagger_eval_every > 0")
+    if stage_beta and int(config.get('dagger_eval_episodes',32)) < controller.min_attempts:
+        raise ValueError('dagger_eval_episodes must be >= dagger_beta_min_stage_attempts')
+    if stage_beta:
+        prefix_every = int(config.get('dagger_prefix_eval_every',2500))
+        if (int(config.get('dagger_stage_eval_num_envs',32)) <= 0 or prefix_every < 0
+                or prefix_every and prefix_every % eval_every):
+            raise ValueError('Stage evaluation env count must be positive; prefix interval must be 0 or a multiple of dagger_eval_every')
     save_dir = output_directory(config)
     save_dir.mkdir(parents=True, exist_ok=True)
     archive_path = save_dir / "teacher_demonstrations.pth"
@@ -219,6 +260,13 @@ def train_dagger(config, base, env):
     zero_gradient_checks = 0
     starting_updates = visual_training.completed_updates
     finished_normally = False
+    probe_worker = None
+
+    def stage_probe():
+        nonlocal probe_worker
+        if probe_worker is None:
+            probe_worker = StageProbeProcess(config,metadata)
+        return probe_worker
 
     def save_training(path, interrupted=False):
         replay_path = Path(str(path) + '.demonstrations.pth') if interrupted else archive_path
@@ -226,29 +274,80 @@ def train_dagger(config, base, env):
         if buffer.demonstrations_per_stage:
             metadata['demonstration_archive'] = replay_path.name
         if controller is not None:
+            # Evaluation may fail after env.step advanced next_step, before
+            # the normal end-of-step beta update. Recovery must stay aligned.
+            controller.beta_at_step(next_step)
             metadata['beta_controller'] = controller.state_dict()
         save_checkpoint(path, student, optimizer, next_step, metadata)
         if buffer.demonstrations_per_stage:
             atomic_save(dict(camera_config=camera_config(config), replay=buffer.archive_state()), replay_path)
 
     def independent_evaluation(expert=False):
-        with evaluation_resets(env, start_stage=0):
-            result = evaluate_policy(student, adapter, env,
-                                     min(env.num_envs, int(config.get('dagger_eval_episodes', 32))),
-                                     int(config.get('dagger_eval_max_steps', 6000)),
-                                     teacher=teacher if expert else None)
+        if stage_beta:
+            result = stage_probe().evaluate(student,start_stage=0,stop_stage=None,
+                episodes=int(config.get('dagger_eval_episodes',32)),
+                max_steps=int(config.get('dagger_eval_max_steps',6000))*math.ceil(
+                    int(config.get('dagger_eval_episodes',32))/int(config.get('dagger_stage_eval_num_envs',32))),
+                expert=expert)
+        else:
+            with evaluation_resets(env, start_stage=0):
+                result = evaluate_policy(student,adapter,env,
+                    min(env.num_envs,int(config.get('dagger_eval_episodes',32))),
+                    int(config.get('dagger_eval_max_steps',6000)),teacher=teacher if expert else None)
         prefix = 'Evaluation/teacher' if expert else 'Evaluation/student'
         for key, value in result.items():
-            writer.add_scalar(f'{prefix}/{key}', value, next_step)
+            if value is not None:
+                writer.add_scalar(f'{prefix}/{key}', value, next_step)
         with (save_dir / 'training_evaluations.jsonl').open('a', encoding='utf-8') as stream:
             stream.write(json.dumps(dict(step=next_step, policy=prefix, **result)) + '\n')
         log.info("{} success={}/{}, capped={}", prefix, result['success_count'],
                  result['episodes_finished'], result['capped_attempts'])
         # Evaluation ran in this simulator. Explicit resets prevent replay
         # windows or GRU memory from silently bridging unrelated trajectories.
-        observation = env.reset()
+        if stage_beta:
+            return result,observation,state
+        training_observation = env.reset()
         metrics.restart_rollout(env.get_current_stages())
-        return result, observation, RolloutState(student, env.num_envs)
+        return result, training_observation, RolloutState(student, env.num_envs)
+
+    def stage_evaluation(expert=False):
+        measurements = {}
+        episodes = int(config.get('dagger_eval_episodes',32))
+        # Fixed per-slot quotas may require several episodes on small devices.
+        max_steps = int(config.get('dagger_eval_max_steps',6000))*math.ceil(episodes/int(config.get('dagger_stage_eval_num_envs',32)))
+        for stage in controller.stages:
+            try:
+                row = stage_probe().evaluate(student,start_stage=stage,stop_stage=stage,
+                    episodes=episodes,max_steps=max_steps,expert=expert)
+                measurement = stage_measurement(row,stage)
+            except RuntimeError as error:
+                if 'no snapshot is available' not in str(error):
+                    raise
+                measurement = dict(successes=0,failures=0,attempts=0,censored=0,
+                                   capped_attempts=0,success_rate=None)
+                log.warning('Stage {} has no evaluation snapshot; reference/comparison is unknown',stage)
+            measurements[stage] = measurement
+            policy = 'teacher' if expert else 'student'
+            for key,value in measurement.items():
+                if value is not None:
+                    writer.add_scalar(f'Evaluation/{policy}_stage_{stage}/{key}',value,next_step)
+            with (save_dir/'training_evaluations.jsonl').open('a',encoding='utf-8') as stream:
+                stream.write(json.dumps(dict(step=next_step,policy=policy,stage=stage,**measurement))+'\n')
+            log.info('Stage {} {}: successes={}/{}, rate={}',stage,policy,
+                     measurement['successes'],measurement['attempts'],measurement['success_rate'])
+        return measurements,observation,state
+
+    def capture_stage_reference():
+        independent_evaluation(expert=True)
+        reference,observation,state = stage_evaluation(expert=True)
+        controller.set_reference(reference,next_step)
+        atomic_save(dict(step=next_step,target_stage=target_stage,reference=reference),
+                    save_dir/'teacher_stage_reference.pth')
+        (save_dir/'teacher_stage_reference.json').write_text(json.dumps(reference,indent=2))
+        unknown = [s for s in controller.stages if not controller.reliable(reference.get(s))]
+        if unknown:
+            log.warning('Insufficient teacher samples for stages {}; these stages will not trigger beta corrections',unknown)
+        return observation,state
 
     def write_metrics():
         metrics.write(writer, next_step, buffer, current_beta(next_step),
@@ -258,6 +357,9 @@ def train_dagger(config, base, env):
         writer.add_scalar('Student/trained_to_stored_ratio', metrics.trained_samples / max(1, metrics.stored), next_step)
         for name, value in visual_training.metrics().items():
             writer.add_scalar(f'Student/{name}', value, next_step)
+        if stage_beta:
+            for name,value in controller.metrics(next_step).items():
+                writer.add_scalar(f'BetaControl/{name}',value,next_step)
         for name, value in health.items():
             writer.add_scalar(f'Health/{name}', value, next_step)
         for stage in range(6):
@@ -268,7 +370,9 @@ def train_dagger(config, base, env):
              start_step, end_step, sequence_length, burn_in, batch_size, buffer.storage_bytes / 2**20,
              buffer.storage_device)
     try:
-        if config.get('dagger_teacher_baseline', False):
+        if stage_beta and controller.reference is None and next_step >= controller.warmup_end:
+            observation,state = capture_stage_reference()
+        if not stage_beta and config.get('dagger_teacher_baseline', False):
             baseline, observation, state = independent_evaluation(expert=True)
             if baseline['success_rate'] < float(config.get('dagger_teacher_min_success', .01)):
                 raise RuntimeError("Teacher baseline failed; inspect training_evaluations.jsonl before distillation")
@@ -324,7 +428,19 @@ def train_dagger(config, base, env):
                 metrics.record_updates(losses, batch_size * sequence_length)
                 writer.add_scalar("DAgger/MSE_Loss", float(np.mean(losses)), step + 1)
             next_step = step + 1
-            if eval_every > 0 and next_step % eval_every == 0:
+            if stage_beta and controller.reference is None and next_step >= controller.warmup_end:
+                observation,state = capture_stage_reference()
+            if (stage_beta and controller.reference is not None and next_step >= controller.warmup_end
+                    and (next_step-controller.warmup_end) % eval_every == 0):
+                measured,observation,state = stage_evaluation()
+                bad = controller.observe(measured,next_step)
+                if bad:
+                    log.info('Stage beta correction: stages={}, beta={:.3f}, pause_until={}',
+                             bad,controller.beta,controller.pause_until)
+                prefix_every = int(config.get('dagger_prefix_eval_every',2500))
+                if prefix_every > 0 and (next_step-controller.warmup_end) % prefix_every == 0:
+                    _,observation,state = independent_evaluation()
+            elif not stage_beta and eval_every > 0 and next_step % eval_every == 0:
                 result, observation, state = independent_evaluation()
                 if controller is not None:
                     controller.observe(result, next_step)
@@ -349,10 +465,21 @@ def train_dagger(config, base, env):
         finally:
             hardware.close()
             writer.close()
+            if probe_worker is not None:
+                probe_worker.close()
 
 
 def evaluate_checkpoint(config, base, env, path, device, video=False):
     student, metadata, checkpoint_step = load_student(path, env, base, device)
+    target_stage = metadata.get('target_stage')
+    configured_target = config.get('dagger_target_stage')
+    if configured_target is not None and target_stage is not None and configured_target != target_stage:
+        raise ValueError('Evaluation target stage differs from the student checkpoint')
+    if target_stage is not None:
+        task = getattr(base.env.handler, 'task', None)
+        if task is not None:
+            task.dagger_target_stage = target_stage
+            task.curriculum_max_stage = target_stage
     validate_camera_config(metadata, config)
     adapter = StudentInputs(base, env, device, metadata["camera_name"], metadata["joint_names"],
                             image_size=tuple(metadata["image_shape"][-2:]))

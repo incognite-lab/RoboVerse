@@ -959,7 +959,9 @@ class _ChairManChecker(BaseChecker):
         # --- 5. UKLÁDÁNÍ SNAPSHOTŮ A LOGOVÁNÍ PRŮLOMŮ ---
 
         # A) Finále (Stage 6) - Jelikož se Stage 6 neukládá do snapshotů, vypíšeme průlom rovnou
-        just_finished = all_success & (stages == 6) # (protože jsme v kroku 4 zvedli stages na 6)
+        target_stage = getattr(handler.task, 'dagger_target_stage', None)
+        target_stage = 5 if target_stage is None else int(target_stage)
+        just_finished = all_success & (handler.task.completed_stage_events == target_stage)
         handler.task.stage_success[:] = just_finished
         handler.task.just_finished[:] = just_finished
 
@@ -967,17 +969,17 @@ class _ChairManChecker(BaseChecker):
             getattr(handler.task, "verbose_stage_events", False)
         )
         if verbose_stage_events and just_finished.any():
-            if 6 not in self.announced_stages:
+            if target_stage + 1 not in self.announced_stages:
                 print("\n" + "="*50)
-                print(f"🏆 ABSOLUTNÍ PRŮLOM! Robot poprvé dokončil celou úlohu (Stage 6)!")
+                print(f"🏆 Robot poprvé dokončil cílovou stage {target_stage}!")
                 print("="*50 + "\n")
-                self.announced_stages.add(6)
+                self.announced_stages.add(target_stage + 1)
 
         # B) Náhodný výběr pro uložení snapshotu
         use_snapshot_curriculum = bool(
             getattr(handler.task, "use_snapshot_curriculum", True)
         )
-        success_to_save = all_success & (stages <= 5)
+        success_to_save = all_success & ~just_finished & (stages <= 5)
         if not use_snapshot_curriculum:
             success_to_save = torch.zeros_like(success_to_save)
 

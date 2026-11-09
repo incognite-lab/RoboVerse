@@ -51,6 +51,14 @@ def build_env(config):
         raise ValueError("main_separate.py requires task: chairmanseparate")
     mode = config.get("train_or_eval", "train")
     recurrent_training = mode in ("train_dagger_new", "load_and_train_dagger_new")
+    recurrent_mode = recurrent_training or mode in ('eval_dagger_new', 'eval_dagger_new_video')
+    target_stage = config.get('dagger_target_stage') if recurrent_mode else None
+    if target_stage is not None and (isinstance(target_stage, bool) or not isinstance(target_stage, int)
+                                     or not 0 <= target_stage <= 5):
+        raise ValueError('dagger_target_stage must be an integer from 0 to 5')
+    if target_stage is not None and config.get('eval_start_stage', 0) is not None:
+        if int(config.get('eval_start_stage', 0)) > target_stage:
+            raise ValueError('eval_start_stage exceeds dagger_target_stage')
     scenario = ScenarioCfg(
         task=config["task"], robots=config["robots"], sim=config.get("sim", "genesis"),
         num_envs=int(config.get("num_envs", 1)), headless=bool(config.get("headless", False)),
@@ -71,7 +79,8 @@ def build_env(config):
     scenario.task.log_termination_reasons = bool(config.get("log_termination_reasons", True))
     scenario.task.log_reward_components = True
     scenario.task.train_stage = None
-    scenario.task.curriculum_max_stage = None
+    scenario.task.curriculum_max_stage = target_stage
+    scenario.task.dagger_target_stage = target_stage
     scenario.task.separate_policy_specs = config.get("policies", {})
     scenario.task.verbose_motion_diagnostics = bool(config.get("verbose_motion_diagnostics", False))
     scenario.task.visualize_reach_waypoints = bool(config.get("visualize_reach_waypoints", False))

@@ -109,7 +109,7 @@ dagger_buffer_pin_memory: false
 dagger_new_buffer_device: cpu
 dagger_new_batch_size: 2
 dagger_new_visual_batch_size: 4
-beta_schedule: evaluation
+beta_schedule: stage_sawtooth
 beta_start: 1.0
 beta_end: 0.0
 expert_model_path: ./config_run/output/ppo_models_separate/run_2026-10-14_19-21-47_chairman_separate
@@ -181,16 +181,21 @@ dagger_teacher_anchor_fraction: 0.25
 # Learner budget scales with stored frames instead of silently shrinking at 400 envs.
 dagger_min_train_sample_ratio: 2.0
 dagger_new_weight_decay: 0.0001
-# Independent student evaluation controls beta. Two passes are required per reduction.
+
+# Distill stages 0..4 inclusive. Reset immediately after stage 4 completes.
+dagger_target_stage: 4
+# Teacher-only collection warmup; freeze per-stage teacher reference at its end.
 dagger_teacher_warmup_steps: 5000
-# Start collecting some student-induced states after warmup even before full task success.
-# Further beta reductions still require successful independent student evaluations.
-dagger_beta_after_warmup: 0.9
-dagger_eval_every: 5000
+# Nominal beta slope: 1 -> 0 in 1000 vector steps outside recovery pauses.
+dagger_beta_decay_steps: 1000
+dagger_beta_stage_tolerance: 0.1
+dagger_beta_recovery_increment: 0.1
+dagger_beta_recovery_pause_steps: 500
+dagger_beta_min_stage_attempts: 30
+# Pure-student probes in a separate scene, one cohort per stage.
+dagger_stage_eval_num_envs: 32
+dagger_eval_every: 500
 dagger_eval_episodes: 32
 dagger_eval_max_steps: 6000
-dagger_eval_success_threshold: 0.8
-dagger_eval_required_passes: 2
-dagger_beta_decrement: 0.1
-dagger_teacher_baseline: true
-dagger_teacher_min_success: 0.01
+# Also evaluate the complete requested prefix; this does not gate distillation.
+dagger_prefix_eval_every: 2500

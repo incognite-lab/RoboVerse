@@ -1,0 +1,85 @@
+{
+  "step": 32,
+  "target": 4,
+  "beta": {
+    "mode": "stage_sawtooth",
+    "target_stage": 4,
+    "start": 1.0,
+    "end": 0.0,
+    "decay_steps": 1000,
+    "tolerance": 0.1,
+    "increment": 0.1,
+    "pause_steps": 500,
+    "min_attempts": 2,
+    "warmup_end": 2,
+    "last_step": 32,
+    "beta": 0.97,
+    "pause_until": 0,
+    "last_evaluation_step": 2,
+    "reference": {
+      "0": {
+        "successes": 0,
+        "failures": 0,
+        "attempts": 0,
+        "censored": 2,
+        "capped_attempts": 2,
+        "success_rate": null
+      },
+      "1": {
+        "successes": 2,
+        "failures": 0,
+        "attempts": 2,
+        "censored": 0,
+        "capped_attempts": 0,
+        "success_rate": 1.0
+      },
+      "2": {
+        "successes": 2,
+        "failures": 0,
+        "attempts": 2,
+        "censored": 0,
+        "capped_attempts": 0,
+        "success_rate": 1.0
+      },
+      "3": {
+        "successes": 0,
+        "failures": 0,
+        "attempts": 0,
+        "censored": 2,
+        "capped_attempts": 2,
+        "success_rate": null
+      },
+      "4": {
+        "successes": 0,
+        "failures": 2,
+        "attempts": 2,
+        "censored": 0,
+        "capped_attempts": 0,
+        "success_rate": 0.0
+      }
+    }
+  },
+  "visual": {
+    "pretrained": true,
+    "policy_lr": 0.0001,
+    "visual_lr": 1e-05,
+    "warmup_updates": 1,
+    "completed_updates": 2
+  },
+  "full_task_success_proven": false,
+  "evaluation_process_isolated": true,
+  "nyx_global_collision_detected": false,
+  "final_training_metrics": {
+    "Health/gradient_norm_before_clip": 2.561074733734131,
+    "Health/visual_gradient_norm": 0.8700152635574341,
+    "Health/proprio_gradient_norm": 0.1300498992204666,
+    "Health/gru_gradient_norm": 0.2971358895301819,
+    "Health/heads_gradient_norm": 0.37101081013679504,
+    "Health/visual_rms": 0.9999803900718689,
+    "Health/visual_abs_max": 8.190373420715332,
+    "Health/proprio_rms": 0.999922513961792,
+    "Health/gru_input_saturation_fraction": 0.0,
+    "Health/hidden_saturation_fraction": 0.0,
+    "Health/action_std_across_samples": 0.02808692865073681
+  }
+}

@@ -116,7 +116,11 @@ def _failure(handler, name, idx, condition):
 
 def _curriculum_limit(handler, available):
     cap = getattr(handler.task, "curriculum_max_stage", None)
-    return available if cap is None else min(available, int(cap))
+    target = getattr(handler.task, 'dagger_target_stage', None)
+    for limit in (cap, target):
+        if limit is not None:
+            available = min(available, int(limit))
+    return available
 
 
 # =========================================================
@@ -1126,6 +1130,9 @@ def reset_chairman(
             raise ValueError(
                 f"{stage_option} must be between 0 and 5, got {requested_stage}"
             )
+        target_stage = getattr(handler.task, 'dagger_target_stage', None)
+        if target_stage is not None and requested_stage > target_stage:
+            raise ValueError(f'{stage_option} exceeds dagger_target_stage={target_stage}')
         if requested_stage > 0:
             load_requested_stage_snapshots(requested_stage)
         if requested_stage > 0 and not RAM_SNAPSHOT_BUFFER[requested_stage]:

@@ -19,6 +19,7 @@ class ChairmanStage0ResetRandomizationTest(unittest.TestCase):
             SimpleNamespace(name="floor_rotate_z"),
         ]
         return SimpleNamespace(
+            task=SimpleNamespace(randomization_seed=0), device=torch.device('cpu'),
             robot=SimpleNamespace(name="g1_with_hands"),
             object_inst_dict={"chair": SimpleNamespace(joints=joints)},
         )

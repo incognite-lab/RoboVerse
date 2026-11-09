@@ -8,11 +8,13 @@ from .inputs import RolloutState
 
 
 @contextmanager
-def evaluation_resets(env, start_stage=0):
+def evaluation_resets(env, start_stage=0, stop_stage=None):
     handler = env.env.env.handler if hasattr(env, 'env') else None
     task = getattr(handler, 'task', None)
     changes = dict(eval_start_stage=start_stage, reset_to_stage0=start_stage == 0,
                    use_snapshot_curriculum=start_stage != 0, snapshot_save_probability=0.)
+    if stop_stage is not None:
+        changes.update(dagger_target_stage=stop_stage, curriculum_max_stage=stop_stage)
     saved = {}
     if task is not None:
         saved = {key: (hasattr(task, key), getattr(task, key, None)) for key in changes}
@@ -49,6 +51,8 @@ def evaluate_policy(student, adapter, env, episodes, max_steps, *, teacher=None,
     successes, finished_returns, finished_lengths = [], [], []
     stage_counts = np.zeros(6, dtype=np.int64)
     stage_completions = np.zeros(6, dtype=np.int64)
+    stage_failures = np.zeros(6, dtype=np.int64)
+    stage_censored = np.zeros(6, dtype=np.int64)
     for _ in range(max_steps):
         if teacher is None:
             values = adapter.read(state.previous_actions)
@@ -73,6 +77,13 @@ def evaluate_policy(student, adapter, env, episodes, max_steps, *, teacher=None,
             stage = int(infos[index].get('completed_stage', -1))
             if 0 <= stage < 6:
                 stage_completions[stage] += 1
+            elif dones[index]:
+                before = int(infos[index].get('stage_before', -1))
+                if 0 <= before < 6:
+                    if infos[index].get('is_success', False):
+                        stage_completions[before] += 1
+                    else:
+                        stage_failures[before] += 1
         for index in np.flatnonzero(np.asarray(dones) & active):
             successes.append(int(infos[index].get('is_success', False)))
             finished_returns.append(float(returns[index]))
@@ -84,6 +95,9 @@ def evaluate_policy(student, adapter, env, episodes, max_steps, *, teacher=None,
         if np.all(done_counts >= quotas):
             break
     unfinished = int((quotas - done_counts).sum())
+    stages = np.clip(env.get_current_stages(), 0, 5)
+    for index in np.flatnonzero((done_counts < quotas) & (lengths > 0)):
+        stage_censored[int(stages[index])] += 1
     if count_timeouts:
         stages = np.clip(env.get_current_stages(), 0, 5)
         for index in np.flatnonzero(done_counts < quotas):
@@ -102,6 +116,12 @@ def evaluate_policy(student, adapter, env, episodes, max_steps, *, teacher=None,
                std_length=float(np.std(finished_lengths)) if successes else 0.)
     row.update({f'end_stage_{stage}_count': int(count) for stage, count in enumerate(stage_counts)})
     row.update({f'stage_{stage}_completions': int(count) for stage, count in enumerate(stage_completions)})
+    for stage in range(6):
+        attempts = int(stage_completions[stage] + stage_failures[stage])
+        row[f'stage_{stage}_attempts'] = attempts
+        row[f'stage_{stage}_failures'] = int(stage_failures[stage])
+        row[f'stage_{stage}_censored'] = int(stage_censored[stage])
+        row[f'stage_{stage}_success_rate'] = float(stage_completions[stage]/attempts) if attempts else None
     return row
 
 
