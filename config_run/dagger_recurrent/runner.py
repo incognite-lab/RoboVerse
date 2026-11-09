@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import csv
+from copy import deepcopy
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 import random
 
@@ -13,11 +15,13 @@ from loguru import logger as log
 
 from .buffer import SequenceBuffer, train_sequence_step
 from .checkpoint import (
-    IMU_LAYOUT, control_dt, evaluation_path, load_student, model_kwargs,
+    IMU_LAYOUT, atomic_save, control_dt, evaluation_path, load_student, model_kwargs,
     output_directory, restore_optimizer, save_checkpoint,
 )
 from .inputs import IMU_BODY_NAME, RolloutState, StudentInputs
 from .student_net import ACTION_GROUP_SIZES, RecurrentVisionStudent
+from .evaluation import EvaluationBeta, evaluate_policy, evaluation_resets
+from .finetuning import VisualFineTuning
 
 try:
     from ..student_vision import image_size_from_config
@@ -48,6 +52,21 @@ def validate_action_layout(env):
     for name, size in ACTION_GROUP_SIZES:
         if len(env.action_groups[name]) != size:
             raise ValueError(f"Unexpected {name} action layout")
+
+
+def camera_config(config):
+    """Image geometry and rendering appearance must match training."""
+    keys = ('name', 'width', 'height', 'fov_vertical', 'fov_horizontal', 'clipping_range',
+            'mount_to', 'mount_link', 'mount_pos', 'mount_quat', 'pos', 'look_at',
+            'gaussian_splat_path', 'gaussian_position', 'gaussian_rotation_xyzw',
+            'gaussian_scale', 'gaussian_z_up', 'render_sim_geometry', 'tone_mapper', 'render_mode')
+    return deepcopy({name: {key: spec.get('params', {}).get(key) for key in keys}
+                     for name, spec in config.get('cameras', {}).items()})
+
+
+def validate_camera_config(metadata, config):
+    if 'camera_config' in metadata and metadata['camera_config'] != camera_config(config):
+        raise ValueError("Camera calibration/scene differs from the student checkpoint")
 
 
 def train_dagger(config, base, env):
@@ -92,6 +111,12 @@ def train_dagger(config, base, env):
         if not config.get("load_student_path"):
             raise ValueError("load_and_train_dagger_new requires load_student_path")
         student, metadata, start_step = load_student(config["load_student_path"], env, base, device)
+        if student.architecture_version < 2:
+            raise ValueError("Legacy recurrent v1 weights may be saturated. Start train_dagger_new with "
+                             "a fresh v2 model and optimizer; v1 checkpoints remain evaluable.")
+        if ('dagger_new_pretrained_visual' in config
+                and bool(config['dagger_new_pretrained_visual']) != bool(metadata.get('pretrained_visual', False))):
+            raise ValueError("Cannot change pretrained ResNet initialization on resume; start a new student instead")
         camera_name = metadata["camera_name"]
     else:
         camera_name = str(config.get("dagger_camera_name", "camera0"))
@@ -107,13 +132,22 @@ def train_dagger(config, base, env):
         student.set_proprio_normalization(torch.zeros_like(std), std)
         metadata = dict(model_kwargs=kwargs, joint_names=list(env.robot_joint_names),
                         action_names=list(env.action_names), imu_layout=IMU_LAYOUT, imu_body_name=IMU_BODY_NAME,
-                        camera_name=camera_name, control_dt=control_dt(base))
-    optimizer = torch.optim.Adam(student.parameters(), lr=float(config.get("learning_rate", 3e-4)))
+                        camera_name=camera_name, control_dt=control_dt(base),
+                        pretrained_visual=bool(config.get('dagger_new_pretrained_visual', False)))
+    visual_training = VisualFineTuning(student, config, pretrained=metadata.get('pretrained_visual', False),
+                                       saved=metadata.get('visual_finetuning'))
+    optimizer = visual_training.make_optimizer(float(config.get('dagger_new_weight_decay', 1e-4)))
     if resume:
-        restored_step = restore_optimizer(config["load_student_path"], optimizer, device)
+        restored_step = restore_optimizer(config["load_student_path"], optimizer, device, student=student)
         if restored_step != start_step:
             raise ValueError("Student and optimizer checkpoint steps differ")
         log.info("Resuming recurrent weights/optimizer at {}; simulator, replay and GRU start fresh", start_step)
+        visual_training.apply(optimizer)
+    log.info("ResNet pretrained={}, normalization={}, fine-tuning={}, completed updates={}, "
+             "warmup={} updates, LR policy={} / ResNet={}",
+             visual_training.pretrained, student.visual_normalization, visual_training.active,
+             visual_training.completed_updates, visual_training.warmup_updates,
+             visual_training.policy_lr, visual_training.visual_lr)
     end_step = dagger_target_steps(config, start_step)
     observation = env.reset()
     state = RolloutState(student, env.num_envs)
@@ -125,17 +159,51 @@ def train_dagger(config, base, env):
         raise ValueError("Resume camera image shape differs from training")
     metadata["image_shape"] = image_shape
     metadata["image_preprocessing"] = "center_crop_to_aspect_area_resize_rgb_v2"
+    validate_camera_config(metadata, config)
+    metadata["camera_config"] = camera_config(config)
+    minimum_ratio = float(config.get("dagger_min_train_sample_ratio", 1.))
+    if not np.isfinite(minimum_ratio) or minimum_ratio < 0:
+        raise ValueError("dagger_min_train_sample_ratio must be finite and nonnegative")
+    updates = max(updates, math.ceil(train_every * store_count * minimum_ratio / (batch_size * sequence_length)))
+    log.info("Learner uses {} updates per collection block; trained/new positions={:.3f}",
+             updates, updates * batch_size * sequence_length / (train_every * store_count))
     # Keep slots fixed throughout the run; resampling IDs each step would
     # create sequences made from unrelated environments.
     selected = torch.randperm(env.num_envs, device=device)[:store_count]
+    selected_numpy = selected.cpu().numpy()
     buffer = SequenceBuffer(
         capacity, store_count, image_shape, student.num_joints,
         (student.num_layers, student.hidden_size), device=device,
         storage_device=config.get("dagger_new_buffer_device", "cpu"),
         pin_memory=bool(config.get("dagger_buffer_pin_memory", False)),
+        demonstrations_per_stage=int(config.get("dagger_demonstrations_per_stage", 0)),
+        demonstration_length=sequence_length + burn_in,
+        demonstration_fraction=float(config.get("dagger_demonstration_fraction", .5)),
+        demonstration_burn_in=burn_in,
     )
+    anchor_fraction = float(config.get("dagger_teacher_anchor_fraction", 0.))
+    if not 0 <= anchor_fraction < 1:
+        raise ValueError("dagger_teacher_anchor_fraction must be in [0,1)")
+    anchors = selected[:max(1, math.ceil(store_count * anchor_fraction))] if anchor_fraction else selected[:0]
+    gated_beta = config.get("beta_schedule", "evaluation") == "evaluation"
+    controller = EvaluationBeta(config, metadata.get('beta_controller'), start_step) if gated_beta else None
+    def current_beta(step):
+        return controller.beta_at_step(step) if controller is not None else beta_at_step(config, step)
+    eval_every = int(config.get("dagger_eval_every", 5000 if gated_beta else 0))
+    if gated_beta and eval_every <= 0:
+        raise ValueError("Evaluation-gated beta requires dagger_eval_every > 0")
     save_dir = output_directory(config)
     save_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = save_dir / "teacher_demonstrations.pth"
+    if resume and buffer.demonstrations_per_stage:
+        previous_archive = (Path(config["load_student_path"]).parent
+                            / metadata.get('demonstration_archive', 'teacher_demonstrations.pth'))
+        if not previous_archive.is_file():
+            raise FileNotFoundError(f"Resume requires preserved teacher demonstrations: {previous_archive}")
+        archive = torch.load(previous_archive, map_location='cpu', weights_only=True)
+        if archive['camera_config'] != camera_config(config):
+            raise ValueError("Demonstration archive camera calibration differs")
+        buffer.load_archive(archive['replay'])
     log_root = Path(config.get("tensorboard_log", str(save_dir / "tensorboard"))) / "recurrent"
     from torch.utils.tensorboard import SummaryWriter
     writer = SummaryWriter(str(log_root / datetime.now(timezone.utc).strftime("run_%Y%m%dT%H%M%S%fZ")))
@@ -147,12 +215,65 @@ def train_dagger(config, base, env):
     hardware = HardwareMonitor(device, interval=config.get("dagger_gpu_poll_seconds", 10))
     save_frequency = int(config.get("model_save_freq", 5000))
     next_step = start_step
+    health = {}
+    zero_gradient_checks = 0
+    starting_updates = visual_training.completed_updates
+    finished_normally = False
+
+    def save_training(path, interrupted=False):
+        replay_path = Path(str(path) + '.demonstrations.pth') if interrupted else archive_path
+        metadata['visual_finetuning'] = visual_training.state_dict()
+        if buffer.demonstrations_per_stage:
+            metadata['demonstration_archive'] = replay_path.name
+        if controller is not None:
+            metadata['beta_controller'] = controller.state_dict()
+        save_checkpoint(path, student, optimizer, next_step, metadata)
+        if buffer.demonstrations_per_stage:
+            atomic_save(dict(camera_config=camera_config(config), replay=buffer.archive_state()), replay_path)
+
+    def independent_evaluation(expert=False):
+        with evaluation_resets(env, start_stage=0):
+            result = evaluate_policy(student, adapter, env,
+                                     min(env.num_envs, int(config.get('dagger_eval_episodes', 32))),
+                                     int(config.get('dagger_eval_max_steps', 6000)),
+                                     teacher=teacher if expert else None)
+        prefix = 'Evaluation/teacher' if expert else 'Evaluation/student'
+        for key, value in result.items():
+            writer.add_scalar(f'{prefix}/{key}', value, next_step)
+        with (save_dir / 'training_evaluations.jsonl').open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps(dict(step=next_step, policy=prefix, **result)) + '\n')
+        log.info("{} success={}/{}, capped={}", prefix, result['success_count'],
+                 result['episodes_finished'], result['capped_attempts'])
+        # Evaluation ran in this simulator. Explicit resets prevent replay
+        # windows or GRU memory from silently bridging unrelated trajectories.
+        observation = env.reset()
+        metrics.restart_rollout(env.get_current_stages())
+        return result, observation, RolloutState(student, env.num_envs)
+
+    def write_metrics():
+        metrics.write(writer, next_step, buffer, current_beta(next_step),
+                      optimizer.param_groups[0]['lr'], hardware, end_step)
+        writer.add_scalar('Recurrent/buffer_total_mib', buffer.storage_bytes / 2**20, next_step)
+        writer.add_scalar('Replay/demonstration_mib', buffer.demonstration_bytes / 2**20, next_step)
+        writer.add_scalar('Student/trained_to_stored_ratio', metrics.trained_samples / max(1, metrics.stored), next_step)
+        for name, value in visual_training.metrics().items():
+            writer.add_scalar(f'Student/{name}', value, next_step)
+        for name, value in health.items():
+            writer.add_scalar(f'Health/{name}', value, next_step)
+        for stage in range(6):
+            writer.add_scalar(f'Replay/stage_{stage}_teacher_windows',
+                              len(buffer.demonstrations.get(stage, [])), next_step)
+
     log.info("Recurrent DAgger: {}..{}, sequence={} + burn-in={}, batch={} sequences, replay={:.1f} MiB on {}",
              start_step, end_step, sequence_length, burn_in, batch_size, buffer.storage_bytes / 2**20,
              buffer.storage_device)
     try:
+        if config.get('dagger_teacher_baseline', False):
+            baseline, observation, state = independent_evaluation(expert=True)
+            if baseline['success_rate'] < float(config.get('dagger_teacher_min_success', .01)):
+                raise RuntimeError("Teacher baseline failed; inspect training_evaluations.jsonl before distillation")
         for step in range(start_step, end_step):
-            beta = beta_at_step(config, step)
+            beta = current_beta(step)
             with metrics.measure("camera_and_inputs"):
                 values = adapter.read(state.previous_actions)
             with metrics.measure("inference_and_actions"):
@@ -162,39 +283,69 @@ def train_dagger(config, base, env):
                     prediction, hidden = student(values[0].float() / 255, *values[1:],
                                                  hidden=state.hidden, reset_mask=state.reset_mask)
                 proposed = prediction.cpu().numpy()
+                if not np.isfinite(proposed).all() or not np.isfinite(expert).all():
+                    raise FloatingPointError("Non-finite student/teacher action; simulator was not stepped")
                 metrics.record_predictions(proposed, expert, env.action_space.low, env.action_space.high)
-                execute_expert = random.random() < beta
-                actions = np.clip(expert if execute_expert else proposed,
+                execute_expert = torch.rand(env.num_envs, device=device) < beta
+                execute_expert[anchors] = True
+                mask = execute_expert.cpu().numpy()
+                actions = np.clip(np.where(mask[:, None], expert, proposed),
                                   env.action_space.low, env.action_space.high)
             with metrics.measure("buffer_store"):
                 buffer.add(tuple(value.index_select(0, selected) for value in values),
                            torch.as_tensor(expert, device=device).index_select(0, selected),
                            state.hidden.index_select(1, selected), state.reset_mask.index_select(0, selected))
+                get_stages = getattr(env, 'get_current_stages_torch', None)
+                stages = (get_stages().index_select(0, selected) if get_stages is not None
+                          else env.get_current_stages()[selected_numpy])
+                buffer.record_demonstrations(stages, execute_expert.index_select(0, selected))
             with metrics.measure("env_step"):
                 observation, rewards, dones, infos = env.step(actions)
                 state.after_step(hidden, actions, dones)
-            metrics.observe(dones, infos, store_count, execute_expert)
+            metrics.observe(dones, infos, store_count, float(mask.mean()))
             if (step + 1) % train_every == 0 and buffer.filled_steps >= sequence_length + burn_in:
                 with metrics.measure("student_updates"):
-                    losses = [train_sequence_step(student, optimizer, buffer, batch_size,
-                                                 sequence_length, burn_in, grad_clip) for _ in range(updates)]
+                    losses = []
+                    for update in range(updates):
+                        inspect = update == updates - 1
+                        student.collect_diagnostics = inspect
+                        losses.append(train_sequence_step(student, optimizer, buffer, batch_size,
+                                                          sequence_length, burn_in, grad_clip,
+                                                          diagnostics=health if inspect else None))
+                        if visual_training.after_update(optimizer):
+                            log.info("Unfreezing pretrained ResNet after {} gradient updates; visual LR={}",
+                                     visual_training.completed_updates, visual_training.visual_lr)
+                    student.collect_diagnostics = False
+                    zero_gradient_checks = (zero_gradient_checks + 1 if
+                                            health['visual_gradient_norm'] == 0 and health['gru_gradient_norm'] == 0
+                                            and losses[-1] > 1e-8 else 0)
+                    if zero_gradient_checks >= 3:
+                        raise RuntimeError("Encoder and GRU gradients vanished for three learning blocks; stopping collapsed training")
                 metrics.record_updates(losses, batch_size * sequence_length)
                 writer.add_scalar("DAgger/MSE_Loss", float(np.mean(losses)), step + 1)
             next_step = step + 1
-            beta_next = beta_at_step(config, next_step)
+            if eval_every > 0 and next_step % eval_every == 0:
+                result, observation, state = independent_evaluation()
+                if controller is not None:
+                    controller.observe(result, next_step)
+            beta_next = current_beta(next_step)
             if metrics.steps % log_every == 0:
-                metrics.write(writer, next_step, buffer, beta_next, optimizer.param_groups[0]["lr"], hardware, end_step)
-                writer.add_scalar("Recurrent/buffer_total_mib", buffer.storage_bytes / 2**20, next_step)
+                write_metrics()
                 log.info("Recurrent DAgger {}/{} beta={:.4f}, episodes={}, success={}",
                          next_step, end_step, beta_next, metrics.episodes, metrics.successful_episodes)
             if save_frequency > 0 and next_step % save_frequency == 0:
-                save_checkpoint(save_dir / f"student_model_step_{step}.pth", student, optimizer, next_step, metadata)
+                save_training(save_dir / f"student_model_step_{step}.pth")
+        finished_normally = True
     finally:
         try:
-            save_checkpoint(save_dir / "student_model_final.pth", student, optimizer, next_step, metadata)
+            if finished_normally:
+                save_training(save_dir / 'student_model_final.pth')
+            elif next_step > start_step or visual_training.completed_updates > starting_updates:
+                recovery_path = save_dir / f'student_model_interrupted_step_{next_step}.pth'
+                save_training(recovery_path, interrupted=True)
+                log.warning('Training interrupted; recovery checkpoint saved to {}', recovery_path)
             if metrics.steps > metrics.last_steps:
-                metrics.write(writer, next_step, buffer, beta_at_step(config, next_step),
-                              optimizer.param_groups[0]["lr"], hardware, end_step)
+                write_metrics()
         finally:
             hardware.close()
             writer.close()
@@ -202,87 +353,44 @@ def train_dagger(config, base, env):
 
 def evaluate_checkpoint(config, base, env, path, device, video=False):
     student, metadata, checkpoint_step = load_student(path, env, base, device)
-    env.reset()
-    state = RolloutState(student, env.num_envs)
+    validate_camera_config(metadata, config)
     adapter = StudentInputs(base, env, device, metadata["camera_name"], metadata["joint_names"],
                             image_size=tuple(metadata["image_shape"][-2:]))
-    writer = None
+    video_writer = None
+    frame_callback = None
     if video:
         import cv2
         video_path = Path(config.get("video_save_path", "./config_run/output/eval_videos/recurrent.mp4"))
         video_path.parent.mkdir(parents=True, exist_ok=True)
         _, height, width = metadata["image_shape"]
-        writer = cv2.VideoWriter(str(video_path), cv2.VideoWriter_fourcc(*"mp4v"),
-                                 float(config.get("video_fps", 30)), (width, height))
-        if not writer.isOpened():
-            writer.release()
+        video_writer = cv2.VideoWriter(str(video_path), cv2.VideoWriter_fourcc(*"mp4v"),
+                                       float(config.get("video_fps", 30)), (width, height))
+        if not video_writer.isOpened():
+            video_writer.release()
             raise RuntimeError(f"Cannot write video to {video_path}")
-    target = int(config.get("eval_episodes", 1 if video else env.num_envs))
-    max_steps = int(config.get("eval_max_steps", 2000) if video else config.get("eval_total_step_cap", 5000))
-    if target <= 0 or max_steps <= 0:
-        if writer is not None:
-            writer.release()
-        raise ValueError("Evaluation episode count and step cap must be positive")
-    returns = np.zeros(env.num_envs)
-    lengths = np.zeros(env.num_envs, dtype=np.int64)
-    finished_returns, finished_lengths, successes = [], [], []
-    num_stages = int(config.get("num_eval_stages", 6))
-    if num_stages <= 0:
-        if writer is not None:
-            writer.release()
-        raise ValueError("num_eval_stages must be positive")
-    stage_counts = np.zeros(num_stages, dtype=np.int64)
+        def frame_callback(images):
+            frame = cv2.cvtColor(images[0].permute(1, 2, 0).cpu().numpy(), cv2.COLOR_RGB2BGR)
+            for _ in range(max(1, int(config.get("video_slowdown", 1)))):
+                video_writer.write(frame)
     try:
-        for _ in range(max_steps):
-            values = adapter.read(state.previous_actions)
-            if list(values[0].shape[1:]) != metadata["image_shape"]:
-                raise ValueError("Evaluation camera image shape differs from training")
-            if writer is not None:
-                frame = cv2.cvtColor(values[0][0].permute(1, 2, 0).cpu().numpy(), cv2.COLOR_RGB2BGR)
-                for _ in range(max(1, int(config.get("video_slowdown", 1)))):
-                    writer.write(frame)
-            stages = np.clip(env.get_current_stages(), 0, num_stages - 1)
-            with torch.no_grad():
-                prediction, hidden = student(values[0].float() / 255, *values[1:],
-                                             hidden=state.hidden, reset_mask=state.reset_mask)
-            actions = np.clip(prediction.cpu().numpy(), env.action_space.low, env.action_space.high)
-            _, rewards, dones, infos = env.step(actions)
-            state.after_step(hidden, actions, dones)
-            returns += rewards
-            lengths += 1
-            for index in np.flatnonzero(dones):
-                if len(successes) < target:
-                    finished_returns.append(float(returns[index]))
-                    finished_lengths.append(int(lengths[index]))
-                    successes.append(int(infos[index].get("is_success", False)))
-                    stage_counts[int(stages[index])] += 1
-                returns[index] = lengths[index] = 0
-            if len(successes) >= target:
-                break
-        if len(successes) < target and config.get("eval_count_timeouts_as_failures", True):
-            # Count only live, unfinished attempts, not freshly auto-reset rows.
-            for index in np.flatnonzero(lengths > 0)[:target - len(successes)]:
-                finished_returns.append(float(returns[index]))
-                finished_lengths.append(int(lengths[index]))
-                successes.append(0)
-                stage_counts[int(np.clip(env.get_current_stages()[index], 0, num_stages - 1))] += 1
+        with evaluation_resets(env, int(config.get('eval_start_stage') or 0)):
+            result = evaluate_policy(
+                student, adapter, env, int(config.get('eval_episodes', 1 if video else env.num_envs)),
+                int(config.get('eval_max_steps', 2000) if video else config.get('eval_total_step_cap', 6000)),
+                frame_callback=frame_callback,
+                count_timeouts=bool(config.get('eval_count_timeouts_as_failures', True)))
     finally:
-        if writer is not None:
-            writer.release()
-    row = dict(checkpoint=Path(path).name, x_step=checkpoint_step, episodes_finished=len(successes),
-               mean_reward=float(np.mean(finished_returns)) if successes else 0.,
-               std_reward=float(np.std(finished_returns)) if successes else 0.,
-               success_rate=float(np.mean(successes)) if successes else 0., success_count=sum(successes),
-               mean_length=float(np.mean(finished_lengths)) if successes else 0.,
-               std_length=float(np.std(finished_lengths)) if successes else 0.)
-    row.update({f"end_stage_{stage}_count": int(count) for stage, count in enumerate(stage_counts)})
-    log.info("Recurrent evaluation {}: success={}/{}, reward={:.4f}", path, sum(successes), len(successes), row["mean_reward"])
+        if video_writer is not None:
+            video_writer.release()
+    row = dict(checkpoint=Path(path).name, x_step=checkpoint_step, **result)
+    log.info("Recurrent evaluation {}: success={}/{}, capped={}", path, result['success_count'],
+             result['episodes_finished'], result['capped_attempts'])
     return row
 
 
 def eval_dagger(config, base, env, video=False):
     validate_action_layout(env)
-    root = evaluation_path(config.get("load_model_path", "./config_run/output/dagger_separate"))
+    root = evaluation_path(config.get("load_model_path", "./config_run/output/dagger_separate_stable_v2"))
     checkpoints = _student_checkpoints(root)
     if video:
         # A directory selects its final/latest checkpoint for video.

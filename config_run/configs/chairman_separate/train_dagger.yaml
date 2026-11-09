@@ -25,7 +25,7 @@ cameras:
       mount_to: g1_with_hands
       mount_link: head_link
       mount_pos: [0.08, 0.0, 0.35]
-      mount_quat: [0.5, 0.5, -0.5, -0.5]
+      mount_quat: [-0.583600, -0.399263, 0.399263, 0.583600]
       gaussian_splat_path: ./config_run/splat/splat_2.ply
       gaussian_position: [0.0, 0.0, 1.5]
       gaussian_rotation_xyzw: [0.0, 0.0, -0.70710678, 0.70710678]
@@ -59,10 +59,17 @@ use_snapshot_curriculum: true
 snapshot_save_probability: 0.1
 
 total_timesteps: 1_000_000
-learning_rate: 0.0003
-model_save_path: ./config_run/output/dagger_separate
+learning_rate: 0.0001
+# ImageNet ResNet-18: true keeps calibrated BatchNorm; false uses random weights + GroupNorm.
+dagger_new_pretrained_visual: true
+# Backbone LR stays lower than the learning_rate used by GRU and policy heads.
+dagger_new_visual_learning_rate: 0.00001
+# Freeze ONLY a pretrained backbone for N successful gradient updates (not simulator steps).
+# Update N+1 starts fine-tuning. Set 0 for immediate fine-tuning; ignored when pretrained=false.
+dagger_new_visual_warmup_updates: 1000
+model_save_path: ./config_run/output/dagger_separate_stable_v2
 model_save_freq: 10000
-tensorboard_log: ./config_run/output/dagger_separate/tensorboard
+tensorboard_log: ./config_run/output/dagger_separate_stable_v2/tensorboard
 # Rich stage, throughput and hardware metrics. GPU polling runs in a background thread.
 dagger_log_every: 100
 dagger_gpu_poll_seconds: 10
@@ -83,9 +90,8 @@ dagger_new_buffer_device: cpu
 dagger_new_batch_size: 2
 # Encoder chunks + activation recomputation bound ResNet training VRAM.
 dagger_new_visual_batch_size: 4
-# Linear in absolute vector steps: 1 at step 0, 0 at total_timesteps.
-# Resume recalculates beta from the checkpoint step, including old exponential runs.
-beta_schedule: linear
+# Beta decreases only after successful pure-student evaluations.
+beta_schedule: evaluation
 beta_start: 1.0
 beta_end: 0.0
 
@@ -113,3 +119,25 @@ policies:
   direction:
     action_groups: [direction]
     observation_groups: [joint_positions, pelvis_velocity, chair_geometry, previous_walk_command, stage, previous_policy_actions]
+
+# Stable v2: fresh encoder/optimizer; do not resume the saturated v1 weights.
+# Balanced CPU archive retains teacher windows after online replay overwrites.
+dagger_demonstrations_per_stage: 16
+dagger_demonstration_fraction: 0.5
+dagger_teacher_anchor_fraction: 0.25
+# Learner budget scales with stored frames instead of silently shrinking at 400 envs.
+dagger_min_train_sample_ratio: 2.0
+dagger_new_weight_decay: 0.0001
+# Independent student evaluation controls beta. Two passes are required per reduction.
+dagger_teacher_warmup_steps: 5000
+# Start collecting some student-induced states after warmup even before full task success.
+# Further beta reductions still require successful independent student evaluations.
+dagger_beta_after_warmup: 0.9
+dagger_eval_every: 5000
+dagger_eval_episodes: 32
+dagger_eval_max_steps: 6000
+dagger_eval_success_threshold: 0.8
+dagger_eval_required_passes: 2
+dagger_beta_decrement: 0.1
+dagger_teacher_baseline: true
+dagger_teacher_min_success: 0.01

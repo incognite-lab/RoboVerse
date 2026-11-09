@@ -163,7 +163,7 @@ class DaggerMetrics:
         self.episode_steps += 1
         self.steps += 1
         self.stored += stored
-        self.expert_steps += int(executed_expert)
+        self.expert_steps += float(executed_expert)
         for env, info in enumerate(infos):
             before = int(info['stage_before'])
             after = int(info['stage_after'])
@@ -207,6 +207,17 @@ class DaggerMetrics:
         self.losses.extend(losses)
         self.updates += len(losses)
         self.trained_samples += len(losses) * samples_per_update
+
+    def restart_rollout(self, stages):
+        """Discard partial training attempts interrupted by independent evaluation."""
+        now = self.clock()
+        self.stages = np.asarray(stages, dtype=np.int64).copy()
+        self.stage_steps.fill(0)
+        self.episode_steps.fill(0)
+        self.entered_at.fill(now)
+        self.episode_at.fill(now)
+        for stage in self.stages:
+            self._enter(stage)
 
     def record_predictions(self, student_actions, expert_actions, low, high):
         error = student_actions - expert_actions

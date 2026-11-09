@@ -7,7 +7,7 @@ robots:
 fix_base_link: false
 task: chairmanseparate
 decimation: 5
-num_envs: 64
+num_envs: 400
 headless: true
 add_table: true
 env_spacing: 4.0
@@ -30,11 +30,7 @@ cameras:
       - 0.08
       - 0.0
       - 0.35
-      mount_quat:
-      - 0.5
-      - 0.5
-      - -0.5
-      - -0.5
+      mount_quat: [-0.583600,-0.399263,0.399263,0.583600]
       gaussian_splat_path: ./config_run/splat/splat_2.ply
       gaussian_position:
       - 0.0
@@ -50,7 +46,7 @@ cameras:
       - 3.0
       - 3.0
       spp: 8
-      render_mode: RefPathTracer
+      render_mode: FastPathTracer
       tone_mapper: 'Off'
       render_sim_geometry: true
       standalone_floor: false
@@ -89,10 +85,17 @@ reset_to_stage0: false
 use_snapshot_curriculum: true
 snapshot_save_probability: 0.1
 total_timesteps: 1250000
-learning_rate: 0.0003
-model_save_path: ./config_run/output/dagger_separate_l40_recurrent_640x360
+learning_rate: 0.0001
+# ImageNet ResNet-18: true keeps calibrated BatchNorm; false uses random weights + GroupNorm.
+dagger_new_pretrained_visual: true
+# Backbone LR stays lower than the learning_rate used by GRU and policy heads.
+dagger_new_visual_learning_rate: 0.00001
+# Freeze ONLY a pretrained backbone for N successful gradient updates (not simulator steps).
+# Update N+1 starts fine-tuning. Set 0 for immediate fine-tuning; ignored when pretrained=false.
+dagger_new_visual_warmup_updates: 1000
+model_save_path: ./config_run/output/dagger_separate_l40_stable_v2_640x360
 model_save_freq: 12500
-tensorboard_log: ./config_run/output/dagger_separate_l40_recurrent_640x360/tensorboard
+tensorboard_log: ./config_run/output/dagger_separate_l40_stable_v2_640x360/tensorboard
 dagger_log_every: 100
 dagger_gpu_poll_seconds: 10
 dagger_camera_name: camera0
@@ -108,7 +111,7 @@ dagger_buffer_pin_memory: false
 dagger_new_buffer_device: cuda
 dagger_new_batch_size: 16
 dagger_new_visual_batch_size: 4
-beta_schedule: linear
+beta_schedule: evaluation
 beta_start: 1.0
 beta_end: 0.0
 expert_model_path: ./config_run/output/ppo_models_separate/run_2026-10-14_19-21-47_chairman_separate
@@ -172,3 +175,25 @@ policies:
 dagger_new_checkpoint_visual: true
 dagger_torch_threads: 4
 dagger_defer_camera_rendering: true
+
+# Stable v2: fresh encoder/optimizer; do not resume the saturated v1 weights.
+# Balanced CPU archive retains teacher windows after online replay overwrites.
+dagger_demonstrations_per_stage: 16
+dagger_demonstration_fraction: 0.5
+dagger_teacher_anchor_fraction: 0.25
+# Learner budget scales with stored frames instead of silently shrinking at 400 envs.
+dagger_min_train_sample_ratio: 2.0
+dagger_new_weight_decay: 0.0001
+# Independent student evaluation controls beta. Two passes are required per reduction.
+dagger_teacher_warmup_steps: 5000
+# Start collecting some student-induced states after warmup even before full task success.
+# Further beta reductions still require successful independent student evaluations.
+dagger_beta_after_warmup: 0.9
+dagger_eval_every: 5000
+dagger_eval_episodes: 32
+dagger_eval_max_steps: 6000
+dagger_eval_success_threshold: 0.8
+dagger_eval_required_passes: 2
+dagger_beta_decrement: 0.1
+dagger_teacher_baseline: true
+dagger_teacher_min_success: 0.01

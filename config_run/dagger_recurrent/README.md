@@ -28,7 +28,8 @@ Povinné nastavení navíc není potřeba. Teacher zůstává v `expert_model_pa
 `policies` nadále popisují šest teacherových politik, kamera v `cameras`.
 Pro evaluaci zvol nový režim ve stávajícím eval configu. Musí používat stejnou
 kameru (geometrii, montáž, FOV, rozlišení) a řídicí periodu jako trénink.
-Rozlišení a perioda se kontrolují; montáž a FOV se automaticky nepřepisují.
+U v2 se kontrolují rozlišení, perioda, montáž, FOV i nastavení scény.
+Montáž a FOV se automaticky nepřepisují; neshoda vyvolá chybu.
 
 Nové váhy se ukládají do **`model_save_path/recurrent/`**. Tím samotné přepnutí
 režimu nepřepíše starého studenta. Pokud cesta už končí `recurrent`, další
@@ -42,11 +43,21 @@ checkpoint. Výsledky evaluace mají názvy `eval_dagger_new_results.csv` a
 Checkpoint nového studenta je slovník s vahami, parametry architektury,
 názvy/pořadím kloubů a akcí, konvencí IMU, řídicí periodou a velikostí RGB.
 Optimizer a RNG se ukládají vedle do `.pth.training.pth`. Resume obnoví
-váhy/optimizer a absolutní krok; beta se přepočítá ze stejného sdíleného
-schedule. **Simulace, replay, předchozí akce a rollout paměť začínají znovu**;
+váhy/optimizer a absolutní krok. U `beta_schedule: evaluation` se beta obnoví
+z checkpointu a další snížení čeká na nový warmup a evaluace.
+**Simulace, online replay, předchozí akce a rollout paměť začínají znovu**;
 nejde o bitově přesné pokračování rozehrané epizody. Buffer se znovu naplní
 před prvním gradientním updatem. Pro resume ponech `expert_model_path` na
 teacher bundle a nastav `load_student_path` na nový studentský checkpoint.
+Archiv `teacher_demonstrations.pth` se obnovuje vedle checkpointu.
+Nové váhy a optimizer mají společné ID generace; při nesouladu se resume
+odmítne ještě před načtením optimizeru, i když mají stejné číslo kroku.
+Při chybě před prvním pokrokem se existující modely nepřepisují. Přerušený
+běh s pokrokem uloží `student_model_interrupted_step_N.pth` a případný vlastní
+archiv `.pth.demonstrations.pth`. Resume z této cesty vybere jeho archiv
+automaticky; běžná adresářová evaluace vybírá standardní checkpointy.
+Staré checkpointy `chairman_recurrent_v1` lze evaluovat, ale nelze z nich
+pokračovat v novém tréninku: jejich encoder/GRU mohou být saturované.
 
 ### Volitelné nové parametry
 
@@ -78,6 +89,64 @@ potřebuje více výpočtů než původní CNN; neměň význam starého batch s
 samotné RGB při aktuálních 512 krocích, 8 envs a 640×360 zabírá přibližně 2,64 GiB.
 TensorBoard má vlastní podsložku `recurrent`; velikost replay včetně paměti
 GRU se loguje jako `Recurrent/buffer_total_mib`.
+
+## Stabilní trénink v2 a ověření
+
+Standardní konfigurace používají nový adresář `dagger_separate_stable_v2`
+(pro L40 `dagger_separate_l40_stable_v2_640x360`). Začni přes
+`train_dagger_new`, nikoli obnovením vah starého zkolabovaného modelu.
+Teacher se načítá z manifestu; `model_final.zip` má v použitém bundle
+5 000 000 000 trénovacích vzorků a je pozdější než číslované checkpointy.
+
+- `dagger_demonstrations_per_stage: 16`: CPU reservoir pro každou z šesti
+  fází; délka okna je burn-in + sequence. Archiv obsahuje celé souvislé
+  sekvence a stejné reset masky jako online replay, nikoli náhodné snímky.
+  Okna mají krok `sequence_length`, takže se burn-in části překrývají:
+  po prvním burn-in nejsou mezi učenými částmi oken časové mezery.
+- `dagger_demonstration_fraction: 0.5`: přibližně polovina učicích sekvencí
+  pochází z archivu; dostupné fáze se vybírají rovnoměrně.
+- `dagger_teacher_anchor_fraction: 0.25`: čtvrtina ukládaných env slotů
+  zůstává pod teacherem i při beta=0. Ostatní envs volí teachera nezávisle.
+  Archiv přijímá pouze okna, ve kterých všechny vykonané akce pocházely od
+  teachera. Při 640×360 a délce 24 stojí plný archiv přibližně 1,49 GiB RAM.
+- `dagger_min_train_sample_ratio: 2.0`: počet aktualizací je nejméně
+  `ceil(train_every * stored_envs * ratio / (batch_sequences * sequence_length))`.
+  U 400 ukládaných envs, batch 16, délky 16 a intervalu 20 je to 63 aktualizací.
+- `reset_to_stage0: false` a `use_snapshot_curriculum: true` dovolují obnovovat
+  pokročilé fáze. Snapshot musí být dostupný; samy tyto volby nevytvoří
+  kvalitní demonstraci fáze, kterou teacher nezvládá.
+- `beta_schedule: evaluation`: beta začíná na 1. Po warmupu 5000 kroků
+  ji `dagger_beta_after_warmup: 0.9` omezí na 0,9, aby se začala sbírat i data
+  ze stavů vyvolaných studentskými akcemi. Chráněné teacherovy sloty nadále
+  provádějí výhradně teacherovy akce. Další snížení o 0,1 vyžaduje dvě čistě
+  studentské evaluace s úspěšností alespoň 80 %. Dvě neúspěšné evaluace vracejí
+  beta o 0,1 výš, nejvýše však na uvedený strop po warmupu. Nastavení stropu 1
+  tento úvodní sběr studentských stavů vypne.
+  Evaluace běží každých 5000 kroků od fáze 0 a mají pevné kvóty epizod pro
+  předem určená prostředí; rychlá selhání nemohou vytlačit pomalé úspěchy.
+  Po evaluaci se trénovací simulace i GRU explicitně resetují.
+- `dagger_teacher_baseline: true`: před tréninkem se změří čistý teacher.
+  Při nulové úspěšnosti se trénink zastaví s výsledky v JSONL, místo aby
+  automaticky předpokládal funkční demonstrátor.
+
+TensorBoard odděluje `Evaluation/teacher/*`, `Evaluation/student/*`,
+`Health/*`, `Replay/stage_N_teacher_windows` a `Student/trained_to_stored_ratio`.
+Tři učicí bloky s nulovým gradientem encoderu i GRU při nenulové chybě zastaví trénink.
+Nečíselná loss, gradient nebo akce vyvolá chybu. Přehled evaluací je také
+v `recurrent/training_evaluations.jsonl`.
+
+Reprodukovatelný krátký důkaz optimalizace a nezávislá evaluace:
+
+```bash
+python -m config_run.dagger_recurrent.verify_learning --output config_run/output/dagger_verification
+python -m unittest config_run.dagger_recurrent.test_student config_run.dagger_recurrent.test_pipeline config_run.dagger_recurrent.test_sequence_integrity config_run.dagger_recurrent.test_learning
+```
+
+Ověření používá skutečný ResNet, snímky 640×360 a produkční délku 16 + burn-in 8.
+Měří chybu na pevných trénovacích i oddělených validačních oknech, změnu vah
+obou encoderů/GRU a gradienty. `--synthetic` ověří pouze optimalizaci bez
+simulátoru. `results.json` záměrně odděluje `optimization_checks_passed`
+od `full_task_success_proven`; pokles MSE není důkaz dokončení úkolu.
 
 ## Architektura a rozhraní
 
@@ -167,12 +236,72 @@ neobsahuje odhad nejistoty; jednotlivé hlavy rozdělují řízení částí tě
 
 Model interně normalizuje RGB pomocí ImageNet mean/std. Vstup tedy pouze
 převeď na RGB, CHW a vyděl 255; ImageNet normalizaci nedělej podruhé.
-`pretrained_visual=False` je výchozí nastavení bez stahování vah.
-`pretrained_visual=True` načte ImageNet ResNet-18 a může potřebovat síť nebo
-lokální cache torchvision. BatchNorm průběžné statistiky jsou vždy zmrazené,
-aby výsledek nezávisel na budoucích snímcích v sekvenci ani na ostatních envs;
-konvoluce i affine parametry BatchNorm zůstávají trénovatelné. To platí i při
-tréninku od náhodné inicializace.
+V dodaných `chairman_separate/train_dagger*.yaml` je nyní předtrénování
+zapnuté. Samostatný konstruktor modelu stále standardně nestahuje váhy.
+
+```yaml
+dagger_new_pretrained_visual: true
+learning_rate: 0.0001                    # GRU, propriocepce, akční hlavy a nové LayerNorm
+dagger_new_visual_learning_rate: 0.00001  # pouze ResNet, včetně jeho affine parametrů
+dagger_new_visual_warmup_updates: 1000    # dokončené gradientní aktualizace, nikoli kroky simulace
+```
+
+- **`true`:** načte ImageNet ResNet-18 (`ResNet18_Weights.DEFAULT`). Zachová
+  původní BatchNorm a všechny naučené running mean/variance. Tyto statistiky
+  se nikdy nemění, ani při fine-tuningu. Prvních 1000 aktualizací se učí nové
+  části modelu, zatímco celý ResNet včetně affine parametrů zůstává zmrazený.
+  Aktualizace 1001 již fine-tunuje ResNet s menším LR. Optimizer nových částí
+  se při odemčení znovu neinicializuje. Hodnota `0` zapne fine-tuning ihned.
+- **`false`:** začíná s náhodnými vahami, BatchNorm nahrazuje GroupNorm se
+  32 skupinami. ResNet se učí od první aktualizace, také s nastaveným menším LR.
+  `dagger_new_visual_warmup_updates` se v tomto režimu neuplatní: náhodný
+  encoder nezůstane po dobu warmupu zmrazený.
+
+Obě varianty používají LayerNorm obrazového i proprioceptivního embeddingu
+před GRU. Normalizace nezávisí na ostatních snímcích ani prostředích. Nové
+části pracují už během warmupu s obrazovými příznaky zmrazeného ResNetu.
+První předtrénovaný běh může stáhnout přibližně 45 MB vah do standardní cache
+torchvision. Na stroji bez internetu lze cache připravit předem přes `TORCH_HOME`.
+
+Warmup vizuálního encoderu je nezávislý na `dagger_teacher_warmup_steps`, který
+řídí změny beta. Počet aktualizací je zde použit záměrně: jeho význam zůstává
+přímý i při změně počtu prostředí a aktualizací v jednom trénovacím bloku.
+Nastavení 1000 je nastavitelné výchozí číslo, nikoli empiricky nalezené optimum.
+
+Checkpoint uchovává typ normalizace, původ vah, dokončené aktualizace, warmup
+i oba learning rates. Při `load_and_train_dagger_new` se obnoví tato uložená
+nastavení a fáze: warmup nezačíná znovu a odemčený ResNet se znovu nezmrazí.
+Pro evaluaci i resume se váhy a statistiky načtou přímo ze studentského
+checkpointu, bez opětovného stahování ImageNetu. Přepínač předtrénování nelze
+změnit uprostřed resume; pro změnu inicializace začni nový běh a použij nový
+výstupní adresář. Starší v2 checkpointy s jedinou skupinou optimizeru se při
+obnově rozdělí na dvě skupiny při zachování momentů Adamu; v1 resume zůstává
+odmítnuto.
+
+TensorBoard obsahuje `Student/visual_finetuning_active`,
+`Student/visual_learning_rate`, `Student/completed_gradient_updates` a
+`Student/visual_warmup_updates_remaining`. Během warmupu má skutečný ResNet LR
+0 a jeho gradient je nulový; po odemčení se použije nastavený vizuální LR.
+Profilovací skript standardně používá vizuální warmup 0, aby měřil cenu
+fine-tuningu. Volbou `--visual-warmup-updates N` lze explicitně měřit i warmup.
+
+Ověření obou variant při 640×360 na GPU (syntetická úloha, skutečné ImageNet
+váhy pro zapnuté předtrénování, 60 aktualizací, zkrácený warmup 10):
+
+| Inicializace | Trénovací MSE před → po | Validační MSE před → po |
+|---|---:|---:|
+| ImageNet | 0,03344 → 0,00897 | 0,03287 → 0,01786 |
+| Náhodná + GroupNorm | 0,03508 → 0,00867 | 0,03558 → 0,01798 |
+
+V obou testech byly konečné gradienty encoderu nenulové a naměřená saturace
+vstupů GRU 0 %. Testy ověřují funkčnost obou cest optimalizace; tato čísla
+nejsou srovnáním kvality obou inicializací na úloze ChairMan.
+Podrobnosti jsou v
+[ImageNet JSON](../output/resnet_finetuning_20261109/pretrained/results.json) a
+[scratch JSON](../output/resnet_finetuning_20261109/scratch/results.json).
+Regresní testy navíc kontrolují neměnnost všech vah encoderu během warmupu,
+neměnnost statistik BatchNorm po odemčení, odemčení ve správné aktualizaci
+a přesnou shodu pokračujícího tréninku s obnovením z checkpointu.
 
 Samotný model má identity normalizaci. Runner nastavuje pevné fyzikální škály:
 kloubové rychlosti násobí 0,05 a úhlovou rychlost IMU 0,25, ostatní vstupy
@@ -250,6 +379,28 @@ ani tyto konvence nepopisuje. Checkpoint starého studenta není kompatibilní.
 Reálný deployment zde připojen není. Potřebuje stejné mapování kloubů,
 IMU konvence, normalizaci, časování a správu paměti. Starý deployment s
 mapováním 17 akcí pro tento model použít nelze.
+
+### Kontrola časového pořadí dat
+
+Testy v `test_sequence_integrity.py` označují snímky i senzory číslem kroku
+a prostředí. Kontrolují všechna dostupná 24kroková okna před zaplněním
+i po několika přetočeních ring bufferu, souběžné indexování všech vstupů,
+teacherových cílů, vstupní paměti a reset masek. Test sběru používá skutečný
+runner a adaptér se syntetickým prostředím, pevně přeházeným výběrem envů,
+částečnými resety a teacher/student řízením včetně clippingu.
+
+Další test porovnává skutečný ResNet + GRU po jednotlivých krocích s celou
+sekvencí a s burn-in 8 + učenými 16 kroky; vizuální dávka 5 přitom protíná
+hranice sekvencí. Kontrola Nyx spouští produkční funkci dávkování izolovaně
+s náhradním rendererem, který opakovaně přepisuje stejnou výstupní paměť.
+Ověřuje kopírování do správných env/camera řádků, nikoli fyzický render GPU.
+
+```bash
+python -m unittest config_run.dagger_recurrent.test_sequence_integrity config_run.dagger_recurrent.test_student config_run.dagger_recurrent.test_pipeline
+```
+
+Při kontrole 29. 10. 2026 prošlo všech 21 testů na CPU. Jde o kontrolu
+indexování a rekurentního zpracování, nikoli zkoušku dlouhého běhu 400 envů.
 
 ## Návrh soustředění randomizace do jednoho místa
 

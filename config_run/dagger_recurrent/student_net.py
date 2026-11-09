@@ -49,6 +49,8 @@ class RecurrentVisionStudent(nn.Module):
         pretrained_visual: bool = False,
         visual_batch_size: int = 0,
         checkpoint_visual: bool = True,
+        architecture_version: int = 2,
+        visual_normalization: str | None = None,
     ):
         super().__init__()
         if min(num_joints, hidden_size, num_layers, proprio_embedding_size) <= 0:
@@ -60,12 +62,31 @@ class RecurrentVisionStudent(nn.Module):
             raise ValueError("visual_batch_size must be nonnegative (0 means no chunking)")
         self.visual_batch_size = visual_batch_size
         self.checkpoint_visual = checkpoint_visual
+        if architecture_version not in (1, 2):
+            raise ValueError("Unsupported recurrent architecture_version")
+        self.architecture_version = architecture_version
+        self.visual_normalization = visual_normalization or (
+            "batchnorm" if pretrained_visual or architecture_version == 1 else "groupnorm")
+        if self.visual_normalization not in ("batchnorm", "groupnorm"):
+            raise ValueError("visual_normalization must be batchnorm or groupnorm")
+        if pretrained_visual and self.visual_normalization != "batchnorm":
+            raise ValueError("Pretrained ResNet requires its calibrated BatchNorm statistics")
         self.proprio_dim = 2 * num_joints + self.imu_dim + self.num_actions
 
         # No download by default. Opting into ImageNet weights may download them.
         weights = ResNet18_Weights.DEFAULT if pretrained_visual else None
         self.visual_encoder = resnet18(weights=weights)
         self.visual_encoder.fc = nn.Identity()
+        if self.visual_normalization == "groupnorm":
+            # Per-image statistics work for both streaming and sequence replay.
+            # Frozen, uncalibrated BatchNorm made the old encoder explode and
+            # saturated every input gate of the GRU (including proprioception).
+            self._replace_batch_norm(self.visual_encoder)
+        self.visual_norm = nn.LayerNorm(512) if architecture_version == 2 else nn.Identity()
+        self.proprio_norm = (nn.LayerNorm(proprio_embedding_size)
+                             if architecture_version == 2 else nn.Identity())
+        self.last_diagnostics = {}
+        self.collect_diagnostics = False
         self.proprio_encoder = nn.Sequential(
             nn.Linear(self.proprio_dim, 256),
             nn.LayerNorm(256),
@@ -93,10 +114,23 @@ class RecurrentVisionStudent(nn.Module):
         self.register_buffer("proprio_std", torch.ones(self.proprio_dim))
         self._freeze_batch_norm_statistics()
 
+    @staticmethod
+    def _replace_batch_norm(module):
+        for name, child in list(module.named_children()):
+            if isinstance(child, nn.BatchNorm2d):
+                replacement = nn.GroupNorm(32, child.num_features, eps=child.eps)
+                with torch.no_grad():
+                    replacement.weight.copy_(child.weight)
+                    replacement.bias.copy_(child.bias)
+                setattr(module, name, replacement)
+            else:
+                RecurrentVisionStudent._replace_batch_norm(child)
+
     def _freeze_batch_norm_statistics(self):
         # Avoid dependence on future frames / other environments through batch
         # statistics, and allow one-frame inference at small resolutions.
-        # Affine parameters and all convolution weights remain trainable.
+        # Affine and convolution parameters are controlled by the separate
+        # visual warmup schedule; eval() here freezes statistics only.
         for module in self.visual_encoder.modules():
             if isinstance(module, nn.BatchNorm2d):
                 module.eval()
@@ -176,12 +210,22 @@ class RecurrentVisionStudent(nn.Module):
             else:
                 encoded = self.visual_encoder(normalized)
             visual_chunks.append(encoded)
-        visual = torch.cat(visual_chunks, dim=0)
+        visual = self.visual_norm(torch.cat(visual_chunks, dim=0))
         proprio = torch.cat((joint_positions, joint_velocities, imu, previous_actions), dim=-1)
-        proprio = self.proprio_encoder((proprio - self.proprio_mean) / self.proprio_std)
+        proprio = self.proprio_norm(self.proprio_encoder((proprio - self.proprio_mean) / self.proprio_std))
         fused = torch.cat(
             (visual.reshape(batch_size, steps, 512), proprio.reshape(batch_size, steps, -1)), dim=-1
         )
+        if self.collect_diagnostics:
+            with torch.no_grad():
+                gate_inputs = torch.nn.functional.linear(
+                    fused.detach(), self.gru.weight_ih_l0, self.gru.bias_ih_l0)
+                self.last_diagnostics = {
+                    "visual_rms": visual.detach().square().mean().sqrt(),
+                    "visual_abs_max": visual.detach().abs().max(),
+                    "proprio_rms": proprio.detach().square().mean().sqrt(),
+                    "gru_input_saturation_fraction": (gate_inputs.abs() > 10).float().mean(),
+                }
         if reset_mask is None:
             features, hidden = self.gru(fused, hidden)
         else:
@@ -193,6 +237,11 @@ class RecurrentVisionStudent(nn.Module):
                 outputs.append(output)
             features = torch.cat(outputs, dim=1)
         actions = torch.cat([head(features) for head in self.action_heads.values()], dim=-1)
+        if self.collect_diagnostics:
+            self.last_diagnostics.update(
+                hidden_saturation_fraction=(hidden.detach().abs() > .99).float().mean(),
+                action_std_across_samples=actions.detach().reshape(-1, self.num_actions).std(0, unbiased=False).mean(),
+            )
         # Raw physical action targets: clipping/rate limiting belongs to the
         # existing control wrapper. Output ranges mix angles and walk commands.
         return (actions[:, 0] if single_step else actions), hidden

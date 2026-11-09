@@ -4,7 +4,7 @@ fix_base_link: false
 task: chairmanseparate
 decimation: 5
 num_envs: 1
-headless: true
+headless: false
 add_table: true
 env_spacing: 4.0
 train_or_eval: eval_dagger_new_video
@@ -24,7 +24,8 @@ cameras:
       mount_to: g1_with_hands
       mount_link: head_link
       mount_pos: [0.08, 0.0, 0.35]
-      mount_quat: [0.5, 0.5, -0.5, -0.5]
+      #mount_quat: [0.5, 0.5, -0.5, -0.5]
+      mount_quat: [-0.583600,-0.399263,0.399263,0.583600]
       gaussian_splat_path: ./config_run/splat/splat_2.ply
       gaussian_position: [0.0, 0.0, 1.5]
       gaussian_rotation_xyzw: [0.0, 0.0, -0.70710678, 0.70710678]
@@ -61,12 +62,12 @@ dagger_camera_name: camera0
 dagger_image_width: 640
 dagger_image_height: 360
 
-load_model_path: ./config_run/output/dagger_separate/recurrent/student_model_step_699999.pth
-video_save_path: ./config_run/output/eval_videos/new_method.mp4
+load_model_path: ./config_run/output/dagger_separate_stable_v2/recurrent/student_model_final.pth
+video_save_path: ./config_run/output/eval_videos/new_method_recurrent_4.mp4
 video_fps: 20
 video_slowdown: 1
 eval_episodes: 10
-eval_max_steps: 10
+eval_max_steps: 5000
 
 policies:
   waist: {action_groups: [waist], observation_groups: [joint_positions, robot_body_states, pelvis_velocity, previous_policy_actions]}

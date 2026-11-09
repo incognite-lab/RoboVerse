@@ -49,6 +49,8 @@ def log_stage_transitions(stage_before, stage_after, changed, source="ChairMan s
 def build_env(config):
     if config.get("task") != "chairmanseparate":
         raise ValueError("main_separate.py requires task: chairmanseparate")
+    mode = config.get("train_or_eval", "train")
+    recurrent_training = mode in ("train_dagger_new", "load_and_train_dagger_new")
     scenario = ScenarioCfg(
         task=config["task"], robots=config["robots"], sim=config.get("sim", "genesis"),
         num_envs=int(config.get("num_envs", 1)), headless=bool(config.get("headless", False)),
@@ -62,8 +64,8 @@ def build_env(config):
     scenario.env_spacing = float(config.get("env_spacing", 4.0))
     scenario.robots[0].fix_base_link = bool(config.get("fix_base_link", False))
     scenario.task.decimation = int(config.get("decimation", 1))
-    scenario.task.reset_to_stage0 = bool(config.get("reset_to_stage0", True))
-    scenario.task.use_snapshot_curriculum = bool(config.get("use_snapshot_curriculum", False))
+    scenario.task.reset_to_stage0 = bool(config.get("reset_to_stage0", not recurrent_training))
+    scenario.task.use_snapshot_curriculum = bool(config.get("use_snapshot_curriculum", recurrent_training))
     scenario.task.snapshot_save_probability = float(config.get("snapshot_save_probability", 0.0))
     scenario.task.eval_start_stage = config.get("eval_start_stage")
     scenario.task.log_termination_reasons = bool(config.get("log_termination_reasons", True))
@@ -74,7 +76,6 @@ def build_env(config):
     scenario.task.verbose_motion_diagnostics = bool(config.get("verbose_motion_diagnostics", False))
     scenario.task.visualize_reach_waypoints = bool(config.get("visualize_reach_waypoints", False))
     scenario.task.visualize_center_of_mass = bool(config.get("visualize_center_of_mass", False))
-    mode = config.get("train_or_eval", "train")
     if mode in ("train_dagger", "load_and_train_dagger", "train_dagger_new", "load_and_train_dagger_new"):
         # Training does not need task reward calculation, but checkers and
         # stage transitions remain active for the six-policy teacher.

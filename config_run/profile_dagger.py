@@ -4,14 +4,16 @@ Example:
     python config_run/profile_dagger.py --num-envs 100 --steps 101 --cprofile
 
 Run from the repository root in the Genesis/Nyx Python environment. Outputs
-are isolated from training checkpoints. Replay capacity is deliberately small;
-use --buffer-steps 3000 to reproduce the training configuration's allocation.
+are isolated from training checkpoints. Replay capacity and student settings
+are inherited from the config unless explicitly overridden. --sync-timing
+adds CUDA-synchronized phase timing for bottleneck analysis.
 """
 from __future__ import annotations
 
 import argparse
 import cProfile
 from copy import deepcopy
+from contextlib import contextmanager
 import json
 from pathlib import Path
 import pstats
@@ -41,6 +43,8 @@ def main():
     parser.add_argument("--quiet", action="store_true", help="Suppress repetitive asset INFO logs")
     parser.add_argument("--steps", type=int, default=101)
     parser.add_argument("--warmup", type=int, default=3)
+    parser.add_argument("--visual-warmup-updates", type=int, default=0,
+                        help="Benchmark fine-tuning by default; use N to explicitly measure frozen-backbone warmup")
     parser.add_argument("--buffer-steps", type=int)
     parser.add_argument("--render-mode", choices=("RefPathTracer", "FastPathTracer"))
     parser.add_argument("--spp", type=int)
@@ -49,11 +53,14 @@ def main():
                         help="Store all envs and scale batch/replay/beta consistently with the config")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--cprofile", action="store_true")
+    parser.add_argument("--sync-timing", action="store_true",
+                        help="Synchronize CUDA phase boundaries for diagnostic wall-time attribution")
     parser.add_argument("--verify-body-states", action="store_true")
     parser.add_argument("--eager-cameras", action="store_true",
                         help="Render during physics state reads, for comparison with deferred rendering")
     args = parser.parse_args()
-    if any(value is not None and value <= 0 for value in (args.num_envs, args.steps, args.buffer_steps, args.threads)) or args.warmup < 0:
+    if (any(value is not None and value <= 0 for value in (args.num_envs, args.steps, args.buffer_steps, args.threads))
+            or args.warmup < 0 or args.visual_warmup_updates < 0):
         parser.error("env count, steps and buffer steps must be positive; warmup nonnegative")
 
     import numpy as np
@@ -101,6 +108,11 @@ def main():
         beta_schedule="linear",
         beta_start=1.0,
         beta_end=1.0,
+        # Benchmark only collection/learning, not independent evaluation.
+        dagger_teacher_baseline=False,
+        dagger_eval_every=0,
+        # A frozen encoder would understate the steady-state training cost.
+        dagger_new_visual_warmup_updates=args.visual_warmup_updates,
     )
     if args.buffer_steps is not None:
         config['dagger_buffer_steps'] = args.buffer_steps
@@ -134,6 +146,9 @@ def main():
     base, env = build_env(config)
     build_seconds = time.perf_counter() - start
     timers = {}
+    phase_timers, steady_phase_timers, steady_timers = {}, {}, {}
+    current_phase = None
+    steady_iteration = False
     originals = []
     monitors = []
     original_monitor = training_module.HardwareMonitor
@@ -144,18 +159,63 @@ def main():
         return monitor
     training_module.HardwareMonitor = monitored
 
-    def measure(obj, name, label):
+    def synchronize():
+        if args.sync_timing and torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+    def record(target, label, elapsed):
+        entry = target.setdefault(label, {"seconds": 0.0, "calls": 0})
+        entry["seconds"] += elapsed
+        entry["calls"] += 1
+
+    original_metrics = training_module.DaggerMetrics
+    originals.append((training_module, 'DaggerMetrics', original_metrics))
+    def timed_metrics(*a, **kw):
+        metrics = original_metrics(*a, **kw)
+        original_measure = metrics.measure
+        @contextmanager
+        def phase_measure(label):
+            nonlocal current_phase, steady_iteration
+            if label == 'camera_and_inputs':
+                steady_iteration = metrics.steps >= args.log_every
+            previous = current_phase
+            current_phase = label
+            synchronize()
+            started = time.perf_counter()
+            try:
+                with original_measure(label):
+                    yield
+                    synchronize()
+            finally:
+                elapsed = time.perf_counter() - started
+                record(phase_timers, label, elapsed)
+                if steady_iteration:
+                    record(steady_phase_timers, label, elapsed)
+                current_phase = previous
+        metrics.measure = phase_measure
+        return metrics
+    training_module.DaggerMetrics = timed_metrics
+
+    def measure(obj, name, label, sync=False, phases=None):
         original = getattr(obj, name)
         originals.append((obj, name, original))
 
         def measured(*a, **kw):
+            if phases is not None and current_phase not in phases:
+                return original(*a, **kw)
+            actual_label = label(current_phase) if callable(label) else label
+            if sync:
+                synchronize()
             start = time.perf_counter()
             try:
                 return original(*a, **kw)
             finally:
-                entry = timers.setdefault(label, {"seconds": 0.0, "calls": 0})
-                entry["seconds"] += time.perf_counter() - start
-                entry["calls"] += 1
+                if sync:
+                    synchronize()
+                elapsed = time.perf_counter() - start
+                record(timers, actual_label, elapsed)
+                if steady_iteration:
+                    record(steady_timers, actual_label, elapsed)
         setattr(obj, name, measured)
 
     profile = cProfile.Profile() if args.cprofile else None
@@ -195,6 +255,19 @@ def main():
         if args.student == "recurrent":
             measure(training_module.StudentInputs, "read", "student_inputs")
             measure(training_module, "train_sequence_step", "student_update")
+            measure(training_module.SequenceBuffer, 'sample', 'replay_sample', sync=True)
+            measure(training_module.RecurrentVisionStudent, 'forward',
+                    lambda phase: 'student_rollout_forward' if phase == 'inference_and_actions' else 'student_training_forward',
+                    sync=True, phases=('inference_and_actions', 'student_updates'))
+            measure(torch.autograd, 'backward', 'backward', sync=True, phases=('student_updates',))
+            measure(torch.optim.Adam, 'step', 'optimizer_step', sync=True, phases=('student_updates',))
+            loader = training_module.load_policy_router
+            originals.append((training_module, 'load_policy_router', loader))
+            def timed_loader(*a, **kw):
+                teacher, metadata = loader(*a, **kw)
+                measure(teacher, 'predict', 'teacher_predict', sync=True)
+                return teacher, metadata
+            training_module.load_policy_router = timed_loader
         else:
             measure(separate_dagger, "_student_inputs", "student_inputs")
             measure(separate_dagger, "train_dagger_step", "student_update")
@@ -223,6 +296,11 @@ def main():
             "image_shape": [3, int(config.get('dagger_image_height', 128)), int(config.get('dagger_image_width', 128))],
             "effective_config": effective_config,
             "timers_inclusive_do_not_sum": timers,
+            "steady_timers_inclusive_do_not_sum": steady_timers,
+            "phase_timings_nonoverlapping": phase_timers,
+            "steady_phase_timings_nonoverlapping": steady_phase_timers,
+            "timing_cuda_synchronized": args.sync_timing,
+            "steady_measured_vector_steps": max(0, args.steps - args.log_every),
         }
         from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
         event_root = output / "tensorboard"

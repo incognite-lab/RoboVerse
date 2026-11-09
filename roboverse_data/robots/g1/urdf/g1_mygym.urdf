@@ -823,7 +823,7 @@
         <mesh filename="meshes/left_hand_palm_link.STL"/>
       </geometry>
       <material name="black">
-        <color rgba="0.7 0.7 0.7 1"/>
+        <color rgba="0.1 0.1 0.1 1"/>
       </material>
     </visual>
     <collision>
@@ -834,7 +834,7 @@
     </collision>
   </link>
   <link name="left_ee_x_axis">
-    <visual>
+    <!-- <visual>
       <origin xyz="0.03 0 0" rpy="0 1.57079632679 0"/>
       <geometry>
         <cylinder length="0.06" radius="0.002"/>
@@ -842,11 +842,11 @@
       <material name="red">
         <color rgba="1 0 0 1"/>
       </material>
-    </visual>
+    </visual> -->
   </link>
 
   <link name="left_ee_y_axis">
-    <visual>
+    <!-- <visual>
       <origin xyz="0 0.03 0" rpy="-1.57079632679 0 0"/>
       <geometry>
         <cylinder length="0.06" radius="0.002"/>
@@ -854,11 +854,11 @@
       <material name="green">
         <color rgba="0 1 0 1"/>
       </material>
-    </visual>
+    </visual> -->
   </link>
 
   <link name="left_ee_z_axis">
-    <visual>
+    <!-- <visual>
       <origin xyz="0 0 -0.03" rpy="0 0 0"/>
       <geometry>
         <cylinder length="0.06" radius="0.002"/>
@@ -866,11 +866,11 @@
       <material name="blue">
         <color rgba="0 0 1 1"/>
       </material>
-    </visual>
+    </visual> -->
   </link>
 
   <link name="left_endeffector">
-    <visual>
+    <!-- <visual>
       <origin xyz="0 0 0.0" rpy="0 0 0"/>
       <geometry>
         <sphere radius="0.005"/>
@@ -878,7 +878,7 @@
       <material name="yellow">
         <color rgba="1 1 0 1"/>
       </material>
-    </visual>
+    </visual> -->
   </link>
 
   <joint name="left_endeffector_joint" type="fixed">
@@ -928,7 +928,7 @@
         <mesh filename="meshes/left_hand_thumb_0_link.STL"/>
       </geometry>
       <material name="black">
-        <color rgba="0.7 0.7 0.7 1"/>
+        <color rgba="0.1 0.1 0.1 1"/>
       </material>
     </visual>
     <collision>
@@ -957,7 +957,7 @@
         <mesh filename="meshes/left_hand_thumb_1_link.STL"/>
       </geometry>
       <material name="black">
-        <color rgba="0.7 0.7 0.7 1"/>
+        <color rgba="0.1 0.1 0.1 1"/>
       </material>
     </visual>
     <collision>
@@ -986,7 +986,7 @@
         <mesh filename="meshes/left_hand_thumb_2_link.STL"/>
       </geometry>
       <material name="black">
-        <color rgba="0.7 0.7 0.7 1"/>
+        <color rgba="0.1 0.1 0.1 1"/>
       </material>
     </visual>
     <collision>
@@ -1015,7 +1015,7 @@
         <mesh filename="meshes/left_hand_middle_0_link.STL"/>
       </geometry>
       <material name="black">
-        <color rgba="0.7 0.7 0.7 1"/>
+        <color rgba="0.1 0.1 0.1 1"/>
       </material>
     </visual>
     <collision>
@@ -1044,7 +1044,7 @@
         <mesh filename="meshes/left_hand_middle_1_link.STL"/>
       </geometry>
       <material name="black">
-        <color rgba="0.7 0.7 0.7 1"/>
+        <color rgba="0.1 0.1 0.1 1"/>
       </material>
     </visual>
     <collision>
@@ -1073,7 +1073,7 @@
         <mesh filename="meshes/left_hand_index_0_link.STL"/>
       </geometry>
       <material name="black">
-        <color rgba="0.7 0.7 0.7 1"/>
+        <color rgba="0.1 0.1 0.1 1"/>
       </material>
     </visual>
     <collision>
@@ -1102,7 +1102,7 @@
         <mesh filename="meshes/left_hand_index_1_link.STL"/>
       </geometry>
       <material name="black">
-        <color rgba="0.7 0.7 0.7 1"/>
+        <color rgba="0.1 0.1 0.1 1"/>
       </material>
     </visual>
     <collision>
@@ -1331,8 +1331,8 @@
       <geometry>
         <mesh filename="meshes/right_hand_palm_link.STL"/>
       </geometry>
-      <material name="white">
-        <color rgba="0.7 0.7 0.7 1"/>
+      <material name="black">
+        <color rgba="0.1 0.1 0.1 1"/>
       </material>
     </visual>
     <collision>
@@ -1343,7 +1343,7 @@
     </collision>
   </link>
    <link name="ee_x_axis">
-    <visual>
+    <!-- <visual>
     <origin xyz="0.03 0 0" rpy="0 1.57079632679 0"/>
     <geometry>
       <cylinder length="0.06" radius="0.002"/>
@@ -1351,10 +1351,10 @@
     <material name="red">
       <color rgba="1 0 0 1"/>
     </material>
-  </visual>
+  </visual> -->
     </link>
     <link name="ee_y_axis">
-  <visual>
+  <!-- <visual>
     <origin xyz="0 0.03 0" rpy="-1.57079632679 0 0"/>
     <geometry>
       <cylinder length="0.06" radius="0.002"/>
@@ -1362,10 +1362,10 @@
     <material name="green">
       <color rgba="0 1 0 1"/>
     </material>
-  </visual>
+  </visual> -->
     </link>
     <link name="ee_z_axis">
-  <visual>
+  <!-- <visual>
     <origin xyz="0 0 0.03" rpy="0 0 0"/>
     <geometry>
       <cylinder length="0.06" radius="0.002"/>
@@ -1373,10 +1373,10 @@
     <material name="blue">
       <color rgba="0 0 1 1"/>
     </material>
-  </visual>
+  </visual> -->
 </link>
     <link name="endeffector">
-  <visual>
+  <!-- <visual>
     <origin xyz="0 0 0.0" rpy="0 0 0"/>
     <geometry>
       <sphere radius="0.005"/>
@@ -1384,7 +1384,7 @@
     <material name="yellow">
       <color rgba="1 1 0 1"/>
     </material>
-  </visual>
+  </visual> -->
 </link>
 <joint name="endeffector_joint" type="fixed">
     	<parent link="right_hand_palm_link"/>
@@ -1425,8 +1425,8 @@
       <geometry>
         <mesh filename="meshes/right_hand_thumb_0_link.STL"/>
       </geometry>
-      <material name="white">
-        <color rgba="0.7 0.7 0.7 1"/>
+      <material name="black">
+        <color rgba="0.1 0.1 0.1 1"/>
       </material>
     </visual>
     <collision>
@@ -1454,8 +1454,8 @@
       <geometry>
         <mesh filename="meshes/right_hand_thumb_1_link.STL"/>
       </geometry>
-      <material name="white">
-        <color rgba="0.7 0.7 0.7 1"/>
+      <material name="black">
+        <color rgba="0.1 0.1 0.1 1"/>
       </material>
     </visual>
     <collision>
@@ -1483,8 +1483,8 @@
       <geometry>
         <mesh filename="meshes/right_hand_thumb_2_link.STL"/>
       </geometry>
-      <material name="white">
-        <color rgba="0.7 0.7 0.7 1"/>
+      <material name="black">
+        <color rgba="0.1 0.1 0.1 1"/>
       </material>
     </visual>
     <collision>
@@ -1512,8 +1512,8 @@
       <geometry>
         <mesh filename="meshes/right_hand_middle_0_link.STL"/>
       </geometry>
-      <material name="white">
-        <color rgba="0.7 0.7 0.7 1"/>
+      <material name="black">
+        <color rgba="0.1 0.1 0.1 1"/>
       </material>
     </visual>
     <collision>
@@ -1541,8 +1541,8 @@
       <geometry>
         <mesh filename="meshes/right_hand_middle_1_link.STL"/>
       </geometry>
-      <material name="white">
-        <color rgba="0.7 0.7 0.7 1"/>
+      <material name="black">
+        <color rgba="0.1 0.1 0.1 1"/>
       </material>
     </visual>
     <collision>
@@ -1570,8 +1570,8 @@
       <geometry>
         <mesh filename="meshes/right_hand_index_0_link.STL"/>
       </geometry>
-      <material name="white">
-        <color rgba="0.7 0.7 0.7 1"/>
+      <material name="black">
+        <color rgba="0.1 0.1 0.1 1"/>
       </material>
     </visual>
     <collision>
@@ -1599,8 +1599,8 @@
       <geometry>
         <mesh filename="meshes/right_hand_index_1_link.STL"/>
       </geometry>
-      <material name="white">
-        <color rgba="0.7 0.7 0.7 1"/>
+      <material name="black">
+        <color rgba="0.1 0.1 0.1 1"/>
       </material>
     </visual>
     <collision>

@@ -13,7 +13,7 @@ from metasim.cfg.robots.g1_cfg_with_hands import G1WithHandsCfg
 from . import runner
 from .buffer import SequenceBuffer
 from .checkpoint import load_student
-from .inputs import RolloutState, StudentInputs, world_to_body
+from .inputs import IMU_BODY_NAME, RolloutState, StudentInputs, world_to_body
 from .student_net import ACTION_GROUP_SIZES, RecurrentVisionStudent
 
 
@@ -259,6 +259,121 @@ class PipelineTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     runner.train_dagger(config, env.base, env)
                 teacher.assert_not_called()
+
+    def test_training_evaluates_without_teacher_and_resumes_archived_demonstrations(self):
+        env = FakeEnvironment()
+        teacher = SimpleNamespace(predict=lambda obs, deterministic: np.ones((2, 34), np.float32)*.25)
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(runner, '_device', return_value='cpu'), \
+                patch.object(runner, 'load_policy_router', return_value=(teacher, {})), \
+                patch.object(runner, 'RecurrentVisionStudent', TinyStudent), \
+                patch('config_run.dagger_recurrent.checkpoint.RecurrentVisionStudent', TinyStudent):
+            config = dict(train_or_eval='train_dagger_new', expert_model_path='fake',
+                          total_timesteps=6, model_save_path=directory, tensorboard_log=directory+'/logs',
+                          model_save_freq=0, dagger_buffer_steps=4, dagger_store_per_step=2,
+                          dagger_image_width=32, dagger_image_height=32,
+                          dagger_new_sequence_length=2, dagger_new_burn_in=1, dagger_new_batch_size=1,
+                          dagger_new_hidden_size=8, dagger_train_every=3, dagger_updates_per_train=1,
+                          dagger_log_every=3, beta_schedule='evaluation', dagger_eval_every=3,
+                          dagger_beta_after_warmup=1.,
+                          dagger_eval_episodes=2, dagger_eval_max_steps=5, dagger_eval_required_passes=1,
+                          dagger_teacher_warmup_steps=0, dagger_demonstrations_per_stage=2,
+                          dagger_teacher_anchor_fraction=.5)
+            runner.train_dagger(config, env.base, env)
+            path = Path(directory)/'recurrent/student_model_final.pth'
+            payload = torch.load(path, weights_only=True)
+            self.assertAlmostEqual(payload['metadata']['beta_controller']['beta'], .8)
+            archive = torch.load(path.parent/'teacher_demonstrations.pth', weights_only=True)
+            self.assertTrue(archive['replay']['windows'][0])
+            self.assertEqual(len((path.parent/'training_evaluations.jsonl').read_text().splitlines()), 2)
+            config.update(train_or_eval='load_and_train_dagger_new', load_student_path=str(path), total_timesteps=9)
+            runner.train_dagger(config, env.base, env)
+            self.assertTrue(torch.load(path.parent/'teacher_demonstrations.pth', weights_only=True)['replay']['windows'][0])
+
+    def test_old_recurrent_checkpoint_remains_evaluable_but_cannot_resume_training(self):
+        from .checkpoint import LEGACY_FORMAT
+        env = FakeEnvironment()
+        model = TinyStudent(hidden_size=8, architecture_version=1)
+        metadata = dict(model_kwargs=dict(num_joints=43, hidden_size=8),
+                        action_names=list(env.action_names), joint_names=list(env.robot_joint_names),
+                        imu_layout='body_angular_velocity_xyz_projected_gravity_xyz', imu_body_name=IMU_BODY_NAME,
+                        camera_name='camera0', control_dt=.02, image_shape=[3,32,32])
+        with tempfile.TemporaryDirectory() as directory, \
+                patch('config_run.dagger_recurrent.checkpoint.RecurrentVisionStudent', TinyStudent), \
+                patch.object(runner, 'load_policy_router', return_value=(None, {})), \
+                patch.object(runner, '_device', return_value='cpu'):
+            path = Path(directory)/'old.pth'
+            torch.save(dict(format=LEGACY_FORMAT, metadata=metadata, next_step=42,
+                            student_state_dict=model.state_dict()), path)
+            restored, _, step = load_student(path, env, env.base, 'cpu')
+            self.assertEqual(restored.architecture_version, 1)
+            self.assertEqual(step, 42)
+            with self.assertRaisesRegex(ValueError, 'fresh v2 model'):
+                runner.train_dagger(dict(train_or_eval='load_and_train_dagger_new', expert_model_path='fake',
+                                         load_student_path=str(path)), env.base, env)
+
+    def test_teacher_baseline_failure_stops_before_training_and_preserves_existing_files(self):
+        env = FakeEnvironment()
+        failed = dict(episodes_finished=2, requested_episodes=2, success_rate=0., success_count=0, capped_attempts=0)
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(runner, '_device', return_value='cpu'), \
+                patch.object(runner, 'load_policy_router', return_value=(None, {})), \
+                patch.object(runner, 'RecurrentVisionStudent', TinyStudent), \
+                patch.object(runner, 'evaluate_policy', return_value=failed):
+            checkpoint_dir = Path(directory)/'recurrent'
+            checkpoint_dir.mkdir()
+            existing = ['student_model_final.pth','student_model_final.pth.training.pth','teacher_demonstrations.pth']
+            for name in existing:
+                (checkpoint_dir/name).write_bytes(b'previous successful training')
+            with self.assertRaisesRegex(RuntimeError, 'Teacher baseline failed'):
+                runner.train_dagger(dict(expert_model_path='fake', model_save_path=directory,
+                                         tensorboard_log=directory+'/logs', total_timesteps=10,
+                                         dagger_image_width=32, dagger_image_height=32,
+                                         dagger_buffer_steps=24, dagger_new_hidden_size=8,
+                                         dagger_teacher_baseline=True), env.base, env)
+            self.assertEqual(env.actions, [])
+            for name in existing:
+                self.assertEqual((checkpoint_dir/name).read_bytes(),b'previous successful training')
+            self.assertEqual(list(checkpoint_dir.glob('student_model_interrupted*')),[])
+
+    def test_teacher_anchor_stays_expert_controlled_when_beta_is_zero(self):
+        env = FakeEnvironment()
+        teacher = SimpleNamespace(predict=lambda obs, deterministic: np.full((2,34), .25, np.float32))
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(runner, '_device', return_value='cpu'), \
+                patch.object(runner, 'load_policy_router', return_value=(teacher, {})), \
+                patch.object(runner, 'RecurrentVisionStudent', TinyStudent):
+            runner.train_dagger(dict(expert_model_path='fake', model_save_path=directory,
+                                     tensorboard_log=directory+'/logs', total_timesteps=4,
+                                     dagger_image_width=32, dagger_image_height=32,
+                                     dagger_buffer_steps=24, dagger_store_per_step=2,
+                                     dagger_new_hidden_size=8, dagger_train_every=100,
+                                     beta_schedule='linear', beta_start=0., beta_end=0.,
+                                     dagger_teacher_anchor_fraction=.5), env.base, env)
+            first = np.all(np.isclose(env.actions[0], .25), axis=1)
+            self.assertEqual(int(first.sum()), 1)
+            for actions in env.actions:
+                np.testing.assert_array_equal(np.all(np.isclose(actions, .25), axis=1), first)
+
+    def test_camera_geometry_is_validated_and_evaluation_restores_curriculum_on_error(self):
+        from .evaluation import evaluation_resets
+        config = dict(cameras={'camera1': dict(params=dict(mount_pos=[.08,0,.35], fov_vertical=58.7))})
+        metadata = dict(camera_config=runner.camera_config(config))
+        runner.validate_camera_config(metadata, config)
+        config['cameras']['camera1']['params']['mount_pos'] = [0.,0.,.5]
+        with self.assertRaisesRegex(ValueError, 'Camera calibration'):
+            runner.validate_camera_config(metadata, config)
+        env = FakeEnvironment()
+        env.env = env.base
+        env.handler.task = SimpleNamespace(reset_to_stage0=False, use_snapshot_curriculum=True,
+                                           snapshot_save_probability=.1, eval_start_stage=None)
+        before = vars(env.handler.task).copy()
+        with self.assertRaisesRegex(RuntimeError, 'evaluation error'):
+            with evaluation_resets(env):
+                self.assertTrue(env.handler.task.reset_to_stage0)
+                self.assertFalse(env.handler.task.use_snapshot_curriculum)
+                raise RuntimeError('evaluation error')
+        self.assertEqual(vars(env.handler.task), before)
 
     def test_main_dispatches_new_and_existing_modes(self):
         # Match the import path of `python config_run/main_separate.py`;

@@ -64,7 +64,7 @@ def measurement_error(summary, config, max_memory_fraction):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', default='chairman_separate/train_dagger_cluster_l40')
-    parser.add_argument('--envs', type=int, nargs='+', default=[16, 32, 64, 128, 256, 512])
+    parser.add_argument('--envs', type=int, nargs='+', default=[128, 256, 512])
     parser.add_argument('--sequence-batches', type=int, nargs='+', default=[2, 4, 8, 16, 32, 64])
     parser.add_argument('--visual-batches', type=int, nargs='+', default=[4, 8, 16, 32, 64, 0],
                         help='0 encodes all frames together; keeps the full image resolution')

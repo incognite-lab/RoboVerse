@@ -12,7 +12,11 @@ def recurrent_config(config):
 def replay_ratio(config):
     batch = int(config.get('dagger_new_batch_size', 8)) if recurrent_config(config) else int(config['dagger_batch_size'])
     length = int(config.get('dagger_new_sequence_length', 16)) if recurrent_config(config) else 1
-    return Fraction(int(config['dagger_updates_per_train']) * batch * length,
+    updates = int(config['dagger_updates_per_train'])
+    if recurrent_config(config):
+        updates = max(updates, math.ceil(float(config.get('dagger_min_train_sample_ratio', 1.))
+                      * int(config['dagger_train_every']) * int(config['dagger_store_per_step']) / (batch * length)))
+    return Fraction(updates * batch * length,
                     int(config['dagger_train_every']) * int(config['dagger_store_per_step']))
 
 
@@ -22,7 +26,7 @@ def replay_sample_bytes(config):
     joints = int(config.get('dagger_num_joints', 43))
     if recurrent_config(config):
         hidden = int(config.get('dagger_new_hidden_size', 256)) * int(config.get('dagger_new_num_layers', 1))
-        return 3 * width * height + 4 * (2 * joints + 6 + 34 + 34 + hidden) + 1
+        return 3 * width * height + 4 * (2 * joints + 6 + 34 + 34 + hidden) + 10
     return 3 * width * height + 4 * (joints + 34)
 
 

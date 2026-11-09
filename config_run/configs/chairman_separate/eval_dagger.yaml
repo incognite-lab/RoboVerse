@@ -7,7 +7,7 @@ num_envs: 100
 headless: true
 add_table: true
 env_spacing: 4.0
-train_or_eval: eval_dagger
+train_or_eval: eval_dagger_new
 eval_start_stage: 0  # 1..5 loads config_run/snapshots_chair/stage_N.
 
 cameras:
@@ -22,18 +22,16 @@ cameras:
       fov_vertical: 58.71550708558255
       fov_horizontal: 90.0
       clipping_range: [0.1, 100.0]
-      pos: [0.0, 0.0, 0.8]
-      look_at: [1.0, 0.0, 0.35]
       mount_to: g1_with_hands
       mount_link: head_link
-      mount_pos: [0.0, 0.0, 0.5]
-      mount_quat: [0.5, 0.5, -0.5, -0.5]
+      mount_pos: [0.08, 0.0, 0.35]
+      mount_quat: [-0.583600, -0.399263, 0.399263, 0.583600]
       gaussian_splat_path: ./config_run/splat/splat_2.ply
       gaussian_position: [0.0, 0.0, 1.5]
       gaussian_rotation_xyzw: [0.0, 0.0, -0.70710678, 0.70710678]
       gaussian_scale: [3.0, 3.0, 3.0]
       spp: 8
-      render_mode: FastPathTracer
+      render_mode: RefPathTracer
       tone_mapper: "Off"
       render_sim_geometry: true
       standalone_floor: false
@@ -64,7 +62,7 @@ dagger_camera_name: camera0
 dagger_image_width: 640
 dagger_image_height: 360
 
-load_model_path: ./config_run/output/dagger_separate
+load_model_path: ./config_run/output/dagger_separate_stable_v2
 eval_episodes: 100
 eval_total_step_cap: 6000
 eval_count_timeouts_as_failures: true
