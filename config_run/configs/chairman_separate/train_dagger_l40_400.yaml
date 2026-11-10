@@ -99,7 +99,7 @@ dagger_new_visual_learning_rate: 0.00001
 # Update N+1 starts fine-tuning. Set 0 for immediate fine-tuning; ignored when pretrained=false.
 dagger_new_visual_warmup_updates: 1000
 model_save_path: ./config_run/output/dagger_separate_l40_stable_v2_640x360
-model_save_freq: 50000
+model_save_freq: 2500
 tensorboard_log: ./config_run/output/dagger_separate_l40_stable_v2_640x360/tensorboard
 dagger_log_every: 100
 dagger_gpu_poll_seconds: 10
@@ -118,7 +118,7 @@ dagger_buffer_pin_memory: false
 dagger_new_buffer_device: cpu
 dagger_new_batch_size: 16
 # Same conservative encoder memory settings as train_dagger.yaml.
-dagger_new_visual_batch_size: 4
+dagger_new_visual_batch_size: 32
 beta_schedule: stage_sawtooth
 beta_start: 1.0
 beta_end: 0.0

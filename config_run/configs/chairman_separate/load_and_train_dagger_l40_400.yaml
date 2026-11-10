@@ -1,0 +1,218 @@
+# 400-env configuration requested by the user; not a measured L40 optimum.
+# Run: python config_run/main_separate.py chairman_separate/train_dagger_l40_400
+# CPU replay: 144000 samples, 99.77 GB (92.92 GiB) of tensors.
+# Additional RAM is needed by the simulator, models, sampled batches and OS.
+# This is a replay capacity budget, not a cap on total process RAM or a measured speedup.
+# VRAM peak requires hardware verification.
+# Full 640x360 input, 16 sequences/update; encoder chunks/checkpointing match train_dagger.yaml.
+# 1M vector steps = 400M transitions; minimum learned/new-frame ratio = 2.0 (updates scale automatically).
+sim: genesis
+robots:
+- g1_with_hands
+fix_base_link: false
+task: chairmanseparate
+decimation: 5
+num_envs: 400
+headless: true
+add_table: true
+env_spacing: 4.0
+train_or_eval: load_and_train_dagger_new
+cameras:
+  camera1:
+    type: NyxGaussianSplatCameraCfg
+    params:
+      name: camera0
+      width: 640
+      height: 360
+      fov_vertical: 58.71550708558255
+      fov_horizontal: 90.0
+      clipping_range:
+      - 0.1
+      - 100.0
+      mount_to: g1_with_hands
+      mount_link: head_link
+      mount_pos:
+      - 0.08
+      - 0.0
+      - 0.35
+      mount_quat: [-0.583600,-0.399263,0.399263,0.583600]
+      gaussian_splat_path: ./config_run/splat/splat_2.ply
+      gaussian_position:
+      - 0.0
+      - 0.0
+      - 1.5
+      gaussian_rotation_xyzw:
+      - 0.0
+      - 0.0
+      - -0.70710678
+      - 0.70710678
+      gaussian_scale:
+      - 3.0
+      - 3.0
+      - 3.0
+      spp: 8
+      render_mode: RefPathTracer
+      tone_mapper: 'Off'
+      render_sim_geometry: true
+      standalone_floor: false
+      standalone_floor_pos:
+      - 0.0
+      - 0.0
+      - -0.03
+      standalone_floor_size:
+      - 20.0
+      - 20.0
+      - 0.04
+      standalone_floor_color:
+      - 0.55
+      - 0.55
+      - 0.55
+      - 1.0
+      standalone_light_dir:
+      - -0.4
+      - -0.5
+      - -1.0
+      standalone_light_intensity: 5.0
+      standalone_metasim_objects: false
+      standalone_metasim_robot: false
+      gaussian_z_up: true
+      open_nyx_window: false
+      debug_image_stats: false
+      debug_show: false
+      debug_show_all_envs: false
+      debug_calibrate: false
+      debug_detach_from_mount: false
+      debug_control_target: camera
+      debug_translation_step: 0.05
+      debug_rotation_step_deg: 5.0
+force: false
+reset_to_stage0: false
+use_snapshot_curriculum: true
+snapshot_save_probability: 0.1
+total_timesteps: 1000000
+learning_rate: 0.0001
+# ImageNet ResNet-18: true keeps calibrated BatchNorm; false uses random weights + GroupNorm.
+dagger_new_pretrained_visual: true
+# Backbone LR stays lower than the learning_rate used by GRU and policy heads.
+dagger_new_visual_learning_rate: 0.00001
+# Freeze ONLY a pretrained backbone for N successful gradient updates (not simulator steps).
+# Update N+1 starts fine-tuning. Set 0 for immediate fine-tuning; ignored when pretrained=false.
+dagger_new_visual_warmup_updates: 1000
+load_student_path: ./config_run/output/dagger_separate_l40_stable_v2_640x360/recurrent/student_model_interrupted_step_14190.pth
+model_save_path: ./config_run/output/dagger_separate_l40_stable_v2_640x360
+model_save_freq: 2500
+tensorboard_log: ./config_run/output/dagger_separate_l40_stable_v2_640x360/tensorboard
+dagger_log_every: 100
+dagger_gpu_poll_seconds: 10
+dagger_camera_name: camera0
+dagger_image_width: 640
+dagger_image_height: 360
+dagger_store_per_step: 400
+dagger_train_every: 20
+dagger_updates_per_train: 10
+dagger_batch_size: 8
+# 400 stored envs x 360 steps; keeps 360 historical steps per env.
+# Learning still runs every 20 steps once burn-in + sequence are available.
+dagger_buffer_steps: 360
+dagger_buffer_device: cpu
+dagger_buffer_pin_memory: false
+dagger_new_buffer_device: cpu
+dagger_new_batch_size: 16
+# Same conservative encoder memory settings as train_dagger.yaml.
+dagger_new_visual_batch_size: 32
+beta_schedule: stage_sawtooth
+beta_start: 1.0
+beta_end: 0.0
+expert_model_path: ./config_run/output/ppo_models_separate/run_2026-10-14_19-21-47_chairman_separate
+# Starts a fresh student with ImageNet weights. Resume uses load_student_path
+# and train_or_eval: load_and_train_dagger_new, with the original initialization flag.
+
+policies:
+  waist:
+    action_groups:
+    - waist
+    observation_groups:
+    - joint_positions
+    - robot_body_states
+    - pelvis_velocity
+    - previous_policy_actions
+  right_arm:
+    action_groups:
+    - right_arm
+    observation_groups:
+    - joint_positions
+    - right_hand_task
+    - pelvis_velocity
+    - chair_geometry
+    - stage
+    - previous_policy_actions
+  left_arm:
+    action_groups:
+    - left_arm
+    observation_groups:
+    - joint_positions
+    - left_hand_task
+    - pelvis_velocity
+    - chair_geometry
+    - stage
+    - previous_policy_actions
+  right_fingers:
+    action_groups:
+    - right_fingers
+    observation_groups:
+    - joint_positions
+    - right_hand_task
+    - fingertip_forces
+    - stage
+    - previous_policy_actions
+  left_fingers:
+    action_groups:
+    - left_fingers
+    observation_groups:
+    - joint_positions
+    - left_hand_task
+    - fingertip_forces
+    - stage
+    - previous_policy_actions
+  direction:
+    action_groups:
+    - direction
+    observation_groups:
+    - joint_positions
+    - pelvis_velocity
+    - chair_geometry
+    - previous_walk_command
+    - stage
+    - previous_policy_actions
+dagger_new_checkpoint_visual: true
+dagger_torch_threads: 4
+dagger_defer_camera_rendering: true
+dagger_new_sequence_length: 16
+dagger_new_burn_in: 8
+
+# Stable v2: fresh encoder/optimizer; do not resume the saturated v1 weights.
+# Balanced CPU archive retains teacher windows after online replay overwrites.
+dagger_demonstrations_per_stage: 16
+dagger_demonstration_fraction: 0.5
+dagger_teacher_anchor_fraction: 0.25
+# Learner budget scales with stored frames instead of silently shrinking at 400 envs.
+dagger_min_train_sample_ratio: 2.0
+dagger_new_weight_decay: 0.0001
+
+# Distill stages 0..4 inclusive. Reset immediately after stage 4 completes.
+dagger_target_stage: 4
+# Teacher-only collection warmup; freeze per-stage teacher reference at its end.
+dagger_teacher_warmup_steps: 5000
+# Nominal beta slope: 1 -> 0 in 1000 vector steps outside recovery pauses.
+dagger_beta_decay_steps: 1000
+dagger_beta_stage_tolerance: 0.1
+dagger_beta_recovery_increment: 0.1
+dagger_beta_recovery_pause_steps: 500
+dagger_beta_min_stage_attempts: 30
+# Pure-student probes in a separate scene, one cohort per stage.
+dagger_stage_eval_num_envs: 32
+dagger_eval_every: 500
+dagger_eval_episodes: 32
+dagger_eval_max_steps: 6000
+# Also evaluate the complete requested prefix; this does not gate distillation.
+dagger_prefix_eval_every: 2500
