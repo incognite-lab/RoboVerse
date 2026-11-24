@@ -1,0 +1,77 @@
+# Keyboard-controlled preview of Nyx RGB + actual robot/chair/ground geometry.
+# Run: python config_run/main_separate.py chairman_separate/calibrate_nyx
+sim: genesis
+task: chairmanseparate
+robots: [g1_with_hands]
+fix_base_link: false
+num_envs: 1
+# Disable the separate Genesis rasterizer window.
+headless: true
+# Hide only the simulated ground mesh; physical ground collisions remain.
+render_ground: false
+add_table: true
+decimation: 5
+train_or_eval: preview_nyx
+nyx_preview_fps: 30
+nyx_preview_max_frames: 0  # Unlimited; stop with Ctrl+C in the terminal.
+nyx_preview_controls: true
+nyx_preview_camera_name: camera0
+nyx_preview_move_speed: 1.0  # metres/second; Shift triples it.
+nyx_preview_turn_speed: 75.0  # degrees/second.
+# C/Tab toggles the same view to the head-mounted camera defined here.
+nyx_preview_robot_camera_config: chairman_separate/train_dagger
+nyx_preview_robot_camera_name: camera0
+# G = new random augmentation, V = clean/augmented; ranges in visual_augmentation.py.
+nyx_preview_augmentation: true
+nyx_preview_augmentation_size: [640, 360]  # Match the student's RGB input.
+# Collision-free measuring cuboid. Length axis = local X; A is the fixed start.
+nyx_ruler:
+  enabled: true
+  size_m: [1.0, 0.02, 0.02]
+  position: [-2.7, 0.0, 1.0]
+  rotation_deg: [0.0, 0.0, 0.0]  # XYZ Euler angles.
+  reference_length_m: 1.0  # Known real dimension; NumEnter stores current length.
+  max_length_m: 10.0
+  move_speed: 0.25
+  turn_speed: 45.0
+  length_step_m: 0.01  # Num+/-; Ctrl gives 1 mm.
+  light_intensity: 3.0  # Calibration-only light makes the ruler/meshes visible.
+  report_path: ./config_run/output/nyx_calibration/measurement.json
+reset_to_stage0: true
+use_snapshot_curriculum: false
+snapshot_save_probability: 0.0
+log_termination_reasons: false
+
+cameras:
+  camera1:
+    type: NyxGaussianSplatCameraCfg
+    params:
+      name: camera0
+      width: 1280
+      height: 720
+      fov_vertical: 58.71550708558255
+      fov_horizontal: 90.0
+      clipping_range: [0.1, 100.0]
+      # Free inspection camera; the policy's head-mounted camera is unchanged.
+      pos: [-5.0, -4.0, 2.0]
+      look_at: [-2.0, 0.0, 1.0]
+      mount_to: null
+      mount_link: null
+      gaussian_splat_path: ./config_run/splat/splat_2.ply
+      # Splat placement in Genesis Z-up coordinates. Edit these, then restart.
+      gaussian_position: [0.0, 0.0, 1.7]
+      gaussian_rotation_xyzw: [-0.012, 0.012, -0.707, 0.707]
+      gaussian_scale: [3.634, 3.634, 3.634]
+      gaussian_z_up: true
+      render_sim_geometry: true
+      spp: 4
+      render_mode: RefPathTracer
+      tone_mapper: 'Off'
+      # The controlled window displays Nyx RGB. Keep the opaque native GUI off
+      # to use one window with reliable keyboard input and camera switching.
+      open_nyx_window: false
+      # Optional second OpenCV window with camera navigation controls.
+      debug_show: false
+      debug_calibrate: false
+      debug_control_target: camera
+      debug_image_stats: false

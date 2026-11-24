@@ -363,6 +363,9 @@ class PipelineTest(unittest.TestCase):
         config['cameras']['camera1']['params']['mount_pos'] = [0.,0.,.5]
         with self.assertRaisesRegex(ValueError, 'Camera calibration'):
             runner.validate_camera_config(metadata, config)
+        with patch.object(runner.log,'warning') as warning:
+            runner.validate_camera_config(metadata,config,strict=False)
+            warning.assert_called_once()
         env = FakeEnvironment()
         env.env = env.base
         env.handler.task = SimpleNamespace(reset_to_stage0=False, use_snapshot_curriculum=True,
@@ -374,6 +377,27 @@ class PipelineTest(unittest.TestCase):
                 self.assertFalse(env.handler.task.use_snapshot_curriculum)
                 raise RuntimeError('evaluation error')
         self.assertEqual(vars(env.handler.task), before)
+
+    def test_evaluation_and_video_continue_after_scene_calibration_change(self):
+        env = FakeEnvironment()
+        model = TinyStudent(hidden_size=8)
+        previous = dict(cameras={'camera1':dict(params=dict(gaussian_scale=[3.,3.,3.]))})
+        metadata = dict(camera_config=runner.camera_config(previous),camera_name='camera0',
+                        joint_names=list(env.robot_joint_names),image_shape=[3,32,32])
+        for video in (False,True):
+            with self.subTest(video=video),tempfile.TemporaryDirectory() as directory:
+                config = dict(cameras={'camera1':dict(params=dict(gaussian_scale=[3.634]*3))},
+                              eval_episodes=2,eval_total_step_cap=4,eval_max_steps=4,
+                              video_save_path=str(Path(directory)/'eval.mp4'))
+                writer = SimpleNamespace(isOpened=lambda:True,write=lambda frame:None,release=lambda:None)
+                with patch.object(runner,'load_student',return_value=(model,metadata,42)), \
+                     patch.object(runner.log,'warning') as warning, \
+                     patch('cv2.VideoWriter',return_value=writer):
+                    row = runner.evaluate_checkpoint(config,env.base,env,'student.pth','cpu',video=video)
+                warning.assert_called_once()
+                self.assertEqual(row['episodes_finished'],2)
+                self.assertEqual(row['success_count'],2)
+                self.assertEqual(metadata['camera_config'],runner.camera_config(previous))
 
     def test_main_dispatches_new_and_existing_modes(self):
         # Match the import path of `python config_run/main_separate.py`;
@@ -401,12 +425,13 @@ class PipelineTest(unittest.TestCase):
                                ("eval_dagger_new", 2), ("eval_dagger_new_video", 2)):
             scenario = SimpleNamespace(task=SimpleNamespace(), robots=[SimpleNamespace(name="g1_with_hands")])
             config = dict(task="chairmanseparate", robots=["g1_with_hands"], train_or_eval=mode,
-                          sim="genesis", fix_base_link=False)
+                          sim="genesis", fix_base_link=False,render_ground=False)
             with self.subTest(mode=mode), \
-                    patch.object(main_separate, "ScenarioCfg", return_value=scenario), \
+                    patch.object(main_separate, "ScenarioCfg", return_value=scenario) as make_scenario, \
                     patch.object(main_separate, "MetaSimVecEnv"), \
                     patch.object(main_separate, "StableBaseline3VecEnv"):
                 main_separate.build_env(config)
+                self.assertIs(make_scenario.call_args.kwargs['render_ground'],False)
                 self.assertEqual(scenario.dagger, expected)
                 if expected == 1:
                     self.assertTrue(scenario.defer_camera_rendering)

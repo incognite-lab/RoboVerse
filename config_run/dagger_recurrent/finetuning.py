@@ -7,7 +7,7 @@ import torch
 
 
 class VisualFineTuning:
-    """Warm up new policy layers, then unfreeze the pretrained ResNet.
+    """Optionally warm up policy layers, then unfreeze the pretrained ResNet.
 
     All parameters remain in the optimizer from the start, including frozen
     ones. AdamW skips parameters without gradients, preserving encoder weights
@@ -16,6 +16,11 @@ class VisualFineTuning:
 
     def __init__(self, student, config, *, pretrained=False, saved=None):
         self.student = student
+        # Explicit configuration may freeze an already fine-tuned checkpoint.
+        # Omitted settings preserve its mode; old checkpoints keep prior behavior.
+        self.enabled = config.get('dagger_new_finetune_visual', (saved or {}).get('enabled', True))
+        if not isinstance(self.enabled, bool):
+            raise ValueError('dagger_new_finetune_visual must be true or false')
         if saved is None:
             self.pretrained = bool(pretrained)
             self.policy_lr = float(config.get('learning_rate', 1e-4))
@@ -40,7 +45,7 @@ class VisualFineTuning:
 
     @property
     def active(self):
-        return not self.pretrained or self.completed_updates >= self.warmup_updates
+        return self.enabled and (not self.pretrained or self.completed_updates >= self.warmup_updates)
 
     def make_optimizer(self, weight_decay=1e-4):
         visual = list(self.student.visual_encoder.parameters())
@@ -76,12 +81,12 @@ class VisualFineTuning:
         return not before and self.active
 
     def state_dict(self):
-        return dict(pretrained=self.pretrained, policy_lr=self.policy_lr, visual_lr=self.visual_lr,
+        return dict(enabled=self.enabled, pretrained=self.pretrained, policy_lr=self.policy_lr, visual_lr=self.visual_lr,
                     warmup_updates=self.warmup_updates, completed_updates=self.completed_updates)
 
     def metrics(self):
-        return dict(visual_finetuning_active=int(self.active),
+        return dict(visual_finetuning_enabled=int(self.enabled), visual_finetuning_active=int(self.active),
                     visual_learning_rate=self.visual_lr if self.active else 0.,
                     completed_gradient_updates=self.completed_updates,
                     visual_warmup_updates_remaining=max(0, self.warmup_updates-self.completed_updates)
-                    if self.pretrained else 0)
+                    if self.pretrained and self.enabled else 0)

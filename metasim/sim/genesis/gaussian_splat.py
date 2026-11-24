@@ -520,6 +520,7 @@ class NyxGaussianSplatRuntime:
         mount_link=None,
         robot=None,
         objects=None,
+        calibration_light_intensity=0.,
     ):
         ensure_nyx_available()
         patch_nyx_renderer_for_genesis_vgeom_api()
@@ -576,6 +577,16 @@ class NyxGaussianSplatRuntime:
                     "intensity": camera.standalone_light_intensity,
                     "shadow": False,
                 },
+            ]
+
+        if calibration_light_intensity > 0:
+            # Calibration ruler/mesh colours need illumination. This is only
+            # enabled by the preview ruler; training camera lighting is intact.
+            options['lights'] = options.get('lights',[])+[
+                dict(type='directional',dir=(.5,-.5,-1.),color=(1.,1.,1.),
+                     intensity=calibration_light_intensity,shadow=False),
+                dict(type='directional',dir=(-.5,.5,-1.),color=(1.,1.,1.),
+                     intensity=calibration_light_intensity*.3,shadow=False),
             ]
 
         if camera.tone_mapper is not None:

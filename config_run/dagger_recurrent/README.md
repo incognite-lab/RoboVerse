@@ -71,6 +71,7 @@ dagger_new_num_layers: 1
 dagger_new_proprio_embedding_size: 128
 dagger_new_grad_clip: 1.0
 dagger_new_pretrained_visual: false
+dagger_new_finetune_visual: true   # výchozí pro nový běh bez tohoto klíče
 dagger_new_buffer_device: cpu      # záměrně nezávislé na legacy dagger_buffer_device
 dagger_new_seed: 0
 ```
@@ -258,14 +259,20 @@ neobsahuje odhad nejistoty; jednotlivé hlavy rozdělují řízení částí tě
 Model interně normalizuje RGB pomocí ImageNet mean/std. Vstup tedy pouze
 převeď na RGB, CHW a vyděl 255; ImageNet normalizaci nedělej podruhé.
 V dodaných `chairman_separate/train_dagger*.yaml` je nyní předtrénování
-zapnuté. Samostatný konstruktor modelu stále standardně nestahuje váhy.
+zapnuté a fine-tuning vypnutý. Samostatný konstruktor modelu stále standardně
+nestahuje váhy. Pokud v těchto konfiguracích přepneš na náhodnou inicializaci,
+nastav také `dagger_new_finetune_visual: true`, aby se náhodný encoder učil.
 
 ```yaml
 dagger_new_pretrained_visual: true
+dagger_new_finetune_visual: false        # zmrazit ResNet i při resume již fine-tunovaného checkpointu
 learning_rate: 0.0001                    # GRU, propriocepce, akční hlavy a nové LayerNorm
 dagger_new_visual_learning_rate: 0.00001  # pouze ResNet, včetně jeho affine parametrů
 dagger_new_visual_warmup_updates: 1000    # dokončené gradientní aktualizace, nikoli kroky simulace
 ```
+
+Následující dvě varianty popisují `dagger_new_pretrained_visual`; fáze učení
+encoderu se uplatní pouze při `dagger_new_finetune_visual: true`.
 
 - **`true`:** načte ImageNet ResNet-18 (`ResNet18_Weights.DEFAULT`). Zachová
   původní BatchNorm a všechny naučené running mean/variance. Tyto statistiky
@@ -289,9 +296,21 @@ Warmup vizuálního encoderu je nezávislý na `dagger_teacher_warmup_steps`, kt
 přímý i při změně počtu prostředí a aktualizací v jednom trénovacím bloku.
 Nastavení 1000 je nastavitelné výchozí číslo, nikoli empiricky nalezené optimum.
 
+Ve všech čtyřech dodaných train konfiguracích je nyní
+`dagger_new_finetune_visual: false`: váhy celého ResNetu zůstávají pevné,
+včetně affine parametrů BatchNorm. Jeho gradienty a efektivní LR jsou nulové,
+počet aktualizací jej neodemkne. Učí se dál propriocepční síť, GRU, akční
+hlavy a navazující LayerNorm. ResNet stále počítá obrazové příznaky při
+každém průchodu; cache příznaků v replay není součástí této změny.
+
 Checkpoint uchovává typ normalizace, původ vah, dokončené aktualizace, warmup
 i oba learning rates. Při `load_and_train_dagger_new` se obnoví tato uložená
-nastavení a fáze: warmup nezačíná znovu a odemčený ResNet se znovu nezmrazí.
+nastavení a fáze: warmup nezačíná znovu. Výjimkou je explicitní
+`dagger_new_finetune_visual` v konfiguraci, který má přednost před uloženým
+příznakem: `false` zmrazí i již odemčený encoder při zachování jeho vah a
+momentů Adamu. Pozdější `true` umožní pokračovat podle uloženého počtu
+aktualizací. Pokud klíč vynecháš, převezme se uložený příznak; u starších
+checkpointů bez příznaku a u nového běhu bez tohoto klíče je výchozí `true`.
 Pro evaluaci i resume se váhy a statistiky načtou přímo ze studentského
 checkpointu, bez opětovného stahování ImageNetu. Přepínač předtrénování nelze
 změnit uprostřed resume; pro změnu inicializace začni nový běh a použij nový
@@ -299,12 +318,19 @@ výstupní adresář. Starší v2 checkpointy s jedinou skupinou optimizeru se p
 obnově rozdělí na dvě skupiny při zachování momentů Adamu; v1 resume zůstává
 odmítnuto.
 
-TensorBoard obsahuje `Student/visual_finetuning_active`,
+Při `eval_dagger_new` a `eval_dagger_new_video` odlišná kalibrace kamery nebo
+transformace splatu pouze vypíše warning; evaluace pokračuje s aktuální
+konfigurací scény. Checkpoint se nepřepisuje. Při pokračování tréninku je
+kontrola shody kalibrace nadále striktní. Kontroly pořadí akcí, kloubů,
+IMU a periody řízení zůstávají striktní i během evaluace.
+
+TensorBoard obsahuje `Student/visual_finetuning_enabled`, `Student/visual_finetuning_active`,
 `Student/visual_learning_rate`, `Student/completed_gradient_updates` a
 `Student/visual_warmup_updates_remaining`. Během warmupu má skutečný ResNet LR
 0 a jeho gradient je nulový; po odemčení se použije nastavený vizuální LR.
-Profilovací skript standardně používá vizuální warmup 0, aby měřil cenu
-fine-tuningu. Volbou `--visual-warmup-updates N` lze explicitně měřit i warmup.
+Profilovací skript standardně používá vizuální warmup 0, ale respektuje
+vypnutý fine-tuning v konfiguraci. Pro měření fine-tuningu jej nejprve povol.
+Volbou `--visual-warmup-updates N` lze explicitně měřit i warmup.
 
 Ověření obou variant při 640×360 na GPU (syntetická úloha, skutečné ImageNet
 váhy pro zapnuté předtrénování, 60 aktualizací, zkrácený warmup 10):
@@ -480,6 +506,35 @@ nejprve mírné; při změnách fyziky ověř, že teacher nadále poskytuje dob
 Pro evaluaci měj explicitní profily `clean`, `held_out_randomized`, `real`,
 vypnuté náhodné tréninkové augmentace a oddělené seedy. Měř úspěšnost celých
 studentských epizod a jednotlivých fází, nejen MSE na teacherových akcích.
+
+## Implementovaná obrazová augmentace
+
+Společný modul `config_run/visual_augmentation.py` obsahuje rozsahy na začátku
+souboru: jas/kontrast/gamma 0,9–1,1, RGB gains 0,95–1,05, směrodatnou odchylku
+šumu 0–2/255 a pravděpodobnost mírného Gaussian blur 0,1. Polovina epizod nebo
+sekvencí zůstává čistá. Jde o počáteční mírné rozsahy; uprav je podle reálných
+obrazů a po změně restartuj proces.
+
+Všech pět train/resume konfigurací `chairman_separate/*train_dagger*.yaml`
+zapíná `dagger_visual_augmentation: true`. Nastavením `false` augmentaci vypneš;
+chybějící klíč také znamená vypnuto. Volitelný `dagger_augmentation_seed`
+řídí oddělené generátory augmentace. Funguje i se zmrazeným ResNetem.
+
+`runner.py` volá `VisualAugmentation.rollout()` před studentem: vzhled se losuje
+po resetu jednotlivého prostředí. `buffer.py` volá `sequence()` po vzorkování:
+vzhled je stejný po celé sekvenci včetně burn-inu. Snímací šum je nezávislý pro
+každý pixel a snímek. Replay i archiv uchovávají čisté uint8 RGB; teacherovy
+labely, propriocepce a akce se nemění. Augmentace běží nad float RGB [0,1]
+před stávající ImageNet normalizací. Generátory se ukládají s checkpointem;
+při resume začínají nové epizody s nově losovaným vzhledem.
+
+Standardní evaluace, stage probes pro betu a evaluační video zůstávají čisté.
+V TensorBoardu sleduj `Augmentation/enabled`, `Augmentation/rollout_env_fraction`
+a zaznamenané rozsahy v `Run/visual_augmentation`. Generalizaci je potřeba
+ověřit samostatnou evaluací na odlišných podmínkách a reálných datech.
+
+V `calibrate_nyx` klávesa **G** losuje nový vzhled a **V** přepíná čistý obraz.
+Podrobnosti jsou v [dokumentaci kamery](../camera_fov.md).
 
 ## Ověření
 

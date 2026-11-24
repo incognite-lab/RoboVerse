@@ -7,6 +7,8 @@ task: chairmanseparate
 decimation: 5
 num_envs: 8
 headless: true
+# Hide only the simulated ground mesh; physical ground collisions remain.
+render_ground: false
 add_table: true
 env_spacing: 4.0
 train_or_eval: train_dagger_new
@@ -30,19 +32,9 @@ cameras:
       - 0.35
       mount_quat: [-0.583600, -0.399263, 0.399263, 0.583600]
       gaussian_splat_path: ./config_run/splat/splat_2.ply
-      gaussian_position:
-      - 0.0
-      - 0.0
-      - 1.5
-      gaussian_rotation_xyzw:
-      - 0.0
-      - 0.0
-      - -0.70710678
-      - 0.70710678
-      gaussian_scale:
-      - 3.0
-      - 3.0
-      - 3.0
+      gaussian_position: [0.0, 0.0, 1.7]
+      gaussian_rotation_xyzw: [-0.012, 0.012, -0.707, 0.707]
+      gaussian_scale: [3.634, 3.634, 3.634]
       spp: 8
       render_mode: RefPathTracer
       tone_mapper: 'Off'
@@ -86,6 +78,10 @@ total_timesteps: 1000000
 learning_rate: 0.0001
 # ImageNet ResNet-18: true keeps calibrated BatchNorm; false uses random weights + GroupNorm.
 dagger_new_pretrained_visual: true
+# Shared mild RGB augmentation; ranges in config_run/visual_augmentation.py.
+dagger_visual_augmentation: true
+# Keep the loaded ResNet fixed, including when resuming a fine-tuned checkpoint.
+dagger_new_finetune_visual: false
 # Backbone LR stays lower than the learning_rate used by GRU and policy heads.
 dagger_new_visual_learning_rate: 0.00001
 # Freeze ONLY a pretrained backbone for N successful gradient updates (not simulator steps).

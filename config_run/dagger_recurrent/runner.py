@@ -26,12 +26,14 @@ from .stage_beta import StageSawtoothBeta, stage_measurement
 from .stage_probe import StageProbeProcess
 
 try:
+    from ..visual_augmentation import VisualAugmentation, augmentation_settings, DEFAULT_SEED
     from ..student_vision import image_size_from_config
     from ..dagger_vp.beta_schedule import beta_at_step, dagger_target_steps
     from ..dagger_vp.metrics import DaggerMetrics, HardwareMonitor
     from ..separate_dagger import _device, _student_checkpoints
     from ..separate_ppo_trainer import load_policy_router
 except ImportError:  # python config_run/main_separate.py ...
+    from visual_augmentation import VisualAugmentation, augmentation_settings, DEFAULT_SEED
     from student_vision import image_size_from_config
     from dagger_vp.beta_schedule import beta_at_step, dagger_target_steps
     from dagger_vp.metrics import DaggerMetrics, HardwareMonitor
@@ -72,7 +74,7 @@ def validate_action_layout(env):
 
 
 def camera_config(config):
-    """Image geometry and rendering appearance must match training."""
+    """Record image geometry and rendering appearance for compatibility checks."""
     keys = ('name', 'width', 'height', 'fov_vertical', 'fov_horizontal', 'clipping_range',
             'mount_to', 'mount_link', 'mount_pos', 'mount_quat', 'pos', 'look_at',
             'gaussian_splat_path', 'gaussian_position', 'gaussian_rotation_xyzw',
@@ -81,9 +83,12 @@ def camera_config(config):
                      for name, spec in config.get('cameras', {}).items()})
 
 
-def validate_camera_config(metadata, config):
+def validate_camera_config(metadata, config, *, strict=True):
     if 'camera_config' in metadata and metadata['camera_config'] != camera_config(config):
-        raise ValueError("Camera calibration/scene differs from the student checkpoint")
+        message = 'Camera calibration/scene differs from the student checkpoint'
+        if strict:
+            raise ValueError(message)
+        log.warning('{}; continuing evaluation with the current camera/scene configuration',message)
 
 
 def train_dagger(config, base, env):
@@ -172,11 +177,24 @@ def train_dagger(config, base, env):
             raise ValueError("Student and optimizer checkpoint steps differ")
         log.info("Resuming recurrent weights/optimizer at {}; simulator, replay and GRU start fresh", start_step)
         visual_training.apply(optimizer)
-    log.info("ResNet pretrained={}, normalization={}, fine-tuning={}, completed updates={}, "
+    log.info("ResNet pretrained={}, normalization={}, fine-tuning enabled={}, active={}, completed updates={}, "
              "warmup={} updates, LR policy={} / ResNet={}",
-             visual_training.pretrained, student.visual_normalization, visual_training.active,
+             visual_training.pretrained, student.visual_normalization, visual_training.enabled, visual_training.active,
              visual_training.completed_updates, visual_training.warmup_updates,
-             visual_training.policy_lr, visual_training.visual_lr)
+             visual_training.policy_lr, visual_training.visual_lr if visual_training.active else 0.)
+    augmentation_enabled = config.get('dagger_visual_augmentation',False)
+    if not isinstance(augmentation_enabled,bool):
+        raise ValueError('dagger_visual_augmentation must be true or false')
+    saved_augmentation = metadata.get('visual_augmentation',{})
+    rollout_augmentation = replay_augmentation = None
+    if augmentation_enabled:
+        seed = int(config.get('dagger_augmentation_seed',DEFAULT_SEED))
+        rollout_augmentation = VisualAugmentation(seed,saved_augmentation.get('rollout_rng'))
+        replay_augmentation = VisualAugmentation(seed+1,saved_augmentation.get('replay_rng'))
+        if saved_augmentation.get('settings') not in (None,augmentation_settings()):
+            log.warning('Visual augmentation ranges changed; using constants from visual_augmentation.py')
+        log.info('Visual augmentation enabled: clean replay, episode styles during rollout, '
+                 'sequence styles during learning; settings={}',augmentation_settings())
     end_step = dagger_target_steps(config, start_step)
     observation = env.reset()
     state = RolloutState(student, env.num_envs)
@@ -249,6 +267,8 @@ def train_dagger(config, base, env):
     from torch.utils.tensorboard import SummaryWriter
     writer = SummaryWriter(str(log_root / datetime.now(timezone.utc).strftime("run_%Y%m%dT%H%M%S%fZ")))
     writer.add_text("Run/config", json.dumps(config, indent=2, default=str), start_step)
+    writer.add_text('Run/visual_augmentation',json.dumps(dict(enabled=augmentation_enabled,
+                    settings=augmentation_settings()),indent=2),start_step)
     writer.add_text("Run/recurrent", "Replay uses stored rollout hidden states plus burn-in (truncated BPTT). "
                     "Only episode resets zero memory. Resume restarts simulator/replay. "
                     "Mixed-teacher training success is not pure-student evaluation.", start_step)
@@ -271,6 +291,10 @@ def train_dagger(config, base, env):
     def save_training(path, interrupted=False):
         replay_path = Path(str(path) + '.demonstrations.pth') if interrupted else archive_path
         metadata['visual_finetuning'] = visual_training.state_dict()
+        metadata['visual_augmentation'] = dict(enabled=augmentation_enabled,settings=augmentation_settings())
+        if augmentation_enabled:
+            metadata['visual_augmentation'].update(rollout_rng=rollout_augmentation.state_dict(),
+                                                   replay_rng=replay_augmentation.state_dict())
         if buffer.demonstrations_per_stage:
             metadata['demonstration_archive'] = replay_path.name
         if controller is not None:
@@ -357,6 +381,10 @@ def train_dagger(config, base, env):
         writer.add_scalar('Student/trained_to_stored_ratio', metrics.trained_samples / max(1, metrics.stored), next_step)
         for name, value in visual_training.metrics().items():
             writer.add_scalar(f'Student/{name}', value, next_step)
+        writer.add_scalar('Augmentation/enabled',int(augmentation_enabled),next_step)
+        if rollout_augmentation is not None and rollout_augmentation.episode_parameters is not None:
+            writer.add_scalar('Augmentation/rollout_env_fraction',
+                              float(rollout_augmentation.episode_parameters.enabled.float().mean()),next_step)
         if stage_beta:
             for name,value in controller.metrics(next_step).items():
                 writer.add_scalar(f'BetaControl/{name}',value,next_step)
@@ -384,7 +412,10 @@ def train_dagger(config, base, env):
                 student.eval()
                 with torch.no_grad():
                     expert = teacher.predict(observation, deterministic=True)
-                    prediction, hidden = student(values[0].float() / 255, *values[1:],
+                    images = values[0].float().div_(255).contiguous()
+                    if rollout_augmentation is not None:
+                        images = rollout_augmentation.rollout(images,state.reset_mask,inplace=True)
+                    prediction, hidden = student(images, *values[1:],
                                                  hidden=state.hidden, reset_mask=state.reset_mask)
                 proposed = prediction.cpu().numpy()
                 if not np.isfinite(proposed).all() or not np.isfinite(expert).all():
@@ -415,7 +446,8 @@ def train_dagger(config, base, env):
                         student.collect_diagnostics = inspect
                         losses.append(train_sequence_step(student, optimizer, buffer, batch_size,
                                                           sequence_length, burn_in, grad_clip,
-                                                          diagnostics=health if inspect else None))
+                                                          diagnostics=health if inspect else None,
+                                                          augmentation=replay_augmentation))
                         if visual_training.after_update(optimizer):
                             log.info("Unfreezing pretrained ResNet after {} gradient updates; visual LR={}",
                                      visual_training.completed_updates, visual_training.visual_lr)
@@ -480,7 +512,7 @@ def evaluate_checkpoint(config, base, env, path, device, video=False):
         if task is not None:
             task.dagger_target_stage = target_stage
             task.curriculum_max_stage = target_stage
-    validate_camera_config(metadata, config)
+    validate_camera_config(metadata, config,strict=False)
     adapter = StudentInputs(base, env, device, metadata["camera_name"], metadata["joint_names"],
                             image_size=tuple(metadata["image_shape"][-2:]))
     video_writer = None

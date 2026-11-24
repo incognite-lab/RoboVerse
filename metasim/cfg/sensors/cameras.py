@@ -125,6 +125,7 @@ class NyxGaussianSplatCameraCfg(PinholeCameraCfg):
     standalone_metasim_objects: bool = False
     standalone_metasim_robot: bool = False
     open_nyx_window: bool = False
+    """Open Nyx's native live window independently of the Genesis headless flag."""
     debug_image_stats: bool = True
     debug_show: bool = False
     debug_show_all_envs: bool = False

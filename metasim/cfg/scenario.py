@@ -61,6 +61,8 @@ class ScenarioCfg:
     object_states: bool = False
     split: Literal["train", "val", "test", "all"] = "all"
     headless: bool = False
+    render_ground: bool = True
+    """Genesis: show the simulator ground mesh; collisions stay enabled when false."""
     """environment spacing for parallel environments"""
     env_spacing: float = 1.0
     dagger: int = 0
@@ -69,6 +71,8 @@ class ScenarioCfg:
 
     def __post_init__(self):
         """Post-initialization configuration."""
+        if not isinstance(self.render_ground,bool):
+            raise ValueError('render_ground must be true or false')
         ### Align configurations
         if (self.random.scene or self.scene is not None) and self.try_add_table:
             log.warning("try_add_table is set to False because scene randomization is enabled or a scene is specified")

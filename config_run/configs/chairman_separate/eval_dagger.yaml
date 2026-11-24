@@ -5,6 +5,8 @@ task: chairmanseparate
 decimation: 5
 num_envs: 100
 headless: true
+# Hide only the simulated ground mesh; physical ground collisions remain.
+render_ground: false
 add_table: true
 env_spacing: 4.0
 train_or_eval: eval_dagger_new
@@ -27,9 +29,9 @@ cameras:
       mount_pos: [0.08, 0.0, 0.35]
       mount_quat: [-0.583600, -0.399263, 0.399263, 0.583600]
       gaussian_splat_path: ./config_run/splat/splat_2.ply
-      gaussian_position: [0.0, 0.0, 1.5]
-      gaussian_rotation_xyzw: [0.0, 0.0, -0.70710678, 0.70710678]
-      gaussian_scale: [3.0, 3.0, 3.0]
+      gaussian_position: [0.0, 0.0, 1.7]
+      gaussian_rotation_xyzw: [-0.012, 0.012, -0.707, 0.707]
+      gaussian_scale: [3.634, 3.634, 3.634]
       spp: 8
       render_mode: RefPathTracer
       tone_mapper: "Off"

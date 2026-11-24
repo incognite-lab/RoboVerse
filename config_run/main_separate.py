@@ -50,6 +50,8 @@ def build_env(config):
     if config.get("task") != "chairmanseparate":
         raise ValueError("main_separate.py requires task: chairmanseparate")
     mode = config.get("train_or_eval", "train")
+    if mode == 'preview_nyx' and int(config.get('num_envs',1)) != 1:
+        raise ValueError('preview_nyx requires num_envs: 1')
     recurrent_training = mode in ("train_dagger_new", "load_and_train_dagger_new")
     recurrent_mode = recurrent_training or mode in ('eval_dagger_new', 'eval_dagger_new_video')
     target_stage = config.get('dagger_target_stage') if recurrent_mode else None
@@ -62,6 +64,7 @@ def build_env(config):
     scenario = ScenarioCfg(
         task=config["task"], robots=config["robots"], sim=config.get("sim", "genesis"),
         num_envs=int(config.get("num_envs", 1)), headless=bool(config.get("headless", False)),
+        render_ground=config.get('render_ground',True),
         try_add_table=bool(config.get("try_add_table", config.get("add_table", True))),
         sensors=get_sensors_from_config(config.get("sensors", {})),
         cameras=get_cameras_from_config(config.get("cameras", {})),
@@ -95,11 +98,18 @@ def build_env(config):
         )
     elif mode in ("eval_dagger", "eval_dagger_video", "eval_dagger_new", "eval_dagger_new_video"):
         scenario.dagger = 2
+    elif mode == 'preview_nyx':
+        scenario.dagger = 1
+        scenario.defer_camera_rendering = True
+        from metasim.utils.nyx_ruler import RulerSettings
+        scenario.nyx_preview_ruler = config.get('nyx_ruler',{})
+        RulerSettings(**scenario.nyx_preview_ruler)
     if scenario.robots[0].name != "g1_with_hands" or scenario.robots[0].fix_base_link:
         raise ValueError("Separate ChairMan requires mobile g1_with_hands and fix_base_link: false")
     base = MetaSimVecEnv(scenario, task_name=config["task"],
                          num_envs=int(config.get("num_envs", 1)), sim=config.get("sim", "genesis"))
-    return base, StableBaseline3VecEnv(base)
+    # Calibration needs geometry/cameras, without a policy or locomotion model.
+    return base, base if mode == 'preview_nyx' else StableBaseline3VecEnv(base)
 
 def evaluate(config, env, video=False):
     router, manifest = load_policy_router(
@@ -164,7 +174,13 @@ def main():
         )
     base, env = build_env(config)
     try:
-        if mode in ("train", "load_and_train"):
+        if mode == 'preview_nyx':
+            try:
+                from .nyx_preview import preview_nyx
+            except ImportError:
+                from nyx_preview import preview_nyx
+            preview_nyx(config,base)
+        elif mode in ("train", "load_and_train"):
             stage_logger = (
                 log_stage_transitions
                 if bool(config.get("log_stage_transitions", True))

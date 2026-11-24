@@ -79,7 +79,8 @@ def main():
             logger.add(sys.stderr, level='WARNING')
             base, env = build_env(deepcopy(config))
         pretrained = bool(config.get('dagger_new_pretrained_visual', False))
-        if pretrained and args.updates <= args.visual_warmup_updates:
+        finetune = config.get('dagger_new_finetune_visual', True)
+        if pretrained and finetune and args.updates <= args.visual_warmup_updates:
             raise ValueError('Verification needs more updates than warmup to measure backbone fine-tuning')
         model = RecurrentVisionStudent(**model_kwargs(config, 43), pretrained_visual=pretrained).to(device)
         std = torch.ones(model.proprio_dim, device=device)
@@ -166,10 +167,14 @@ def main():
                       visual_finetuning=visual_training.state_dict(),
                       parameter_max_changes={name: float((next(module.parameters()).detach()-before[name]).abs().max())
                                              for name,module in groups.items()})
+        trained_groups = groups if finetune else {k:v for k,v in groups.items() if k != 'visual'}
+        frozen_visual_ok = (finetune or (report['parameter_max_changes']['visual'] == 0
+                                        and health['visual_gradient_norm'] == 0))
         report['optimization_checks_passed'] = bool(
             report['train_mse_after'] < report['train_mse_before'] * .5
-            and all(v > 0 for v in report['parameter_max_changes'].values())
-            and all(health[f'{name}_gradient_norm'] > 0 for name in groups)
+            and all(report['parameter_max_changes'][name] > 0 for name in trained_groups)
+            and all(health[f'{name}_gradient_norm'] > 0 for name in trained_groups)
+            and frozen_visual_ok
             and health['gru_input_saturation_fraction'] < .1)
         report['generalization_checks_passed'] = report['heldout_mse_after'] < report['heldout_mse_before']
         write_report()

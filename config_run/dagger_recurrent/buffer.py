@@ -168,8 +168,12 @@ class SequenceBuffer:
 
 
 def train_sequence_step(student, optimizer, buffer, batch_size, sequence_length, burn_in=8, grad_clip=1.0,
-                        diagnostics=None):
+                        diagnostics=None, augmentation=None):
     values, target, hidden, resets = buffer.sample(batch_size, sequence_length, burn_in)
+    if augmentation is not None:
+        # sample() returns owned float RGB; the uint8 replay/archive stays clean.
+        # One style spans BOTH burn-in and the supervised sequence.
+        values = (augmentation.sequence(values[0],inplace=True),*values[1:])
     student.train()
     if burn_in:
         # Warm up a replayed rollout state using current network parameters.

@@ -112,6 +112,64 @@ class FineTuningTest(unittest.TestCase):
         self.assertTrue(schedule.active)
         self.assertTrue(all(p.requires_grad for p in model.visual_encoder.parameters()))
 
+    def test_disabled_finetuning_keeps_all_encoder_weights_and_bn_fixed(self):
+        model = self.pretrained_model(visual_batch_size=1)
+        schedule = VisualFineTuning(model, dict(dagger_new_finetune_visual=False,
+                                               dagger_new_visual_warmup_updates=0), pretrained=True)
+        optimizer = schedule.make_optimizer()
+        original = {k:v.clone() for k,v in model.visual_encoder.state_dict().items()}
+        before = {name:next(module.parameters()).detach().clone() for name,module in
+                  [('gru',model.gru),('proprio',model.proprio_encoder),('heads',model.action_heads)]}
+        batch = self.batch(model)
+        for _ in range(3):
+            _, health, unlocked = self.update(model,optimizer,schedule,batch)
+            self.assertFalse(unlocked)
+            self.assertFalse(schedule.active)
+            self.assertEqual(optimizer.param_groups[1]['lr'],0)
+            self.assertEqual(health['visual_gradient_norm'],0)
+            for name in ('gru','proprio','heads'):
+                self.assertGreater(health[f'{name}_gradient_norm'],0)
+            for key,value in model.visual_encoder.state_dict().items():
+                torch.testing.assert_close(value,original[key],rtol=0,atol=0)
+        for name,module in [('gru',model.gru),('proprio',model.proprio_encoder),('heads',model.action_heads)]:
+            self.assertFalse(torch.equal(before[name],next(module.parameters())))
+        self.assertTrue(all(not p.requires_grad and p.grad is None for p in model.visual_encoder.parameters()))
+        self.assertEqual(schedule.metrics()['visual_warmup_updates_remaining'],0)
+        self.assertFalse(schedule.state_dict()['enabled'])
+        inherited = VisualFineTuning(model,{},pretrained=True,saved=schedule.state_dict())
+        self.assertFalse(inherited.active)
+
+    def test_freezing_trained_backbone_preserves_restored_adam_state(self):
+        model = self.pretrained_model()
+        training = VisualFineTuning(model,dict(dagger_new_visual_warmup_updates=0),pretrained=True)
+        optimizer = training.make_optimizer()
+        batch = self.batch(model)
+        self.update(model,optimizer,training,batch)
+        parameter = model.visual_encoder.conv1.weight
+        original = {k:v.clone() for k,v in model.visual_encoder.state_dict().items()}
+        momentum = {k:v.clone() for k,v in optimizer.state[parameter].items()}
+        saved = training.state_dict()
+        saved.pop('enabled')  # Legacy checkpoint with active fine-tuning.
+        frozen = VisualFineTuning(model,dict(dagger_new_finetune_visual=False),pretrained=True,saved=saved)
+        restored = frozen.make_optimizer()
+        restored.load_state_dict(optimizer.state_dict())  # Restores a nonzero visual LR.
+        frozen.apply(restored)
+        self.assertEqual(restored.param_groups[1]['lr'],0)
+        for _ in range(2):
+            self.update(model,restored,frozen,batch)
+        self.assertEqual(frozen.completed_updates,3)
+        for key,value in model.visual_encoder.state_dict().items():
+            torch.testing.assert_close(value,original[key],rtol=0,atol=0)
+        for key,value in restored.state[parameter].items():
+            torch.testing.assert_close(value,momentum[key],rtol=0,atol=0)
+        resumed = VisualFineTuning(model,dict(dagger_new_finetune_visual=True),pretrained=True,
+                                  saved=frozen.state_dict())
+        resumed.apply(restored)
+        self.assertTrue(resumed.active)
+        self.assertEqual(restored.param_groups[1]['lr'],1e-5)
+        self.update(model,restored,resumed,batch)
+        self.assertFalse(torch.equal(parameter,original['conv1.weight']))
+
     def test_pretrained_resume_is_offline_and_preserves_updates_lr_and_optimizer(self):
         config = dict(dagger_new_pretrained_visual=True, dagger_new_hidden_size=8,
                       dagger_new_visual_warmup_updates=3)
@@ -173,9 +231,19 @@ class FineTuningTest(unittest.TestCase):
     def test_invalid_learning_rates_and_warmup_fail_before_training(self):
         model = RecurrentVisionStudent(hidden_size=8)
         for config in (dict(dagger_new_visual_learning_rate=-1), dict(dagger_new_visual_learning_rate=float('nan')),
-                       dict(dagger_new_visual_learning_rate=1.), dict(dagger_new_visual_warmup_updates=-1)):
+                       dict(dagger_new_visual_learning_rate=1.), dict(dagger_new_visual_warmup_updates=-1),
+                       dict(dagger_new_finetune_visual='false')):
             with self.subTest(config=config), self.assertRaises(ValueError):
                 VisualFineTuning(model, config)
+
+    def test_supplied_configs_freeze_pretrained_backbone(self):
+        import yaml
+        directory = Path(__file__).resolve().parents[1]/'configs/chairman_separate'
+        for path in directory.glob('train_dagger*.yaml'):
+            with self.subTest(config=path.name):
+                config = yaml.safe_load(path.read_text())
+                self.assertIs(config['dagger_new_finetune_visual'],False)
+                self.assertIs(config['dagger_new_pretrained_visual'],True)
 
     def test_runner_resumes_warmup_and_refuses_changing_visual_initialization(self):
         from . import runner
@@ -206,7 +274,23 @@ class FineTuningTest(unittest.TestCase):
             saved = torch.load(path, weights_only=True)
             self.assertEqual(saved['metadata']['visual_finetuning']['completed_updates'], 4)
             self.assertFalse(torch.equal(original, saved['student_state_dict']['visual_encoder.1.weight']))
-            config.update(dagger_new_pretrained_visual=False, total_timesteps=5)
+            # The user's resume path: keep learned weights, explicitly freeze.
+            original = saved['student_state_dict']['visual_encoder.1.weight'].clone()
+            before_gru = saved['student_state_dict']['gru.weight_ih_l0'].clone()
+            config.update(dagger_new_finetune_visual=False,total_timesteps=6)
+            runner.train_dagger(config,env.base,env)
+            saved = torch.load(path,weights_only=True)
+            torch.testing.assert_close(original,saved['student_state_dict']['visual_encoder.1.weight'],rtol=0,atol=0)
+            self.assertFalse(torch.equal(before_gru,saved['student_state_dict']['gru.weight_ih_l0']))
+            self.assertFalse(saved['metadata']['visual_finetuning']['enabled'])
+            self.assertEqual(saved['metadata']['visual_finetuning']['completed_updates'],6)
+            config.pop('dagger_new_finetune_visual')
+            config['total_timesteps'] = 7
+            runner.train_dagger(config,env.base,env)
+            saved = torch.load(path,weights_only=True)
+            torch.testing.assert_close(original,saved['student_state_dict']['visual_encoder.1.weight'],rtol=0,atol=0)
+            self.assertFalse(saved['metadata']['visual_finetuning']['enabled'])
+            config.update(dagger_new_pretrained_visual=False, total_timesteps=8)
             with self.assertRaisesRegex(ValueError, 'Cannot change pretrained ResNet initialization'):
                 runner.train_dagger(config, env.base, env)
 

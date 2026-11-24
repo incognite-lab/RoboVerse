@@ -89,12 +89,11 @@ class GenesisHandler(BaseSimHandler):
         #print(not self.headless)
         prepare_urdfs_for_nyx(self.robot, self.scenario.objects, self.cameras)
         ## Add ground
-        try:
-            self.scene_inst.add_entity(gs.morphs.Plane())
-        except (ValueError, Exception) as e:
-            # Fallback if Plane has issues
-            log.warning(f"Could not add ground plane: {e}")
-            pass
+        # Visuals and collisions are independent. An invisible floor must
+        # remain a real collider; fail startup if creating it ever fails.
+        self.ground_inst = self.scene_inst.add_entity(
+            gs.morphs.Plane(visualization=self.scenario.render_ground,collision=True)
+        )
         ## Add robot
         self.robot_inst: RigidEntity = self.scene_inst.add_entity(
             gs.morphs.URDF(
@@ -149,6 +148,13 @@ class GenesisHandler(BaseSimHandler):
                 raise NotImplementedError(f"Object type {type(obj)} not supported")
             self.object_inst_dict[obj.name] = obj_inst
 
+        # Calibration-only geometry stays out of task observations/snapshots.
+        self._nyx_ruler = None
+        ruler_config = getattr(self.scenario,'nyx_preview_ruler',None)
+        if ruler_config:
+            from metasim.utils.nyx_ruler import build_ruler
+            self._nyx_ruler = build_ruler(self.scene_inst,ruler_config)
+
         # ## Add cameras
         # for camera in self.cameras:
         #     camera_inst = self.scene_inst.add_camera(
@@ -188,6 +194,7 @@ class GenesisHandler(BaseSimHandler):
                     mount_link,
                     robot=self.robot,
                     objects=self.scenario.objects,
+                    calibration_light_intensity=self._nyx_ruler.settings.light_intensity if self._nyx_ruler else 0.,
                 )
                 if mount_link is not None:
                     self._add_camera_debug_marker(
