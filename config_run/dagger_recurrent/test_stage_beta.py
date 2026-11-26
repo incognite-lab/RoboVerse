@@ -126,17 +126,19 @@ class StageBetaTest(unittest.TestCase):
     def test_stage4_finishes_and_original_full_goal_remains_stage5(self):
         from metasim.test.test_chairman_single_adapted_rewards import make_env
         from metasim.cfg.checkers.checkers import _ChairManChecker
-        for target in (None, 4):
+        for target, goal, completed in ((None, None, 5), (4, None, 4), (None, 4, 3)):
             _, handler, _ = make_env()
             handler.task.dagger_target_stage = target
+            handler.task.eval_goal_stage = goal
             with ExitStack() as stack:
                 for stage in range(6):
                     stack.enter_context(patch(
                         f'metasim.cfg.checkers.stages_chairman.stege{stage}_chacker',
                         side_effect=lambda states, handler, mask: (torch.zeros_like(mask), mask.clone())))
                 _ChairManChecker().check(handler)
-            self.assertEqual(handler.task.just_finished.nonzero().flatten().tolist(),
-                             [5 if target is None else 4])
+            self.assertEqual(handler.task.just_finished.nonzero().flatten().tolist(), [completed])
+            if goal is not None:
+                self.assertEqual(int(handler.task.reward_functions[0].actual_stage[completed]), goal)
 
     def test_curriculum_never_selects_unused_stage5(self):
         from metasim.cfg.checkers.stages_chairman import _curriculum_limit

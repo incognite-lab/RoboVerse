@@ -7,6 +7,7 @@ import math
 import torch
 
 from metasim.cfg.checkers import _ChairManChecker
+from metasim.cfg.checkers.stages_chairman import CHAIR_PULL_DISTANCE_THRESHOLD
 from metasim.cfg.objects import ArticulationObjCfg, RigidObjCfg
 from metasim.types import EnvState
 from metasim.utils import configclass
@@ -24,6 +25,14 @@ from .base_cfg import HumanoidBaseReward, HumanoidTaskCfg
 
 
 HEIGHT_THRESHOLD = 0.4
+
+# Aim beyond the checker's minimum pull so millimetre-scale stopping errors
+# cannot leave the chair just short of stage-3 success. Keep every separate
+# policy's pull/stillness objective at the same point inside stages 4/5's
+# 0.40 m position tolerance around the checker's nominal target.
+STAGE3_PULL_MARGIN = 0.05
+STAGE3_REWARD_PULL_DISTANCE = CHAIR_PULL_DISTANCE_THRESHOLD + STAGE3_PULL_MARGIN
+STAGE3_REWARD_TARGET_X = 0.75 - STAGE3_REWARD_PULL_DISTANCE
 
 
 def _stage1_hand_height_bonus(left_hand, right_hand, left_target, right_target):
@@ -2050,7 +2059,7 @@ class Stage3HandDriftPenalty(HumanoidBaseReward):
 class PullChairReward(HumanoidBaseReward):
     """
     Stage 3:
-    Signed reward for one uninterrupted pull from x=0.75 to x=-0.25.
+    Signed reward for one uninterrupted pull from x=0.75 to x=-0.30.
 
     Forward progress and target-speed tracking are positive. Pausing on the
     path earns almost zero; moving in the wrong direction is negative. At the target the
@@ -2062,8 +2071,8 @@ class PullChairReward(HumanoidBaseReward):
         super().__init__(robot_name)
         self.active_stages = [3]
         self.initial_chair_pos = torch.tensor([0.75, 0.0, 0.1])
-        self.target_chair_pos = torch.tensor([-0.25, 0.0, 0.1])
-        self.pull_distance = 1.0
+        self.target_chair_pos = torch.tensor([STAGE3_REWARD_TARGET_X, 0.0, 0.1])
+        self.pull_distance = STAGE3_REWARD_PULL_DISTANCE
         self.target_pull_speed = 0.35
         self.vel_sigma = 0.12
         self.brake_fraction = 0.20
@@ -2195,7 +2204,7 @@ class PulledChairStillnessReward(HumanoidBaseReward):
     def __init__(self, robot_name="g1_with_hands"):
         super().__init__(robot_name)
         self.active_stages = [4, 5]
-        self.target_chair_pos = torch.tensor([-0.25, 0.0, 0.1])
+        self.target_chair_pos = torch.tensor([STAGE3_REWARD_TARGET_X, 0.0, 0.1])
 
     def __call__(self, states: list[EnvState], robot_name: str = None) -> torch.FloatTensor:
         robot = states.robots[robot_name]
@@ -3163,7 +3172,12 @@ class ApproachAndStandReward(Stage0ReferenceVelocityReward):
 
 
 class Stage3ReverseVelocityReward(HumanoidBaseReward):
-    """Track the backward velocity that carries the chair to its stage-3 target."""
+    """Track velocity toward a stop 5 cm beyond the stage-3 success boundary.
+
+    This rewards velocity tracking, so matching the reference also earns the
+    maximum while moving. For a stationary pelvis the maximum occurs only
+    at the reward target, safely beyond the checker's minimum pull.
+    """
 
     def __init__(self, robot_name="g1_with_hands", target_speed=0.35,
                  slowdown_distance=0.20, velocity_sigma=0.12):
@@ -3171,7 +3185,7 @@ class Stage3ReverseVelocityReward(HumanoidBaseReward):
         self.target_speed = float(target_speed)
         self.slowdown_distance = float(slowdown_distance)
         self.velocity_sigma = float(velocity_sigma)
-        self.target_chair_xy = torch.tensor([-0.25, 0.0])
+        self.target_chair_xy = torch.tensor([STAGE3_REWARD_TARGET_X, 0.0])
 
     def __call__(self, states, robot_name=None):
         robot = states.robots[robot_name or self.robot_name]

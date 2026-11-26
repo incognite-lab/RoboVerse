@@ -69,6 +69,11 @@ eval_episodes: 100
 eval_total_step_cap: 6000
 eval_count_timeouts_as_failures: true
 num_eval_stages: 6
+# Keep existing plots and add eval_dagger_new_stage_N_success_plot.png (N=0..5).
+# Stage SR = episodes completing the stage / all evaluated episodes.
+# Stage diagnostics add failure reasons, exit geometry and progress per checkpoint.
+# Outputs default to the recurrent checkpoint directory.
+# eval_output_dir: ./config_run/output/eval_chairman_separate_dagger
 
 policies:
   waist: {action_groups: [waist], observation_groups: [joint_positions, robot_body_states, pelvis_velocity, previous_policy_actions]}

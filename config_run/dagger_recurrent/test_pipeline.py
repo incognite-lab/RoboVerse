@@ -232,6 +232,10 @@ class PipelineTest(unittest.TestCase):
             self.assertGreater(len(rows), 0)
             self.assertEqual(rows[-1]["success_rate"], 1.)
             self.assertTrue((root / "recurrent/eval_dagger_new_results.csv").is_file())
+            for stage in range(6):
+                self.assertTrue((root / f"recurrent/eval_dagger_new_stage_{stage}_success_plot.png").is_file())
+                self.assertTrue((root / f"recurrent/eval_dagger_new_stage_{stage}_diagnostics.png").is_file())
+                self.assertIn(f"stage_{stage}_episode_success_rate", rows[-1])
             fake_writer = SimpleNamespace(isOpened=lambda: True, write=lambda frame: None,
                                           release=lambda: None)
             with patch("cv2.VideoWriter", return_value=fake_writer):
@@ -435,6 +439,21 @@ class PipelineTest(unittest.TestCase):
                 self.assertEqual(scenario.dagger, expected)
                 if expected == 1:
                     self.assertTrue(scenario.defer_camera_rendering)
+
+    def test_ppo_goal_is_wired_into_task_and_must_be_after_start(self):
+        with patch.object(sys, "path", [str(Path(__file__).resolve().parents[1]), *sys.path]):
+            from config_run import main_separate
+        scenario = SimpleNamespace(task=SimpleNamespace(), robots=[SimpleNamespace(name="g1_with_hands")])
+        config = dict(task="chairmanseparate", robots=["g1_with_hands"], train_or_eval="eval",
+                      eval_start_stage=0, eval_goal_stage=4)
+        with patch.object(main_separate, "ScenarioCfg", return_value=scenario), \
+                patch.object(main_separate, "MetaSimVecEnv"), \
+                patch.object(main_separate, "StableBaseline3VecEnv"):
+            main_separate.build_env(config)
+            self.assertEqual(scenario.task.eval_goal_stage, 4)
+            self.assertEqual(scenario.task.curriculum_max_stage, 3)
+            with self.assertRaisesRegex(ValueError, "eval_start_stage must be below"):
+                main_separate.build_env(dict(config, eval_start_stage=4))
 
 
 if __name__ == "__main__":

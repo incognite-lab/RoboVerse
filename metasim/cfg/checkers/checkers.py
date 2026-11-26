@@ -961,6 +961,9 @@ class _ChairManChecker(BaseChecker):
         # A) Finále (Stage 6) - Jelikož se Stage 6 neukládá do snapshotů, vypíšeme průlom rovnou
         target_stage = getattr(handler.task, 'dagger_target_stage', None)
         target_stage = 5 if target_stage is None else int(target_stage)
+        goal_stage = getattr(handler.task, "eval_goal_stage", None)
+        if goal_stage is not None:
+            target_stage = goal_stage - 1
         just_finished = all_success & (handler.task.completed_stage_events == target_stage)
         handler.task.stage_success[:] = just_finished
         handler.task.just_finished[:] = just_finished

@@ -1,7 +1,6 @@
 """DAgger training and evaluation with a six-policy ChairMan teacher."""
 from __future__ import annotations
 
-import csv
 from datetime import datetime, timezone
 import json
 import os
@@ -24,6 +23,8 @@ try:
     from .dagger_vp.metrics import DaggerMetrics, HardwareMonitor
     from .dagger_vp.beta_schedule import beta_at_step, dagger_target_steps
     from .separate_ppo_trainer import load_policy_router
+    from .separate_evaluation import evaluate_rollouts, legacy_checkpoint_step, save_evaluation
+    from .stage_diagnostics import save_stage_diagnostics
 except ImportError:
     from student_vision import image_size_from_config, preprocess_student_rgb
     from dagger_vp.checkpoint import load_dagger_checkpoint, save_dagger_checkpoint
@@ -32,6 +33,8 @@ except ImportError:
     from dagger_vp.metrics import DaggerMetrics, HardwareMonitor
     from dagger_vp.beta_schedule import beta_at_step, dagger_target_steps
     from separate_ppo_trainer import load_policy_router
+    from separate_evaluation import evaluate_rollouts, legacy_checkpoint_step, save_evaluation
+    from stage_diagnostics import save_stage_diagnostics
 
 
 def _device():
@@ -407,120 +410,46 @@ def _student_checkpoints(path):
 
 
 def eval_dagger(config, metasim_env, env):
-    """Evaluate every student checkpoint and write compact CSV/plots."""
+    """Evaluate every student checkpoint, including episode-based stage SR."""
     device = _device()
     checkpoints = _student_checkpoints(config.get("load_model_path"))
     camera_name = str(config.get("dagger_camera_name", "camera0"))
-    target_episodes = int(config.get("eval_episodes", env.num_envs))
-    max_steps = int(config.get("eval_total_step_cap", 5000))
     num_stages = int(config.get("num_eval_stages", 6))
     rows = []
-
+    report = []
     for checkpoint_step, path in checkpoints:
+        stage_records = []
         student, _, num_joints = _new_student(env, device)
         _load_student_weights(student, str(path), device)
-        observation = env.reset()
-        returns = np.zeros(env.num_envs, dtype=np.float64)
-        lengths = np.zeros(env.num_envs, dtype=np.int64)
-        completed_returns = []
-        completed_lengths = []
-        completed_successes = []
-        end_stage_counts = np.zeros(num_stages, dtype=np.int64)
 
-        for _ in range(max_steps):
+        def predict(observation):
             _, images, joints = _student_inputs(
-                metasim_env, observation, device, num_joints, camera_name, image_size_from_config(config)
-            )
-            stages = np.clip(env.get_current_stages(), 0, num_stages - 1)
+                metasim_env, observation, device, num_joints, camera_name, image_size_from_config(config))
             with torch.no_grad():
-                actions = student(images, joints).cpu().numpy()
-            actions = np.clip(actions, env.action_space.low, env.action_space.high)
-            observation, rewards, dones, infos = env.step(actions)
-            returns += np.asarray(rewards, dtype=np.float64)
-            lengths += 1
-            for index in np.flatnonzero(dones):
-                if len(completed_returns) >= target_episodes:
-                    break
-                completed_returns.append(float(returns[index]))
-                completed_lengths.append(int(lengths[index]))
-                completed_successes.append(
-                    int(infos[index].get("is_success", False))
-                )
-                end_stage_counts[int(stages[index])] += 1
-                returns[index] = 0.0
-                lengths[index] = 0
-            if len(completed_returns) >= target_episodes:
-                break
+                return student(images, joints).cpu().numpy()
 
-        if len(completed_returns) < target_episodes and bool(
-            config.get("eval_count_timeouts_as_failures", True)
-        ):
-            remaining = target_episodes - len(completed_returns)
-            for index in range(min(remaining, env.num_envs)):
-                completed_returns.append(float(returns[index]))
-                completed_lengths.append(int(lengths[index]))
-                completed_successes.append(0)
-                stage = int(np.clip(env.get_current_stages()[index], 0, num_stages - 1))
-                end_stage_counts[stage] += 1
-
-        finite_step = (
-            max((row["x_step"] for row in rows), default=-1) + 1
-            if checkpoint_step == 10**18 else checkpoint_step
-        )
-        row = {
-            "checkpoint": path.name,
-            "x_step": finite_step,
-            "mean_reward": float(np.mean(completed_returns)) if completed_returns else 0.0,
-            "std_reward": float(np.std(completed_returns)) if completed_returns else 0.0,
-            "success_rate": float(np.mean(completed_successes)) if completed_successes else 0.0,
-            "success_count": int(np.sum(completed_successes)),
-            "mean_length": float(np.mean(completed_lengths)) if completed_lengths else 0.0,
-            "std_length": float(np.std(completed_lengths)) if completed_lengths else 0.0,
-            "episodes_finished": len(completed_returns),
-        }
-        for stage in range(num_stages):
-            row[f"end_stage_{stage}_count"] = int(end_stage_counts[stage])
+        result = evaluate_rollouts(
+            env, predict, int(config.get("eval_episodes", env.num_envs)),
+            int(config.get("eval_total_step_cap", 5000)), num_stages=num_stages,
+            count_timeouts=bool(config.get("eval_count_timeouts_as_failures", True)),
+            stage_records=stage_records)
+        fallback = (max((row["x_step"] for row in rows), default=-1) + 1
+                    if checkpoint_step == 10**18 else checkpoint_step)
+        step = legacy_checkpoint_step(path, fallback)
+        row = dict(checkpoint=path.name, x_step=step, **result)
         rows.append(row)
-        log.info(
-            "DAgger eval {}: reward={:.4f}, success={}/{} ({:.1%}), "
-            "length={:.1f}, end_stages={}",
-            path.name, row["mean_reward"], row["success_count"],
-            row["episodes_finished"], row["success_rate"],
-            row["mean_length"], end_stage_counts.tolist(),
-        )
-
-    output_dir = Path(config.get("load_model_path"))
-    if output_dir.is_file():
-        output_dir = output_dir.parent
-    csv_path = output_dir / "eval_dagger_results.csv"
-    fieldnames = list(rows[0])
-    with csv_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-
-    try:
-        import matplotlib.pyplot as plt
-
-        steps = [row["x_step"] for row in rows]
-        plots = (
-            ("mean_reward", "Average reward", "eval_dagger_reward_plot.png"),
-            ("success_rate", "Success rate", "eval_dagger_success_plot.png"),
-            ("mean_length", "Average episode length", "eval_dagger_length_plot.png"),
-        )
-        for key, title, filename in plots:
-            plt.figure(figsize=(8, 5))
-            plt.plot(steps, [row[key] for row in rows], marker="o")
-            plt.xlabel("DAgger training step")
-            plt.ylabel(title)
-            plt.title(f"ChairMan separate DAgger – {title}")
-            plt.grid(True, alpha=0.3)
-            plt.tight_layout()
-            plt.savefig(output_dir / filename)
-            plt.close()
-    except ImportError:
-        log.warning("matplotlib is unavailable; CSV was saved without plots")
-    log.info("Saved DAgger evaluation results to {}", csv_path)
+        report.append((row, stage_records))
+        log.info("DAgger eval {}: reward={:.4f}, success={}/{} ({:.1%}), length={:.1f}, end_stages={}",
+                 path.name, row["mean_reward"], row["success_count"], row["episodes_finished"],
+                 row["success_rate"], row["mean_length"],
+                 [row[f"end_stage_{stage}_count"] for stage in range(num_stages)])
+    output = Path(config.get("load_model_path"))
+    if output.is_file():
+        output = output.parent
+    output = config.get("eval_output_dir", output)
+    save_evaluation(rows, output, "eval_dagger", "DAgger training step", num_stages)
+    save_stage_diagnostics(report, output, "eval_dagger", num_stages)
+    return rows
 
 
 def run_dagger(config, metasim_env, env):

@@ -886,6 +886,9 @@ class StableBaseline3VecEnv(VecEnv):
         self._max_leg_tracking_error[env_ids] = 0.0
         self._max_leg_torque_utilization[env_ids] = 0.0
 
+    def _collect_step_diagnostics(self, infos, dones, timeout):
+        """Optional hook for reading the physical state before automatic resets."""
+
     def step_wait(self):
         """Wait for the step to complete."""
         #------------------------------------
@@ -926,6 +929,7 @@ class StableBaseline3VecEnv(VecEnv):
 
         # --- Připrav info dicty ---
         infos = [{} for _ in range(self.num_envs)]
+        self._collect_step_diagnostics(infos, dones, timeout)
 
         # --- Masky ---
         unsuccess_mask = unsuccess.cpu().numpy().astype(bool)
@@ -942,11 +946,15 @@ class StableBaseline3VecEnv(VecEnv):
             for i in unsuccess_ids:
                 infos[i]["is_success"] = False
                 infos[i]["TimeLimit.truncated"] = False
-        success = self.env.env.handler.task.just_finished.to(dones.device)
+        task = self.env.env.handler.task
+        success = task.just_finished.to(dones.device)
         if success.any():
             dones = dones | success
             self.timesteps[success] = 0.0
             success_ids = success.nonzero(as_tuple=False).squeeze(-1).cpu().tolist()
+            if getattr(task, "eval_goal_stage", None) is not None:
+                # An entry on the last allowed step still reaches the goal.
+                timeout_mask[success_ids] = False
             obs, _ = self.env.reset(env_ids=success_ids)
             self._reset_motion_state(success_ids)
             obs = obs.cpu().numpy()

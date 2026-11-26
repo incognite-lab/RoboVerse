@@ -3,19 +3,28 @@ robots: [g1_with_hands]
 fix_base_link: false
 task: chairmanseparate
 decimation: 5
-num_envs: 100
+num_envs: 10
 headless: true
 add_table: true
 env_spacing: 4.0
 train_or_eval: eval
 eval_start_stage: 0  # 1..5 loads config_run/snapshots_chair/stage_N.
+eval_goal_stage: null  # 4 = finish on entry to stage 4. null or 6 = complete the whole task.
 reset_to_stage0: true
 use_snapshot_curriculum: false
 snapshot_save_probability: 0.0
 load_model_path: ./config_run/output/ppo_models_separate/run_2026-10-20_16-45-52_chairman_separate
-# load_model_checkpoint: 50000000
-eval_episodes: 100
+# Sample complete numbered checkpoints from the first one. Always include final if available.
+eval_checkpoint_stride: 10  # 1 = all, 2 = first/third/fifth, 3 = first/fourth/seventh.
+# load_model_checkpoint: 50000000  # Optional: evaluate only this checkpoint.
+eval_episodes: 10
 eval_max_steps: 6000
+eval_count_timeouts_as_failures: true
+num_eval_stages: 5
+# Outputs beside the models: CSV, reward/success/length, one SR plot per stage.
+# Stage SR = episodes completing the stage / all evaluated episodes.
+# Stage diagnostics add failure reasons, exit geometry and progress per checkpoint.
+# eval_output_dir: ./config_run/output/eval_chairman_separate_ppo
 policies:
   waist: {action_groups: [waist], observation_groups: [joint_positions, robot_body_states, pelvis_velocity, previous_policy_actions]}
   right_arm: {action_groups: [right_arm], observation_groups: [joint_positions, right_hand_task, pelvis_velocity, chair_geometry, stage, previous_policy_actions]}

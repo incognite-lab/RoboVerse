@@ -1,13 +1,20 @@
 <?xml version="1.0"?>
 <robot name="foldable_chair_gen">
 
+  <!-- Shared debug colors; reference these materials by name in visual elements. -->
+  <material name="debug_red"><color rgba="1 0 0 1" /></material>
+  <material name="debug_yellow"><color rgba="1 1 0 1" /></material>
+  <material name="debug_blue"><color rgba="0 0 1 1" /></material>
+  <material name="debug_blue_transparent"><color rgba="0 0 1 0.5" /></material>
+  <material name="debug_green"><color rgba="0 1 0 1" /></material>
+
   <link name="link_2">
     <inertial>
       <mass value="1.0" /> <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01" />
     </inertial>
     <!-- <visual>
       <geometry><sphere radius="0.05"/></geometry>
-      <material name="anchor_red"><color rgba="1 0 0 1"/></material>
+      <material name="debug_red" />
     </visual> -->
   </link>
 
@@ -73,7 +80,7 @@
     <!-- <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry><sphere radius="0.04" /></geometry>
-      <material name="m_debug_top_center"><color rgba="1 0 0 1" /></material>
+      <material name="debug_red" />
     </visual> -->
   </link>
   <joint name="j_debug_top_center" type="fixed">
@@ -86,7 +93,7 @@
     <!-- <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry><sphere radius="0.03" /></geometry>
-      <material name="m_target_hand_left"><color rgba="1 1 0 1" /></material>
+      <material name="debug_yellow" />
     </visual> -->
   </link>
   <joint name="j_target_hand_left" type="fixed">
@@ -99,7 +106,7 @@
     <!-- <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry><sphere radius="0.03" /></geometry>
-      <material name="m_target_hand_right"><color rgba="1 1 0 1" /></material>
+      <material name="debug_yellow" />
     </visual> -->
   </link>
   <joint name="j_target_hand_right" type="fixed">
@@ -112,7 +119,7 @@
     <!-- <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry><sphere radius="0.05" /></geometry>
-      <material name="m_debug_com"><color rgba="0 0 1 1" /></material>
+      <material name="debug_blue" />
     </visual> -->
   </link>
   <joint name="j_debug_com" type="fixed">
@@ -125,7 +132,7 @@
     <!-- <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry><cylinder radius="0.01" length="0.5" /></geometry>
-      <material name="m_debug_vec"><color rgba="0 0 1 0.5" /></material>
+      <material name="debug_blue_transparent" />
     </visual> -->
   </link>
   <joint name="j_debug_vec" type="fixed">
@@ -138,7 +145,7 @@
     <!-- <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry><sphere radius="0.04" /></geometry>
-      <material name="m_debug_foot_0"><color rgba="0 1 0 1" /></material>
+      <material name="debug_green" />
     </visual> -->
   </link>
   <joint name="j_debug_foot_0" type="fixed">
@@ -151,7 +158,7 @@
     <!-- <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry><sphere radius="0.04" /></geometry>
-      <material name="m_debug_foot_1"><color rgba="0 1 0 1" /></material>
+      <material name="debug_green" />
     </visual> -->
   </link>
   <joint name="j_debug_foot_1" type="fixed">
@@ -164,7 +171,7 @@
     <!-- <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry><sphere radius="0.04" /></geometry>
-      <material name="m_debug_foot_2"><color rgba="0 1 0 1" /></material>
+      <material name="debug_green" />
     </visual> -->
   </link>
   <joint name="j_debug_foot_2" type="fixed">
@@ -177,7 +184,7 @@
     <!-- <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry><sphere radius="0.04" /></geometry>
-      <material name="m_debug_foot_3"><color rgba="0 1 0 1" /></material>
+      <material name="debug_green" />
     </visual> -->
   </link>
   <joint name="j_debug_foot_3" type="fixed">

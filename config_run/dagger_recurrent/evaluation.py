@@ -5,6 +5,12 @@ import numpy as np
 import torch
 
 from .inputs import RolloutState
+try:
+    from ..separate_evaluation import StageEpisodeMetrics
+    from ..stage_diagnostics import StageDiagnostics
+except ImportError:
+    from separate_evaluation import StageEpisodeMetrics
+    from stage_diagnostics import StageDiagnostics
 
 
 @contextmanager
@@ -31,7 +37,7 @@ def evaluation_resets(env, start_stage=0, stop_stage=None):
 
 
 def evaluate_policy(student, adapter, env, episodes, max_steps, *, teacher=None, frame_callback=None,
-                    count_timeouts=True):
+                    count_timeouts=True, stage_records=None):
     """Evaluate quotas assigned BEFORE rollout, avoiding fastest-failure bias.
 
     Caller chooses reset configuration. Environment is reset here and left at
@@ -53,6 +59,8 @@ def evaluate_policy(student, adapter, env, episodes, max_steps, *, teacher=None,
     stage_completions = np.zeros(6, dtype=np.int64)
     stage_failures = np.zeros(6, dtype=np.int64)
     stage_censored = np.zeros(6, dtype=np.int64)
+    episode_stages = StageEpisodeMetrics(env.num_envs)
+    diagnostics = StageDiagnostics(env, stage_records, 6) if stage_records is not None else None
     for _ in range(max_steps):
         if teacher is None:
             values = adapter.read(state.previous_actions)
@@ -71,6 +79,9 @@ def evaluate_policy(student, adapter, env, episodes, max_steps, *, teacher=None,
         observation, rewards, dones, infos = env.step(actions)
         state.after_step(hidden, actions, dones)
         active = done_counts < quotas
+        episode_stages.step(infos, dones, active)
+        if diagnostics is not None:
+            diagnostics.step(infos, dones, active)
         returns[active] += np.asarray(rewards)[active]
         lengths[active] += 1
         for index in np.flatnonzero(active):
@@ -95,6 +106,8 @@ def evaluate_policy(student, adapter, env, episodes, max_steps, *, teacher=None,
         if np.all(done_counts >= quotas):
             break
     unfinished = int((quotas - done_counts).sum())
+    if diagnostics is not None:
+        diagnostics.cap((done_counts < quotas) & (lengths > 0), count_timeouts)
     stages = np.clip(env.get_current_stages(), 0, 5)
     for index in np.flatnonzero((done_counts < quotas) & (lengths > 0)):
         stage_censored[int(stages[index])] += 1
@@ -104,6 +117,7 @@ def evaluate_policy(student, adapter, env, episodes, max_steps, *, teacher=None,
             # First outstanding attempt has accumulated a return; later
             # assigned attempts never started and are counted as cap failures.
             remaining = int(quotas[index] - done_counts[index])
+            episode_stages.finish(index, remaining)
             successes.extend([0] * remaining)
             finished_returns.extend([float(returns[index])] + [0.] * (remaining - 1))
             finished_lengths.extend([int(lengths[index])] + [0] * (remaining - 1))
@@ -122,6 +136,7 @@ def evaluate_policy(student, adapter, env, episodes, max_steps, *, teacher=None,
         row[f'stage_{stage}_failures'] = int(stage_failures[stage])
         row[f'stage_{stage}_censored'] = int(stage_censored[stage])
         row[f'stage_{stage}_success_rate'] = float(stage_completions[stage]/attempts) if attempts else None
+    row.update(episode_stages.row())
     return row
 
 

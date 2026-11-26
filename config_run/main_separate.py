@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os
 import sys
+from pathlib import Path
 import numpy as np
 import torch
 from loguru import logger as log
@@ -10,12 +11,16 @@ from metasim.wrapper.gym_vec_env import MetaSimVecEnv
 try:
     from .main_multi import load_config_from_yaml, get_cameras_from_config, get_sensors_from_config
     from .SB3_chairman_separate import StableBaseline3VecEnv, POLICY_NAMES
-    from .separate_ppo_trainer import SeparatePPOTrainer, load_policy_router
+    from .separate_ppo_trainer import SeparatePPOTrainer, load_policy_router, resolve_policy_bundle
+    from .separate_evaluation import evaluate_rollouts, ppo_checkpoints, save_evaluation
+    from .stage_diagnostics import save_stage_diagnostics
     from .utils import ObsSaver
 except ImportError:
     from main_multi import load_config_from_yaml, get_cameras_from_config, get_sensors_from_config
     from SB3_chairman_separate import StableBaseline3VecEnv, POLICY_NAMES
-    from separate_ppo_trainer import SeparatePPOTrainer, load_policy_router
+    from separate_ppo_trainer import SeparatePPOTrainer, load_policy_router, resolve_policy_bundle
+    from separate_evaluation import evaluate_rollouts, ppo_checkpoints, save_evaluation
+    from stage_diagnostics import save_stage_diagnostics
     from utils import ObsSaver
 
 
@@ -54,6 +59,12 @@ def build_env(config):
         raise ValueError('preview_nyx requires num_envs: 1')
     recurrent_training = mode in ("train_dagger_new", "load_and_train_dagger_new")
     recurrent_mode = recurrent_training or mode in ('eval_dagger_new', 'eval_dagger_new_video')
+    goal_stage = config.get("eval_goal_stage") if mode in ("eval", "eval_ppo", "eval_video") else None
+    if goal_stage is not None:
+        if type(goal_stage) is not int or not 1 <= goal_stage <= 6:
+            raise ValueError("eval_goal_stage must be an integer from 1 to 6 or null")
+        if int(config.get("eval_start_stage") or 0) >= goal_stage:
+            raise ValueError("eval_start_stage must be below eval_goal_stage")
     target_stage = config.get('dagger_target_stage') if recurrent_mode else None
     if target_stage is not None and (isinstance(target_stage, bool) or not isinstance(target_stage, int)
                                      or not 0 <= target_stage <= 5):
@@ -79,10 +90,12 @@ def build_env(config):
     scenario.task.use_snapshot_curriculum = bool(config.get("use_snapshot_curriculum", recurrent_training))
     scenario.task.snapshot_save_probability = float(config.get("snapshot_save_probability", 0.0))
     scenario.task.eval_start_stage = config.get("eval_start_stage")
+    scenario.task.eval_goal_stage = goal_stage
     scenario.task.log_termination_reasons = bool(config.get("log_termination_reasons", True))
     scenario.task.log_reward_components = True
+    scenario.task.collect_stage_diagnostics = mode in ("eval", "eval_ppo", "eval_dagger", "eval_dagger_new")
     scenario.task.train_stage = None
-    scenario.task.curriculum_max_stage = target_stage
+    scenario.task.curriculum_max_stage = goal_stage - 1 if goal_stage is not None else target_stage
     scenario.task.dagger_target_stage = target_stage
     scenario.task.separate_policy_specs = config.get("policies", {})
     scenario.task.verbose_motion_diagnostics = bool(config.get("verbose_motion_diagnostics", False))
@@ -111,7 +124,50 @@ def build_env(config):
     # Calibration needs geometry/cameras, without a policy or locomotion model.
     return base, base if mode == 'preview_nyx' else StableBaseline3VecEnv(base)
 
+def eval_ppo(config, env):
+    paths, manifest = resolve_policy_bundle(config.get("load_model_path"),
+                                          config.get("load_model_checkpoint"))
+    root = Path(next(iter(paths.values()))).parent.parent
+    checkpoints = ppo_checkpoints(
+        paths, manifest, config.get("load_model_checkpoint"),
+        stride=config.get("eval_checkpoint_stride", 1))
+    rows = []
+    report = []
+    num_stages = int(config.get("num_eval_stages", 6))
+    goal_stage = config.get("eval_goal_stage")
+    if goal_stage is not None:
+        log.info("PPO evaluation goal: complete stage {} and reach stage {}", goal_stage - 1, goal_stage)
+    def log_transitions(infos):
+        if bool(config.get("log_stage_transitions", True)):
+            log_stage_transitions(
+                [info.get("stage_before", -1) for info in infos],
+                [info.get("completed_stage", -1) + 1 for info in infos],
+                [info.get("stage_changed", False) for info in infos], source="Evaluation")
+    for step, label in checkpoints:
+        stage_records = []
+        router, _ = load_policy_router(env, str(root),
+                                      device="cuda" if torch.cuda.is_available() else "cpu",
+                                      checkpoint=label)
+        result = evaluate_rollouts(
+            env, lambda obs: router.predict(obs, deterministic=True),
+            int(config.get("eval_episodes", env.num_envs)), int(config.get("eval_max_steps", 6000)),
+            num_stages=num_stages,
+            count_timeouts=bool(config.get("eval_count_timeouts_as_failures", True)),
+            step_callback=log_transitions, stage_records=stage_records)
+        row = dict(checkpoint=label, x_step=step, eval_goal_stage=goal_stage, **result)
+        rows.append(row)
+        report.append((row, stage_records))
+        log.info("PPO eval {}: episodes={}, mean reward={:.4f}, success={:.2%}",
+                 label, result["episodes_finished"], result["mean_reward"], result["success_rate"])
+    output = config.get("eval_output_dir", root)
+    save_evaluation(rows, output, "eval_ppo", "PPO training transitions", num_stages)
+    save_stage_diagnostics(report, output, "eval_ppo", num_stages)
+    return rows
+
+
 def evaluate(config, env, video=False):
+    if not video:
+        return eval_ppo(config, env)
     router, manifest = load_policy_router(
         env, config.get("load_model_path"),
         device="cuda" if torch.cuda.is_available() else "cpu",
@@ -156,7 +212,7 @@ def evaluate(config, env, video=False):
              len(finished_returns), mean_return, success_rate)
 
 def main():
-    config_name = sys.argv[1] if len(sys.argv) == 2 else "chairman_separate/train_dagger"
+    config_name = sys.argv[1] if len(sys.argv) == 2 else "chairman_separate/eval_dagger_video"
     if len(sys.argv) > 2: raise SystemExit("Usage: python config_run/main_separate.py [config/name]")
     config = load_config_from_yaml(config_name)
     if "dagger_torch_threads" in config:
@@ -192,7 +248,7 @@ def main():
                 resume_checkpoint=config.get("load_model_checkpoint"),
                 stage_transition_logger=stage_logger)
             trainer.learn()
-        elif mode == "eval":
+        elif mode in ("eval", "eval_ppo"):
             evaluate(config, env, video=False)
         elif mode == "eval_video":
             evaluate(config, env, video=True)

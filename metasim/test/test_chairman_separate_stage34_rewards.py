@@ -1,8 +1,10 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 
+from metasim.cfg.checkers import stages_chairman as checker
 from metasim.cfg.tasks.humanoidbench.ChairMan_separate import (
     ArmStageProgressReward,
     ChairmanseparateCfg,
@@ -10,7 +12,11 @@ from metasim.cfg.tasks.humanoidbench.ChairMan_separate import (
     FingerStageProgressReward,
     LeftReleaseFingersReward,
     LeftStage3HandDriftPenalty,
+    PullChairReward,
     PulledChairStillnessReward,
+    Stage3ReverseVelocityReward,
+    STAGE3_PULL_MARGIN,
+    STAGE3_REWARD_TARGET_X,
     WaistStageProgressReward,
 )
 
@@ -51,6 +57,66 @@ def _states(num_envs=3):
 
 
 class ChairmanSeparateStage34RewardsTest(unittest.TestCase):
+    def test_stage3_stationary_rewards_peak_beyond_checker_boundary(self):
+        states = _states(num_envs=4)
+        boundary_x = 0.75 - checker.CHAIR_PULL_DISTANCE_THRESHOLD
+        chair = states.objects["chair"].body_state[:, 0]
+        chair[:, 0] = torch.tensor([
+            boundary_x + 0.001, boundary_x,
+            STAGE3_REWARD_TARGET_X, STAGE3_REWARD_TARGET_X - 0.05,
+        ])
+        chair[:, 2] = 0.1
+
+        for reward_type in (Stage3ReverseVelocityReward, PullChairReward):
+            reward = reward_type()
+            reward.actual_stage = torch.full((4,), 3)
+            values = reward(states, ROBOT_NAME)
+            self.assertAlmostEqual(values[2].item(), 1.0, places=6)
+            self.assertTrue(torch.all(values[[0, 1, 3]] < values[2]))
+        self.assertAlmostEqual(boundary_x - STAGE3_REWARD_TARGET_X, STAGE3_PULL_MARGIN)
+
+        # At the checker boundary the robot should still move backward.
+        reverse = Stage3ReverseVelocityReward()
+        reverse.actual_stage = torch.tensor([2, 3, 3, 4])
+        states.robots[ROBOT_NAME].body_state[1, 0, 7] = (
+            -reverse.target_speed * STAGE3_PULL_MARGIN / reverse.slowdown_distance
+        )
+        values = reverse(states, ROBOT_NAME)
+        torch.testing.assert_close(values, torch.tensor([0.0, 1.0, 1.0, 0.0]))
+
+    def test_checker_accepts_reward_target_with_position_noise(self):
+        states = _states(num_envs=4)
+        chair = states.objects["chair"].body_state[:, 0]
+        boundary_x = 0.75 - checker.CHAIR_PULL_DISTANCE_THRESHOLD
+        chair[:, 0] = torch.tensor([
+            boundary_x + 0.001, boundary_x,
+            STAGE3_REWARD_TARGET_X + 0.005, STAGE3_REWARD_TARGET_X,
+        ])
+        chair[:, 2] = 0.1
+        handler = SimpleNamespace(
+            device=torch.device("cpu"), num_envs=4,
+            robot=SimpleNamespace(name=ROBOT_NAME),
+            task=SimpleNamespace(failure_masks={}),
+            scenario=SimpleNamespace(sim_params=SimpleNamespace(dt=0.02), decimation=1),
+        )
+        pose = {name: torch.ones(4, dtype=torch.bool) for name in (
+            "hands_near", "orientations_correct", "fingers_correct",
+            "hands_in_recovery_envelope",
+        )}
+        mask = torch.ones(4, dtype=torch.bool)
+        # Isolate distance/stillness checks from falls and grasp geometry.
+        with patch.object(checker, "common_chairman_checker", return_value=~mask), \
+             patch.object(checker, "stage2_grasp_pose_status", return_value=pose):
+            for _ in range(checker.STAGE3_HOLD_STEPS):
+                _, success = checker.stege3_chacker(states, handler, mask)
+            self.assertTrue(torch.equal(success, torch.tensor([False, True, True, True])))
+            terminated, _ = checker.stege4_chacker(states, handler, mask)
+            self.assertFalse(torch.any(terminated))
+            states.robots[ROBOT_NAME].joint_pos.zero_()
+            for _ in range(5):  # Stage 4 requires 0.10 s with open fingers.
+                _, success = checker.stege4_chacker(states, handler, mask)
+            self.assertTrue(torch.all(success))
+
     def test_progress_bonus_changes_only_at_policy_task_milestones(self):
         states = _states(num_envs=6)
         stages = torch.arange(6)

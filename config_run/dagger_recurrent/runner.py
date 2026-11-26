@@ -32,6 +32,8 @@ try:
     from ..dagger_vp.metrics import DaggerMetrics, HardwareMonitor
     from ..separate_dagger import _device, _student_checkpoints
     from ..separate_ppo_trainer import load_policy_router
+    from ..separate_evaluation import save_stage_plots
+    from ..stage_diagnostics import save_stage_diagnostics
 except ImportError:  # python config_run/main_separate.py ...
     from visual_augmentation import VisualAugmentation, augmentation_settings, DEFAULT_SEED
     from student_vision import image_size_from_config
@@ -39,6 +41,8 @@ except ImportError:  # python config_run/main_separate.py ...
     from dagger_vp.metrics import DaggerMetrics, HardwareMonitor
     from separate_dagger import _device, _student_checkpoints
     from separate_ppo_trainer import load_policy_router
+    from separate_evaluation import save_stage_plots
+    from stage_diagnostics import save_stage_diagnostics
 
 
 def build_stage_evaluation_env(config):
@@ -501,7 +505,7 @@ def train_dagger(config, base, env):
                 probe_worker.close()
 
 
-def evaluate_checkpoint(config, base, env, path, device, video=False):
+def evaluate_checkpoint(config, base, env, path, device, video=False, *, stage_records=None):
     student, metadata, checkpoint_step = load_student(path, env, base, device)
     target_stage = metadata.get('target_stage')
     configured_target = config.get('dagger_target_stage')
@@ -537,7 +541,8 @@ def evaluate_checkpoint(config, base, env, path, device, video=False):
                 student, adapter, env, int(config.get('eval_episodes', 1 if video else env.num_envs)),
                 int(config.get('eval_max_steps', 2000) if video else config.get('eval_total_step_cap', 6000)),
                 frame_callback=frame_callback,
-                count_timeouts=bool(config.get('eval_count_timeouts_as_failures', True)))
+                count_timeouts=bool(config.get('eval_count_timeouts_as_failures', True)),
+                stage_records=stage_records)
     finally:
         if video_writer is not None:
             video_writer.release()
@@ -554,18 +559,26 @@ def eval_dagger(config, base, env, video=False):
     if video:
         # A directory selects its final/latest checkpoint for video.
         checkpoints = checkpoints[-1:]
-    rows = [evaluate_checkpoint(config, base, env, path, _device(), video) for _, path in checkpoints]
-    output = root.parent if root.is_file() else root
+    report = []
+    for _, path in checkpoints:
+        stage_records = [] if not video else None
+        row = evaluate_checkpoint(config, base, env, path, _device(), video, stage_records=stage_records)
+        report.append((row, stage_records))
+    rows = sorted((row for row, _ in report), key=lambda row: row["x_step"])
+    output = Path(config.get("eval_output_dir", root.parent if root.is_file() else root))
+    output.mkdir(parents=True, exist_ok=True)
     with (output / "eval_dagger_new_results.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
     if not video:
+        save_stage_diagnostics(report, output, "eval_dagger_new")
         try:
             import matplotlib.pyplot as plt
         except ImportError:
             log.warning("matplotlib is unavailable; recurrent evaluation CSV was saved")
             return rows
+        save_stage_plots(rows, output, "eval_dagger_new", "DAgger vector step")
         for key, label in (("mean_reward", "Average reward"), ("success_rate", "Success rate"),
                            ("mean_length", "Average episode length")):
             figure, axis = plt.subplots(figsize=(8, 5))

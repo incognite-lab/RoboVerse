@@ -5,6 +5,9 @@ import numpy as np
 import torch
 import gymnasium as gym
 from gymnasium import spaces
+from metasim.utils.chair_navigation import CHAIR_FINAL_DISTANCE, chair_back_direction_xy
+from metasim.utils.humanoid_robot_util import neck_height_tensor
+from metasim.utils.chairman_grasp import STAGE2_FINGER_JOINT_TARGETS
 try:
     from .SB3_chairman_multi_env import StableBaseline3VecEnv as _MultiEnv
 except ImportError:
@@ -41,6 +44,64 @@ class PolicySpaceEnv(gym.Env):
 class StableBaseline3VecEnv(_MultiEnv):
     """Partition one physical action into six independently trained policies."""
     POLICY_NAMES = POLICY_NAMES
+
+    def _collect_step_diagnostics(self, infos, dones, timeout):
+        task = self.env.env.handler.task
+        if not getattr(task, "collect_stage_diagnostics", False):
+            return
+        events = task.completed_stage_events
+        ids = torch.nonzero(dones | (events >= 0), as_tuple=True)[0]
+        if not ids.numel():
+            return
+        masks = {**task.failure_masks, "global_timeout": timeout}
+        reason_flags = torch.stack([mask.to(ids.device)[ids] for mask in masks.values()], dim=1).cpu().tolist()
+        diagnostics = self.stage_endpoint_geometry(ids)
+        for (index, geometry), flags in zip(diagnostics.items(), reason_flags):
+            infos[index]["stage_endpoint_geometry"] = geometry
+            infos[index]["failure_reasons"] = tuple(reason for reason, flagged in zip(masks, flags) if flagged)
+
+    def stage_endpoint_geometry(self, env_ids):
+        """Measure stage endpoints from the current cached simulator state."""
+        handler = self.env.env.handler
+        states = handler.get_states()
+        robot = states.robots[self.robot_name]
+        chair = states.objects["chair"]
+        ids = torch.as_tensor(env_ids, dtype=torch.long, device=robot.body_state.device)
+        pelvis = robot.body_state[ids, robot.body_names.index("pelvis")]
+        base = chair.body_state[ids, chair.body_names.index("base_link")]
+        offset = pelvis[:, :2] - base[:, :2]
+        back = chair_back_direction_xy(base[:, 3:7])
+        lateral = torch.stack((back[:, 1], -back[:, 0]), dim=1)
+        left = robot.body_state[ids, robot.body_names.index("left_endeffector"), :3]
+        right = robot.body_state[ids, robot.body_names.index("endeffector"), :3]
+        left_target = chair.body_state[ids, chair.body_names.index("target_hand_left"), :3]
+        right_target = chair.body_state[ids, chair.body_names.index("target_hand_right"), :3]
+        joints = list(robot.joint_names)
+        finger_ids = [joints.index(name) for name in STAGE2_FINGER_JOINT_TARGETS]
+        fingers = robot.joint_pos[ids][:, finger_ids]
+        arm_ids = [i for i, name in enumerate(joints) if "shoulder_" in name or "elbow_joint" in name]
+        def norm(value):
+            return torch.linalg.vector_norm(value, dim=1)
+
+        finger_targets = fingers.new_tensor(list(STAGE2_FINGER_JOINT_TARGETS.values()))
+        values = {
+            "pelvis_chair_xy_m": norm(offset),
+            "pelvis_chair_lateral_m": (offset * lateral).sum(dim=1),
+            "pelvis_chair_back_m": (offset * back).sum(dim=1),
+            "neck_height_m": neck_height_tensor(states, self.robot_name)[ids],
+            "walk_goal_error_m": norm(offset - CHAIR_FINAL_DISTANCE * back),
+            "left_hand_target_error_m": norm(left - left_target),
+            "right_hand_target_error_m": norm(right - right_target),
+            "finger_grasp_error_rad": (fingers - finger_targets).abs().amax(dim=1),
+            "chair_start_error_m": norm(base[:, :3] - base.new_tensor([0.75, 0.0, 0.1])),
+            "chair_pull_goal_error_m": norm(base[:, :3] - base.new_tensor([-0.25, 0.0, 0.1])),
+            "chair_speed_m_s": norm(base[:, 7:10]),
+            "pelvis_speed_xy_m_s": norm(pelvis[:, 7:9]),
+            "finger_open_error_rad": fingers.abs().amax(dim=1),
+            "arm_rest_error_rad": robot.joint_pos[ids][:, arm_ids].abs().amax(dim=1),
+        }
+        measurements = torch.stack(tuple(values.values()), dim=1).cpu().tolist()
+        return {index: dict(zip(values, row)) for index, row in zip(ids.tolist(), measurements)}
 
     def __init__(self, env):
         super().__init__(env)
