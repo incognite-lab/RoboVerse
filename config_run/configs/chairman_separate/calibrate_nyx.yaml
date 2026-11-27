@@ -12,6 +12,9 @@ render_ground: false
 add_table: true
 decimation: 5
 train_or_eval: preview_nyx
+# 0 starts normally. 1–5 require a saved snapshot for that stage.
+# This stage also applies to automatic resets during policy playback.
+eval_start_stage: 4
 nyx_preview_fps: 30
 nyx_preview_max_frames: 0  # Unlimited; stop with Ctrl+C in the terminal.
 nyx_preview_controls: true
@@ -21,12 +24,21 @@ nyx_preview_turn_speed: 75.0  # degrees/second.
 # C/Tab toggles the same view to the head-mounted camera defined here.
 nyx_preview_robot_camera_config: chairman_separate/train_dagger
 nyx_preview_robot_camera_name: camera0
+# Optional learned-policy playback. Space freezes/resumes ALL physics + policy memory;
+# free-flight / robot camera switching remains active while paused.
+nyx_preview_policy:
+  enabled: true  # true = run the model below; false = stationary calibration.
+  type: student  # student (.pth) or teacher (six-policy PPO bundle directory).
+  path: ./config_run/output/dagger_separate_l40_stable_v2_640x360_3/recurrent/student_model_interrupted_step_14190.pth
+  # Teacher example: ./config_run/output/ppo_models_separate/run_2026-10-14_19-21-47_chairman_separate
+  checkpoint: null  # Teacher: null uses manifest; 'final' or a numbered checkpoint.
+  start_paused: true  # true loads/resets the model, then waits for Space.
 # G = new random augmentation, V = clean/augmented; ranges in visual_augmentation.py.
 nyx_preview_augmentation: true
 nyx_preview_augmentation_size: [640, 360]  # Match the student's RGB input.
 # Collision-free measuring cuboid. Length axis = local X; A is the fixed start.
 nyx_ruler:
-  enabled: true
+  enabled: false  # true = show the ruler and measure distances; false = hide it.
   size_m: [1.0, 0.02, 0.02]
   position: [-2.7, 0.0, 1.0]
   rotation_deg: [0.0, 0.0, 0.0]  # XYZ Euler angles.

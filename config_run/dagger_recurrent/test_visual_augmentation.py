@@ -184,8 +184,27 @@ class VisualAugmentationTest(unittest.TestCase):
             captured.clear()
             row=runner.evaluate_checkpoint(config,env.base,env,path,'cpu')
             self.assertEqual(row['episodes_finished'],2)
+            self.assertFalse(row['eval_visual_augmentation'])
+            self.assertTrue(captured)
             for image in captured:
                 torch.testing.assert_close(image,torch.full_like(image,100/255))
+
+            config.update(eval_visual_augmentation=True,eval_augmentation_seed=41)
+            for video in (False, True):
+                captured.clear()
+                frames = []
+                writer = SimpleNamespace(isOpened=lambda:True,write=frames.append,release=lambda:None)
+                with patch.object(aug,'CLEAN_PROBABILITY',1.), patch('cv2.VideoWriter',return_value=writer):
+                    row=runner.evaluate_checkpoint(config,env.base,env,path,'cpu',video=video)
+                self.assertTrue(row['eval_visual_augmentation'])
+                self.assertEqual(row['eval_augmentation_seed'],41)
+                self.assertTrue(captured)
+                for image in captured:
+                    torch.testing.assert_close(image,torch.full_like(image,80/255))
+                if video:
+                    self.assertEqual(len(frames),len(captured))
+                    for frame in frames:
+                        np.testing.assert_array_equal(frame,np.full((32,32,3),80,np.uint8))
 
     def test_invalid_inputs_and_ranges_fail_clearly(self):
         parameters=aug.VisualAugmentation().sample(2)

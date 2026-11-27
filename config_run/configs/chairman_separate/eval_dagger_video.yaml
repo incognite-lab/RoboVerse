@@ -63,9 +63,13 @@ dagger_camera_name: camera0
 # Student image dimensions (width x height), shared by train and evaluation.
 dagger_image_width: 640
 dagger_image_height: 360
+# Sample a visual augmentation for every episode, using the training ranges.
+# The video shows the actual input after augmentation.
+eval_visual_augmentation: false
+eval_augmentation_seed: 90210
 
-load_model_path: ./config_run/output/dagger_separate_l40_stable_v2_640x360/recurrent/student_model_step_39999.pth
-video_save_path: ./config_run/output/eval_videos/new_method_recurrent_6.mp4
+load_model_path: ./config_run/output/dagger_separate_l40_stable_v2_640x360_3/recurrent/student_model_step_17499.pth
+video_save_path: ./config_run/output/eval_videos/new_method_recurrent_11.mp4
 video_fps: 100
 video_slowdown: 1
 eval_episodes: 10

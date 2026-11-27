@@ -37,7 +37,7 @@ def evaluation_resets(env, start_stage=0, stop_stage=None):
 
 
 def evaluate_policy(student, adapter, env, episodes, max_steps, *, teacher=None, frame_callback=None,
-                    count_timeouts=True, stage_records=None):
+                    count_timeouts=True, stage_records=None, augmentation=None):
     """Evaluate quotas assigned BEFORE rollout, avoiding fastest-failure bias.
 
     Caller chooses reset configuration. Environment is reset here and left at
@@ -64,10 +64,14 @@ def evaluate_policy(student, adapter, env, episodes, max_steps, *, teacher=None,
     for _ in range(max_steps):
         if teacher is None:
             values = adapter.read(state.previous_actions)
+            images = values[0].float().div_(255)
+            if augmentation is not None:
+                images = augmentation.rollout(images.contiguous(), state.reset_mask, inplace=True, force=True)
             if frame_callback is not None:
-                frame_callback(values[0])
+                frame_callback(values[0] if augmentation is None else
+                               images.mul(255).round_().to(torch.uint8))
             with torch.no_grad():
-                prediction, hidden = student(values[0].float() / 255, *values[1:],
+                prediction, hidden = student(images, *values[1:],
                                              hidden=state.hidden, reset_mask=state.reset_mask)
             actions = prediction.cpu().numpy()
         else:

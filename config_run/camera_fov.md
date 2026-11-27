@@ -9,8 +9,9 @@ python config_run/main_separate.py chairman_separate/calibrate_nyx
 Konfigurace `chairman_separate/calibrate_nyx.yaml` používá jedno prostředí
 a jedno ovladatelné GLFW okno s obrazem vykresleným Nyxem. Zobrazuje splat
 i skutečnou geometrii robota, židle a podlahy v jedné scéně. Režim
-`preview_nyx` nepotřebuje váhy studenta ani teachera; po resetu pravidelně
-renderuje bez krokování fyziky a spouštění politik.
+`preview_nyx` má ve výchozím nastavení `nyx_preview_policy.enabled: false`:
+nepotřebuje váhy a po resetu pravidelně renderuje bez krokování fyziky.
+Volitelně může spustit naučenou policy a pozastavit celou simulaci mezerníkem.
 
 Klikni do okna, aby přijímalo klávesy. Držení pohybových kláves umožňuje
 plynulý pohyb podle uplynulého času; mimo aktivní okno se kamera nepohybuje.
@@ -28,6 +29,7 @@ plynulý pohyb podle uplynulého času; mimo aktivní okno se kamera nepohybuje.
 | 1 / 2 | Přímo volná kamera / kamera robota |
 | H | Návrat do počátečního volného pohledu |
 | P | Výpis aktuální polohy, směru a up vektoru |
+| Mezerník | Při zapnuté policy pozastavení / pokračování celé fyziky a řízení |
 | Esc nebo zavření okna | Ukončení náhledu |
 
 Při návratu z robotí kamery se obnoví poslední volný pohled. V robotím
@@ -48,6 +50,63 @@ Montáž robotí kamery se čte přímo z uvedené train/eval konfigurace,
 nepřepisuje se v ní. FOV kalibrační kamery musí odpovídat robotí kameře;
 náhled zachovává své rozlišení (výchozí 1280×720, tedy vyšší než policy).
 Po změně zdrojového configu náhled restartuj.
+
+### Přehrávání naučené policy a pauza
+
+V `calibrate_nyx.yaml` nastav například:
+
+```yaml
+nyx_preview_policy:
+  enabled: true
+  type: student
+  path: ./config_run/output/dagger_separate_l40_stable_v2_640x360_3/recurrent/student_model_interrupted_step_14190.pth
+  checkpoint: null
+  start_paused: false
+```
+
+Pro rekurentního studenta stačí hlavní `.pth`; optimizer a archiv demonstrací
+se nenačítají. `type: teacher` načítá šest PPO politik, `path` pak musí ukazovat
+na adresář jejich runu. `checkpoint: null` použije modely z manifestu, `final`
+nebo číslo vybere konkrétní checkpoint. Například teacherův run je
+`./config_run/output/ppo_models_separate/run_2026-10-14_19-21-47_chairman_separate`.
+Rozhraní šesti politik se přebírá z `policies` ve zdrojovém
+`nyx_preview_robot_camera_config`; případné `policies` přímo v kalibračním
+configu má přednost. Standardní kontroly kompatibility checkpointu zůstávají.
+
+Spuštění zůstává stejné jako u statické kalibrace. Mezerník v aktivním okně
+zastaví **krokování celého prostředí**, nejen odesílání nových akcí. Robot,
+židle, rychlosti, čas simulace a paměť GRU zůstanou zachované. Kamera, přepnutí
+na robotí pohled, měřítko a náhled augmentace fungují i v pauze. Další mezerník
+pokračuje z téhož stavu; žádné dohánění času stráveného v pauze. `start_paused:
+true` načte model a resetuje prostředí, ale na první krok čeká na mezerník.
+Titulek okna uvádí `RUNNING`/`PAUSED`, počet kroků a dokončených epizod.
+Na konci epizody se prostředí automaticky resetuje stejně jako při evaluaci;
+studentovi se současně vymaže paměť dokončené epizody.
+
+Počáteční stage nastav v `calibrate_nyx.yaml` na nejvyšší úrovni přes
+`eval_start_stage`. Hodnota `0` spustí běžný začátek, hodnoty `1` až `5`
+vyberou snapshot z `config_run/snapshots_chair/stage_N`. Stejná volba platí
+pro statický náhled i pro každý reset během přehrávání policy. Pokud snapshot
+chybí, simulátor vypíše očekávanou cestu. U studenta musí být počáteční
+stage nejvýše rovna cílové stage uložené v checkpointu.
+
+Student vždy dostává obraz z robotovy optické pózy, i když se díváš volnou
+kamerou. Jeden Nyx senzor se před inferencí dočasně nastaví na robota a pak se
+vrátí do tvého pohledu; splat se nenačítá podruhé. Obraz se zmenší na vstupní
+rozlišení uložené v checkpointu. G/V mění pouze zobrazený náhled, nikoli vstup
+policy. Jeden běžící snímek náhledu provede jeden řídicí krok s původním
+`decimation`/dt; pomalý render přehrávání zpomalí. Nejde o nový trénink.
+
+Ověření 27. 11. 2026: 71 CPU testů (70 v regresní sadě a jeden doplněný test
+izolace robotí/volné kamery) a osm skutečných Nyx snímků na GPU v prostředí
+`metasim_backup` se studentem `student_model_interrupted_step_14190.pth`.
+Čtyři pozastavené snímky zachovaly bitově shodné stavy těles, kloubové polohy
+a rychlosti i paměť GRU; čas simulace se neposunul. Kamera se během pauzy
+pohybovala, přepnula na robota a zobrazila augmentaci. Obnovení posunulo
+fyziku i policy. Klávesové vstupy byly v GPU testu zadány programově.
+Pro tuto konfiguraci použij plugin podporující `NyxCameraOptions.tone_mapper`;
+lokální `roboverse_train` s novější profile API na tomto původním parametru
+selhává už při sestavení kamery, nezávisle na zapnutí policy.
 
 Nainstalované nativní GUI Nyxu neposkytuje Python callbacky pro vlastní
 klávesy. Proto je při `nyx_preview_controls: true` použité vlastní GLFW okno

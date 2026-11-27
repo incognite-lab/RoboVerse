@@ -55,6 +55,16 @@ def build_env(config):
     if config.get("task") != "chairmanseparate":
         raise ValueError("main_separate.py requires task: chairmanseparate")
     mode = config.get("train_or_eval", "train")
+    start_stage = config.get('eval_start_stage')
+    preview_policy = None
+    if mode == 'preview_nyx':
+        if start_stage is not None and (type(start_stage) is not int or not 0 <= start_stage <= 5):
+            raise ValueError('For preview_nyx, eval_start_stage must be an integer from 0 to 5 or null')
+        try:
+            from .nyx_preview_policy import PreviewPolicySettings
+        except ImportError:
+            from nyx_preview_policy import PreviewPolicySettings
+        preview_policy = PreviewPolicySettings.from_config(config)
     if mode == 'preview_nyx' and int(config.get('num_envs',1)) != 1:
         raise ValueError('preview_nyx requires num_envs: 1')
     recurrent_training = mode in ("train_dagger_new", "load_and_train_dagger_new")
@@ -89,7 +99,7 @@ def build_env(config):
     scenario.task.reset_to_stage0 = bool(config.get("reset_to_stage0", not recurrent_training))
     scenario.task.use_snapshot_curriculum = bool(config.get("use_snapshot_curriculum", recurrent_training))
     scenario.task.snapshot_save_probability = float(config.get("snapshot_save_probability", 0.0))
-    scenario.task.eval_start_stage = config.get("eval_start_stage")
+    scenario.task.eval_start_stage = start_stage
     scenario.task.eval_goal_stage = goal_stage
     scenario.task.log_termination_reasons = bool(config.get("log_termination_reasons", True))
     scenario.task.log_reward_components = True
@@ -97,7 +107,11 @@ def build_env(config):
     scenario.task.train_stage = None
     scenario.task.curriculum_max_stage = goal_stage - 1 if goal_stage is not None else target_stage
     scenario.task.dagger_target_stage = target_stage
-    scenario.task.separate_policy_specs = config.get("policies", {})
+    policy_specs = config.get('policies', {})
+    if preview_policy is not None and preview_policy.enabled and 'policies' not in config:
+        source = config.get('nyx_preview_robot_camera_config', 'chairman_separate/train_dagger')
+        policy_specs = load_config_from_yaml(source).get('policies', {})
+    scenario.task.separate_policy_specs = policy_specs
     scenario.task.verbose_motion_diagnostics = bool(config.get("verbose_motion_diagnostics", False))
     scenario.task.visualize_reach_waypoints = bool(config.get("visualize_reach_waypoints", False))
     scenario.task.visualize_center_of_mass = bool(config.get("visualize_center_of_mass", False))
@@ -121,8 +135,9 @@ def build_env(config):
         raise ValueError("Separate ChairMan requires mobile g1_with_hands and fix_base_link: false")
     base = MetaSimVecEnv(scenario, task_name=config["task"],
                          num_envs=int(config.get("num_envs", 1)), sim=config.get("sim", "genesis"))
-    # Calibration needs geometry/cameras, without a policy or locomotion model.
-    return base, base if mode == 'preview_nyx' else StableBaseline3VecEnv(base)
+    # Static calibration skips locomotion. Playback uses the normal action/reset pipeline.
+    static_preview = preview_policy is not None and not preview_policy.enabled
+    return base, base if static_preview else StableBaseline3VecEnv(base)
 
 def eval_ppo(config, env):
     paths, manifest = resolve_policy_bundle(config.get("load_model_path"),
@@ -235,7 +250,7 @@ def main():
                 from .nyx_preview import preview_nyx
             except ImportError:
                 from nyx_preview import preview_nyx
-            preview_nyx(config,base)
+            preview_nyx(config,base,env)
         elif mode in ("train", "load_and_train"):
             stage_logger = (
                 log_stage_transitions

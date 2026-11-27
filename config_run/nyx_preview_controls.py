@@ -42,8 +42,8 @@ class PreviewCamera:
         array = np.asarray(value,dtype=float)
         return array[0] if array.ndim > 1 else array
 
-    def pose(self):
-        if not self.robot_view:
+    def pose(self, *, robot_view=None):
+        if not (self.robot_view if robot_view is None else robot_view):
             return self.free_pos,self.free_pos+self.free_direction,np.array([0.,0.,1.])
         position = self._first(self.link.get_pos(envs_idx=[0]))
         w,x,y,z = self._first(self.link.get_quat(envs_idx=[0]))
@@ -52,8 +52,8 @@ class PreviewCamera:
         rotation = rotation*self.mount_rotation
         return position,position+rotation.apply([0.,0.,-1.]),rotation.apply([0.,1.,0.])
 
-    def apply(self):
-        pos,lookat,up = self.pose()
+    def apply(self, *, robot_view=None):
+        pos,lookat,up = self.pose(robot_view=robot_view)
         self.camera.update_camera_pose(pos=tuple(pos),lookat=tuple(lookat),up=tuple(up))
 
     def update(self, held, pressed, dt):
@@ -117,7 +117,7 @@ class PreviewWindow:
             self.texture_shape = None
             self.pressed = set()
             self.keys = {name:getattr(glfw,'KEY_'+name.upper()) for name in
-                         ('w','s','a','d','q','e','r','f','c','tab','1','2','h','p','g','v','left','right','up','down',
+                         ('w','s','a','d','q','e','r','f','c','tab','1','2','h','p','g','v','space','left','right','up','down',
                           'kp_0','kp_1','kp_2','kp_3','kp_4','kp_5','kp_6','kp_7','kp_8','kp_9',
                           'kp_add','kp_subtract','kp_divide','kp_multiply','kp_enter','kp_decimal')}
             reverse = {key:name for name,key in self.keys.items()}

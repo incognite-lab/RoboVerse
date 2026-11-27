@@ -699,7 +699,7 @@ def stege3_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     chair_base_idx = chair.body_names.index("base_link")
     chair_pos = chair.body_state[idx, chair_base_idx, :3]
     initial_chair_pos = torch.tensor([0.75, 0.0, 0.1], device=chair_pos.device)
-    target_chair_pos = torch.tensor([-0.25, 0.0, 0.1], device=chair_pos.device)
+    target_chair_pos = torch.tensor([-0.20, 0.0, 0.1], device=chair_pos.device)
 
     # Úspěch má odpovídat pozici, kterou vyžadují Stage 4/5.
     pulled_x = initial_chair_pos[0] - chair_pos[:, 0]
@@ -760,7 +760,7 @@ def stege4_chacker(states: list[EnvState], handler: BaseSimHandler, mask: torch.
     chair_lin_vel = states.objects["chair"].body_state[idx, chair_base_idx, 7:10]
 
     # Cílová pozice ze Stage 3 (0.75 - 1.0 = -0.25)
-    target_chair_pos = torch.tensor([-0.25, 0.0, 0.1], device=mask.device)
+    target_chair_pos = torch.tensor([-0.20, 0.0, 0.1], device=mask.device)
     chair_pos_diff = torch.norm(chair_pos - target_chair_pos, dim=-1)
     chair_vel_norm = torch.norm(chair_lin_vel, dim=-1)
 

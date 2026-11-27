@@ -142,13 +142,13 @@ class VisualAugmentation:
     def sequence(self, images, *, inplace=False):
         return self.apply(images,self.sample(images.shape[0]),inplace=inplace)
 
-    def rollout(self, images, reset_mask, *, inplace=False):
+    def rollout(self, images, reset_mask, *, inplace=False, force=False):
         if self.episode_parameters is None or len(self.episode_parameters.enabled)!=images.shape[0]:
-            self.episode_parameters = self.sample(images.shape[0])
+            self.episode_parameters = self.sample(images.shape[0], force=force)
         else:
             indices = torch.as_tensor(reset_mask,device='cpu',dtype=torch.bool).nonzero().flatten()
             if len(indices):
-                self.episode_parameters.replace(indices,self.sample(len(indices)))
+                self.episode_parameters.replace(indices,self.sample(len(indices), force=force))
         return self.apply(images,self.episode_parameters,inplace=inplace)
 
     def state_dict(self):

@@ -528,7 +528,13 @@ labely, propriocepce a akce se nemění. Augmentace běží nad float RGB [0,1]
 před stávající ImageNet normalizací. Generátory se ukládají s checkpointem;
 při resume začínají nové epizody s nově losovaným vzhledem.
 
-Standardní evaluace, stage probes pro betu a evaluační video zůstávají čisté.
+`eval_dagger.yaml` a `eval_dagger_video.yaml` používají ve výchozím nastavení
+čistý obraz. Nastav `eval_visual_augmentation: true` pro losování vzhledu
+v každé epizodě z tréninkových rozsahů. Každá evaluační epizoda pak dostane
+augmentaci, stejně jako při stisku G v kalibračním náhledu.
+`eval_augmentation_seed` řídí losování nezávisle na checkpointu a ukládá se
+do CSV. Video ukazuje RGB vstup studenta. Interní evaluace a stage probes
+pro betu používají čistý obraz.
 V TensorBoardu sleduj `Augmentation/enabled`, `Augmentation/rollout_env_fraction`
 a zaznamenané rozsahy v `Run/visual_augmentation`. Generalizaci je potřeba
 ověřit samostatnou evaluací na odlišných podmínkách a reálných datech.

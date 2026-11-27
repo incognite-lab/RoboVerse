@@ -1,4 +1,4 @@
-"""Render Nyx camera views while keeping calibration geometry stationary."""
+"""Interactive Nyx calibration with optional policy playback and physics pause."""
 import math
 import time
 
@@ -9,9 +9,11 @@ from metasim.cfg.sensors import NyxGaussianSplatCameraCfg
 try:
     from .visual_augmentation import VisualAugmentation, DEFAULT_SEED
     from .student_vision import preprocess_student_rgb
+    from .nyx_preview_policy import PreviewPolicySettings, PreviewPolicy
 except ImportError:
     from visual_augmentation import VisualAugmentation, DEFAULT_SEED
     from student_vision import preprocess_student_rgb
+    from nyx_preview_policy import PreviewPolicySettings, PreviewPolicy
 
 
 def robot_camera_from_config(config):
@@ -30,7 +32,7 @@ def robot_camera_from_config(config):
     return camera
 
 
-def preview_nyx(config, base):
+def preview_nyx(config, base, env=None):
     handler = base.env.handler
     cameras = [camera for camera in handler.cameras if isinstance(camera,NyxGaussianSplatCameraCfg)]
     if not cameras:
@@ -42,7 +44,13 @@ def preview_nyx(config, base):
     controls = bool(config.get('nyx_preview_controls',False))
     if not controls and not any(camera.open_nyx_window or camera.debug_show or camera.debug_calibrate for camera in cameras):
         raise ValueError('Enable open_nyx_window or debug_show for a visible Nyx preview')
-    base.reset()
+    settings = PreviewPolicySettings.from_config(config)
+    if settings.enabled and (env is None or env is base):
+        raise ValueError('Policy playback requires the wrapped environment from build_env(config)')
+    playback = PreviewPolicy(settings,base,env) if settings.enabled else None
+    paused = settings.start_paused
+    if playback is None:
+        base.reset()
     ruler = getattr(handler,'_nyx_ruler',None)
     if ruler is not None:
         ruler.apply()
@@ -70,16 +78,22 @@ def preview_nyx(config, base):
             raise ValueError(f'Preview camera {camera_name!r} does not exist')
         controller = PreviewCamera(handler,camera,robot_camera_from_config(config),
             speed=config.get('nyx_preview_move_speed',1.),turn_speed=config.get('nyx_preview_turn_speed',75.))
+        if playback is not None and playback.adapter is not None and playback.adapter.camera_name != camera_name:
+            raise ValueError('Student checkpoint camera_name must match nyx_preview_camera_name')
         window = PreviewWindow(camera.width,camera.height)
         log.info('Controls: WASD move, QE yaw, RF height, arrows pitch/yaw, Shift faster; '
                  'C/Tab toggle free/robot, 1 free, 2 robot, H reset free, P print pose, Esc quit. '
                  'Click the calibration window to focus keyboard input.')
+        if playback is not None:
+            log.info('Space toggles physics + policy pause; camera controls stay active. '
+                     'One running preview frame advances one control step; slow rendering slows playback.')
         if augmentation is not None:
             log.info('G samples a new augmented view; V toggles clean/augmented. '
                      'Preview samples the augmented half of the training mixture; sensor noise varies per frame.')
-    log.info('Nyx preview: geometry is stationary; Ctrl+C stops the preview. '
+    log.info('Nyx preview: {}; Ctrl+C stops the preview. '
              'Edit gaussian_position / gaussian_rotation_xyzw / gaussian_scale in YAML and restart '
-             'to update splat placement. The image is rendered by Nyx.')
+             'to update splat placement. The image is rendered by Nyx.',
+             'policy playback with Space pause' if playback is not None else 'geometry is stationary')
     count = 0
     previous = time.monotonic()
     try:
@@ -89,6 +103,9 @@ def preview_nyx(config, base):
                 held,pressed = window.poll()
                 if window.closed:
                     break
+                if playback is not None and 'space' in pressed:
+                    paused = not paused
+                    log.info('Nyx policy playback {}', 'PAUSED' if paused else 'RUNNING')
                 controller.update(held,pressed,started-previous)
                 if ruler is not None:
                     ruler.update(held,pressed,started-previous,camera)
@@ -101,13 +118,18 @@ def preview_nyx(config, base):
                     elif 'v' in pressed:
                         augmentation_visible = not augmentation_visible
             previous = started
-            # Physics intentionally does not advance. Invalidate only the
-            # camera snapshot so read() pumps native window events each frame.
+            if playback is not None and not paused:
+                playback.step(controller)
+                # Follow the new head pose after physics (including episode reset).
+                controller.apply()
+            # During pause/static preview, only re-render: no step, resets, or RNN updates.
             handler._camera_states_cache = None
             states = handler.get_camera_states()
             if window is not None:
                 rgb = states[camera_name].rgb
                 caption = controller.mode
+                if playback is not None:
+                    caption += ' | '+playback.caption(paused)
                 if augmentation is not None:
                     caption += ' | Aug ON (G/V)' if augmentation_visible else ' | Aug OFF (G/V)'
                 if augmentation_visible:

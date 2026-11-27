@@ -83,6 +83,21 @@ class PreviewControlsTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.controller(speed=invalid)
 
+    def test_temporary_policy_camera_does_not_change_selected_view_or_free_pose(self):
+        control,sensor,_ = self.controller()
+        control.update({'w','q'},set(),.1)
+        free = tuple(x.copy() for x in control.pose())
+        robot = control.pose(robot_view=True)
+        control.apply(robot_view=True)
+        self.assertFalse(control.robot_view)
+        for name,expected in zip(('pos','lookat','up'),robot):
+            np.testing.assert_allclose(sensor.update_camera_pose.call_args.kwargs[name],expected)
+        control.apply()
+        for name,expected in zip(('pos','lookat','up'),free):
+            np.testing.assert_allclose(sensor.update_camera_pose.call_args.kwargs[name],expected)
+        for actual,expected in zip(control.pose(),free):
+            np.testing.assert_allclose(actual,expected)
+
     def test_window_only_moves_on_held_keys_when_focused_and_consumes_presses(self):
         window = object.__new__(PreviewWindow)
         window.window = object()

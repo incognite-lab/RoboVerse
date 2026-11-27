@@ -63,12 +63,15 @@ dagger_camera_name: camera0
 # Student image dimensions (width x height), shared by train and evaluation.
 dagger_image_width: 640
 dagger_image_height: 360
+# Sample a visual augmentation for every episode, using the training ranges.
+eval_visual_augmentation: false
+eval_augmentation_seed: 90210
 
-load_model_path: ./config_run/output/dagger_separate_stable_v2
+load_model_path: ./config_run/output/dagger_separate_l40_stable_v2_640x360_3
 eval_episodes: 100
 eval_total_step_cap: 6000
 eval_count_timeouts_as_failures: true
-num_eval_stages: 6
+num_eval_stages: 4
 # Keep existing plots and add eval_dagger_new_stage_N_success_plot.png (N=0..5).
 # Stage SR = episodes completing the stage / all evaluated episodes.
 # Stage diagnostics add failure reasons, exit geometry and progress per checkpoint.

@@ -506,6 +506,18 @@ def train_dagger(config, base, env):
 
 
 def evaluate_checkpoint(config, base, env, path, device, video=False, *, stage_records=None):
+    augment = config.get('eval_visual_augmentation', False)
+    if type(augment) is not bool:
+        raise ValueError('eval_visual_augmentation must be true or false')
+    augmentation = None
+    augmentation_seed = None
+    if augment:
+        augmentation_seed = config.get('eval_augmentation_seed', DEFAULT_SEED)
+        if type(augmentation_seed) is not int:
+            raise ValueError('eval_augmentation_seed must be an integer')
+        augmentation = VisualAugmentation(augmentation_seed)
+        log.info('Evaluation RGB augmentation enabled (seed {}): {}',
+                 augmentation_seed, augmentation_settings())
     student, metadata, checkpoint_step = load_student(path, env, base, device)
     target_stage = metadata.get('target_stage')
     configured_target = config.get('dagger_target_stage')
@@ -540,13 +552,14 @@ def evaluate_checkpoint(config, base, env, path, device, video=False, *, stage_r
             result = evaluate_policy(
                 student, adapter, env, int(config.get('eval_episodes', 1 if video else env.num_envs)),
                 int(config.get('eval_max_steps', 2000) if video else config.get('eval_total_step_cap', 6000)),
-                frame_callback=frame_callback,
+                frame_callback=frame_callback, augmentation=augmentation,
                 count_timeouts=bool(config.get('eval_count_timeouts_as_failures', True)),
                 stage_records=stage_records)
     finally:
         if video_writer is not None:
             video_writer.release()
-    row = dict(checkpoint=Path(path).name, x_step=checkpoint_step, **result)
+    row = dict(checkpoint=Path(path).name, x_step=checkpoint_step,
+               eval_visual_augmentation=augment, eval_augmentation_seed=augmentation_seed, **result)
     log.info("Recurrent evaluation {}: success={}/{}, capped={}", path, result['success_count'],
              result['episodes_finished'], result['capped_attempts'])
     return row
